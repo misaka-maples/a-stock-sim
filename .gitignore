@@ -1,0 +1,18 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Runtime data & logs
+server.log
+server.pid
+sim_account.json
+sim_test.json
+
+# Environment & OS
+.env
+.DS_Store
+.vscode/
+.idea/

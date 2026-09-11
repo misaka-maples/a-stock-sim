@@ -1,0 +1,17 @@
+[Unit]
+Description=A-Share Paper Trading HTTP Server and Engine
+After=network.target
+
+[Service]
+Type=simple
+User=maple
+WorkingDirectory=/home/maple/test3
+ExecStart=/usr/bin/python3 /home/maple/test3/server.py --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/maple/test3/server.log
+StandardError=append:/home/maple/test3/server.log
+
+[Install]
+WantedBy=multi-user.target
+
