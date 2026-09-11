@@ -274,17 +274,34 @@ class MarketFeed:
 
         return quotes_dict
 
+    _session: Optional[requests.Session] = None
+
+    @classmethod
+    def _get_session(cls) -> requests.Session:
+        if cls._session is None:
+            s = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=20,
+                pool_maxsize=30,
+                max_retries=1
+            )
+            s.mount('http://', adapter)
+            s.mount('https://', adapter)
+            cls._session = s
+        return cls._session
+
     @classmethod
     def _fetch_quotes_direct(cls, symbols: List[str]) -> List[Dict[str, Any]]:
         """直连腾讯行情接口获取盘口数据（备用降级路径）"""
         if not symbols:
             return []
-        url = f"https://qt.gtimg.cn/q={','.join(symbols)}"
+        url = f"http://qt.gtimg.cn/q={','.join(symbols)}"
         try:
-            resp = requests.get(url, timeout=10)
+            session = cls._get_session()
+            resp = session.get(url, timeout=5)
             resp.encoding = "gbk"
         except Exception as e:
-            print(f"[行情接口错误] {url}: {e}", file=sys.stderr)
+            print(f"[行情接口错误] {url[:60]}...: {e}", file=sys.stderr)
             return []
 
         results = []

@@ -66,27 +66,47 @@ def background_worker():
     logger.info("后台交易轮询线程已启动...")
     while ctx.running:
         try:
-            with ctx.lock:
-                now = datetime.datetime.now(BEIJING)
-                ctx.last_step_time = now
-                is_trading = MarketFeed.is_trading_time(now)
+            now = datetime.datetime.now(BEIJING)
+            is_trading = MarketFeed.is_trading_time(now)
 
-                # 标的汇总 (自选监控池 + 现有持仓)
-                all_symbols = sorted(list(set(ctx.symbols) | set(ctx.account.positions.keys())))
-                quotes = MarketFeed.fetch_quotes(all_symbols)
+            # 1. 快速读取当前账户持仓与监控标的代码 (持锁微秒级)
+            with ctx.lock:
+                ctx.last_step_time = now
+                held_symbols = list(ctx.account.positions.keys()) if ctx.account else []
+                symbols_to_monitor = list(ctx.symbols)
+                strategy_active = ctx.strategy_active
+
+            # 2. 休市降频保护：
+            # 若处于收盘/休市时段（且非忽略时段测试模式），且已有今日最新收盘行情，
+            # 无需每3秒全量抓取5000+标的，降频为30秒轮询，极大降低CPU与外部接口压力
+            if not is_trading and not ctx.ignore_market_hours and ctx.last_quotes:
+                for _ in range(30):
+                    if not ctx.running:
+                        break
+                    time.sleep(1.0)
+                continue
+
+            # 3. 在锁外执行全市场/自选池实时行情并发拉取 (避免网络IO阻塞Web接口)
+            all_symbols = sorted(list(set(symbols_to_monitor) | set(held_symbols)))
+            quotes = MarketFeed.fetch_quotes(all_symbols)
+
+            # 4. 拿到行情后，加锁更新内存数据、结算并触发策略
+            with ctx.lock:
                 if quotes:
                     ctx.last_quotes.update(quotes)
 
                 # 价格更新与市值结算
-                ctx.account.update_market_prices(ctx.last_quotes)
+                if ctx.account:
+                    ctx.account.update_market_prices(ctx.last_quotes)
 
                 # 若开启自动策略且处于交易时间（或测试模式），触发策略信号
-                if ctx.strategy_active and (is_trading or ctx.ignore_market_hours):
+                if strategy_active and (is_trading or ctx.ignore_market_hours) and ctx.strategy:
                     ctx.strategy.on_tick(ctx.last_quotes)
                     ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
                     ctx.account.update_market_prices(ctx.last_quotes)
 
-                ctx.account.save()
+                if ctx.account:
+                    ctx.account.save()
 
         except Exception as e:
             logger.error(f"后台轮询发生异常: {e}", exc_info=True)
@@ -162,7 +182,7 @@ class AccountResetRequest(BaseModel):
 # HTTP API 路由实现
 # ==============================================================================
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def index_page():
     """返回 Web 仪表盘控制台页面"""
     html_path = BASE_DIR / "web" / "index.html"
@@ -190,8 +210,13 @@ def get_quotes():
     """获取自选股票池/全市场共振雷达标的与持仓标的的实时盘口"""
     with ctx.lock:
         if not ctx.last_quotes:
-            all_symbols = sorted(list(set(ctx.symbols) | set(ctx.account.positions.keys())))
-            ctx.last_quotes = MarketFeed.fetch_quotes(all_symbols)
+            # 若后台尚未拉取完全部行情，快速拉取持仓及前20只标的，避免锁内拉取数千只卡死
+            quick_symbols = list(ctx.account.positions.keys()) if ctx.account else []
+            if not quick_symbols and ctx.symbols:
+                quick_symbols = ctx.symbols[:20]
+            if quick_symbols:
+                quick_quotes = MarketFeed.fetch_quotes(quick_symbols)
+                ctx.last_quotes.update(quick_quotes)
 
         # 优先展示：当前持仓标的 + 策略扫描出的全市场起爆共振雷达标的 (Top 35)
         res = {}
