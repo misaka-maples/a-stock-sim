@@ -118,6 +118,21 @@ class TestServerAPI(unittest.TestCase):
         self.assertTrue(len(s_data) > 0)
         self.assertEqual(s_data[0]["code"], "000001")
 
+    def test_get_performance(self):
+        """测试收益统计与绩效分析接口"""
+        res = self.client.get("/api/performance")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("summary", data)
+        self.assertIn("equity_curve", data)
+        self.assertIn("symbol_stats", data)
+        self.assertIn("daily_stats", data)
+        s = data["summary"]
+        self.assertIn("today_pnl", s)
+        self.assertIn("realized_pnl", s)
+        self.assertIn("win_rate", s)
+        self.assertIn("profit_loss_ratio", s)
+
 
 if __name__ == "__main__":
     unittest.main()

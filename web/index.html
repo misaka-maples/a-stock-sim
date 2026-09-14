@@ -155,6 +155,18 @@
       display: flex; justify-content: space-between; align-items: center;
     }
 
+    /* 收益统计选项卡 */
+    .tab-group { display: flex; gap: 6px; }
+    .tab-btn {
+      background: #0f172a; border: 1px solid var(--border-color); color: var(--text-muted);
+      padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.2s;
+    }
+    .tab-btn:hover { color: #fff; background: var(--hover-bg); }
+    .tab-btn.active { background: var(--accent-indigo); border-color: var(--accent-indigo); color: #fff; font-weight: 600; }
+    .tag-status { font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 600; display: inline-block; }
+    .tag-holding { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .tag-closed { background: rgba(148, 163, 184, 0.15); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.25); }
+
     /* 吐司弹窗 */
     #toast {
       position: fixed; bottom: 20px; right: 20px;
@@ -185,7 +197,7 @@
     </div>
   </header>
 
-  <!-- 核心资产看板 -->
+  <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
       <div class="title">总资产 (权益)</div>
@@ -193,19 +205,111 @@
       <div id="equitySub" class="sub">初始资金: ¥0.00</div>
     </div>
     <div class="metric-card">
-      <div class="title">可用现金</div>
-      <div id="cash" class="value">¥0.00</div>
-      <div class="sub">随时可委托买入</div>
+      <div class="title">今日收益 / 收益率</div>
+      <div id="todayPnl" class="value">¥0.00</div>
+      <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
     </div>
     <div class="metric-card">
-      <div class="title">持仓总市值</div>
-      <div id="marketValue" class="value">¥0.00</div>
-      <div id="posCount" class="sub">持仓标的: 0 只</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">累计浮盈 / 收益率</div>
+      <div class="title">累计总收益 / 总收益率</div>
       <div id="totalPnl" class="value">¥0.00</div>
       <div id="totalPnlPct" class="sub">+0.00%</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">已实现盈亏 (平仓净利)</div>
+      <div id="realizedPnl" class="value">¥0.00</div>
+      <div id="unrealizedPnlSub" class="sub">当前在持浮盈: ¥0.00</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">交易胜率 / 盈亏比</div>
+      <div id="winRate" class="value">0.0%</div>
+      <div id="plRatioSub" class="sub">0胜 0负 | 盈亏比: 0.00</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">可用现金 / 持仓市值</div>
+      <div id="cash" class="value">¥0.00</div>
+      <div id="posCount" class="sub">持仓市值: ¥0.00 (0只)</div>
+    </div>
+  </div>
+
+  <!-- 📊 账户收益统计与绩效分析 -->
+  <div class="panel" style="margin-bottom: 20px;">
+    <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div class="panel-title" style="font-size: 16px;">📊 收益统计与量化绩效分析</div>
+        <div class="tab-group">
+          <button id="tabBtnChart" class="tab-btn active" onclick="switchPerfTab('chart')">📈 收益走势图</button>
+          <button id="tabBtnSymbols" class="tab-btn" onclick="switchPerfTab('symbols')">🏆 标的盈亏排行</button>
+          <button id="tabBtnDaily" class="tab-btn" onclick="switchPerfTab('daily')">📅 每日盈亏明细</button>
+        </div>
+      </div>
+      <div id="chartHeaderStats" style="font-size: 12px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap;">
+        <span>历史峰值: <strong id="statPeak" style="color:#fff">--</strong></span>
+        <span>最大回撤: <strong id="statMaxDd" style="color:var(--green-down)">--</strong></span>
+        <span>盈亏比: <strong id="statPlRatio" style="color:#38bdf8">--</strong></span>
+        <span>累计规费: <strong id="statFees" style="color:var(--text-muted)">--</strong></span>
+      </div>
+    </div>
+
+    <!-- Tab 1: 走势图 -->
+    <div id="perfTabChart" class="perf-tab-content">
+      <div style="position: relative; width: 100%; height: 260px;">
+        <canvas id="equityCanvas" style="width: 100%; height: 100%; display: block;"></canvas>
+        <div id="chartTooltip" style="display:none; position:absolute; pointer-events:none; background:rgba(15,23,42,0.92); border:1px solid var(--accent-blue); padding:8px 12px; border-radius:6px; font-size:12px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.5); line-height: 1.5;"></div>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:11px; color:var(--text-muted); flex-wrap:wrap; gap:8px;">
+        <div>💡 提示：走势图自动实时高频采样，鼠标悬停曲线可查看各时点精确资产与盈亏明细</div>
+        <div style="display:flex; gap:12px;">
+          <span><span style="display:inline-block; width:10px; height:10px; background:#ef4444; border-radius:2px; margin-right:4px;"></span>总资产曲线</span>
+          <span><span style="display:inline-block; width:10px; height:2px; background:#64748b; margin-right:4px; vertical-align:middle;"></span>初始本金基准线</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: 标的盈亏排行 -->
+    <div id="perfTabSymbols" class="perf-tab-content" style="display: none;">
+      <div style="max-height: 280px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>股票标的</th>
+              <th class="text-center">状态</th>
+              <th class="text-right">买入总额</th>
+              <th class="text-right">卖出总额</th>
+              <th class="text-right">已实现盈亏</th>
+              <th class="text-right">当前浮动盈亏</th>
+              <th class="text-right">净收益贡献</th>
+              <th class="text-right">收益率</th>
+              <th class="text-right">交易规费</th>
+              <th class="text-center">交易笔数</th>
+            </tr>
+          </thead>
+          <tbody id="symbolStatsTbody">
+            <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在统计标的盈亏...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab 3: 每日盈亏明细 -->
+    <div id="perfTabDaily" class="perf-tab-content" style="display: none;">
+      <div style="max-height: 280px; overflow-y: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>交易日期</th>
+              <th class="text-right">期初资产</th>
+              <th class="text-right">期末资产</th>
+              <th class="text-right">当日净盈亏</th>
+              <th class="text-right">日收益率</th>
+              <th class="text-center">当日成交</th>
+              <th class="text-right">产生规费</th>
+            </tr>
+          </thead>
+          <tbody id="dailyStatsTbody">
+            <tr><td colspan="7" class="text-center" style="color:var(--text-muted)">正在统计每日盈亏...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -386,41 +490,349 @@
       `;
     }
 
+    let currentPerfTab = 'chart';
+    let cachedPerfData = null;
+    let currentCurve = [];
+    let currentInitialCash = 100000;
+
     async function fetchData() {
       try {
-        const [sumRes, posRes, quoteRes, tradeRes, statusRes] = await Promise.all([
+        const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = await Promise.all([
           fetch('/api/summary').then(r => r.json()),
           fetch('/api/positions').then(r => r.json()),
           fetch('/api/quotes').then(r => r.json()),
           fetch('/api/trades').then(r => r.json()),
-          fetch('/api/status').then(r => r.json())
+          fetch('/api/status').then(r => r.json()),
+          fetch('/api/performance').then(r => r.json()).catch(() => null)
         ]);
 
-        renderSummary(sumRes);
+        const summaryData = (perfRes && perfRes.summary) ? perfRes.summary : sumRes;
+        renderSummary(summaryData);
         renderPositions(posRes);
         renderQuotes(quoteRes);
         renderTrades(tradeRes);
         renderStatus(statusRes);
+        if (perfRes) {
+          renderPerformance(perfRes);
+        }
       } catch (err) {
         console.error("刷新数据失败:", err);
       }
     }
 
     function renderSummary(s) {
-      document.getElementById('totalEquity').innerText = `¥${s.total_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('equitySub').innerText = `初始资金: ¥${s.initial_cash.toLocaleString('zh-CN')}`;
-      document.getElementById('cash').innerText = `¥${s.cash.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('marketValue').innerText = `¥${s.market_value.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('posCount').innerText = `持仓标的: ${s.position_count} 只`;
+      if (!s) return;
+      document.getElementById('totalEquity').innerText = `¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('equitySub').innerText = `初始本金: ¥${(s.initial_cash||0).toLocaleString('zh-CN')}`;
 
+      // 今日收益
+      const todayPnlEl = document.getElementById('todayPnl');
+      const todayPctEl = document.getElementById('todayPnlPct');
+      const tPnl = s.today_pnl !== undefined ? s.today_pnl : (s.total_pnl || 0);
+      const tPct = s.today_pnl_pct !== undefined ? s.today_pnl_pct : (s.total_pnl_pct || 0);
+      const tUp = tPnl >= 0;
+      todayPnlEl.innerText = `${tUp ? '+' : ''}¥${tPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      todayPnlEl.className = `value ${tUp ? 'up' : 'down'}`;
+      todayPctEl.innerText = `对比昨收: ${tUp ? '+' : ''}${tPct.toFixed(2)}%`;
+      todayPctEl.className = `sub ${tUp ? 'up' : 'down'}`;
+
+      // 累计总收益
       const pnlEl = document.getElementById('totalPnl');
       const pnlPctEl = document.getElementById('totalPnlPct');
-      const pnl = s.total_pnl;
+      const pnl = s.total_pnl || 0;
       const isUp = pnl >= 0;
       pnlEl.innerText = `${isUp ? '+' : ''}¥${pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       pnlEl.className = `value ${isUp ? 'up' : 'down'}`;
-      pnlPctEl.innerText = `${isUp ? '+' : ''}${s.total_pnl_pct.toFixed(2)}%`;
+      pnlPctEl.innerText = `总收益率: ${isUp ? '+' : ''}${(s.total_pnl_pct||0).toFixed(2)}%`;
       pnlPctEl.className = `sub ${isUp ? 'up' : 'down'}`;
+
+      // 已实现盈亏 & 浮动盈亏
+      const rPnl = s.realized_pnl || 0;
+      const uPnl = s.unrealized_pnl || 0;
+      const rPnlEl = document.getElementById('realizedPnl');
+      rPnlEl.innerText = `${rPnl >= 0 ? '+' : ''}¥${rPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      rPnlEl.className = `value ${rPnl >= 0 ? 'up' : 'down'}`;
+      document.getElementById('unrealizedPnlSub').innerText = `持仓浮盈: ${uPnl >= 0 ? '+' : ''}¥${uPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+
+      // 胜率与盈亏比
+      const winRate = s.win_rate !== undefined ? s.win_rate : 0;
+      document.getElementById('winRate').innerText = `${winRate.toFixed(1)}%`;
+      document.getElementById('plRatioSub').innerText = `${s.win_count||0}胜 ${s.loss_count||0}负 | 盈亏比: ${(s.profit_loss_ratio||0).toFixed(2)}`;
+
+      // 现金与持仓
+      document.getElementById('cash').innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('posCount').innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
+    }
+
+    function switchPerfTab(tab) {
+      currentPerfTab = tab;
+      document.getElementById('tabBtnChart').className = 'tab-btn' + (tab === 'chart' ? ' active' : '');
+      document.getElementById('tabBtnSymbols').className = 'tab-btn' + (tab === 'symbols' ? ' active' : '');
+      document.getElementById('tabBtnDaily').className = 'tab-btn' + (tab === 'daily' ? ' active' : '');
+
+      document.getElementById('perfTabChart').style.display = tab === 'chart' ? 'block' : 'none';
+      document.getElementById('perfTabSymbols').style.display = tab === 'symbols' ? 'block' : 'none';
+      document.getElementById('perfTabDaily').style.display = tab === 'daily' ? 'block' : 'none';
+
+      if (tab === 'chart' && cachedPerfData) {
+        renderEquityChart(cachedPerfData.equity_curve || [], cachedPerfData.summary?.initial_cash || 100000);
+      }
+    }
+
+    function renderPerformance(data) {
+      if (!data) return;
+      cachedPerfData = data;
+      const s = data.summary || {};
+
+      // 头部摘要统计
+      const peak = s.peak_equity || s.total_equity || 0;
+      document.getElementById('statPeak').innerText = `¥${peak.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('statMaxDd').innerText = `-${(s.max_drawdown_pct||0).toFixed(2)}% (-¥${(s.max_drawdown||0).toFixed(2)})`;
+      document.getElementById('statPlRatio').innerText = `${(s.profit_loss_ratio||0).toFixed(2)} : 1`;
+      document.getElementById('statFees').innerText = `¥${(s.total_fees||0).toFixed(2)}`;
+
+      // 1. 走势图
+      if (currentPerfTab === 'chart') {
+        renderEquityChart(data.equity_curve || [], s.initial_cash || 100000);
+      }
+
+      // 2. 标的盈亏归因
+      renderSymbolStats(data.symbol_stats || []);
+
+      // 3. 每日盈亏
+      renderDailyStats(data.daily_stats || []);
+    }
+
+    function renderSymbolStats(list) {
+      const tbody = document.getElementById('symbolStatsTbody');
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center" style="color:var(--text-muted); padding:20px;">暂无标的交易归集数据</td></tr>';
+        return;
+      }
+      let html = '';
+      list.forEach(item => {
+        const isUp = item.total_pnl >= 0;
+        const colorClass = isUp ? 'up' : 'down';
+        const isHolding = item.status === '持仓中';
+        const statusTag = isHolding ? '<span class="tag-status tag-holding">持仓中</span>' : '<span class="tag-status tag-closed">已清仓</span>';
+        html += `
+          <tr>
+            <td><strong style="color:var(--accent-blue)">${item.symbol}</strong> <span style="margin-left:4px; font-weight:600">${item.name}</span></td>
+            <td class="text-center">${statusTag}</td>
+            <td class="text-right">¥${item.buy_amount.toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+            <td class="text-right">¥${item.sell_amount.toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+            <td class="text-right ${item.realized_pnl>=0?'up':'down'}">${item.realized_pnl>=0?'+':''}¥${item.realized_pnl.toFixed(2)}</td>
+            <td class="text-right ${item.unrealized_pnl>=0?'up':'down'}">${item.unrealized_pnl>=0?'+':''}¥${item.unrealized_pnl.toFixed(2)}</td>
+            <td class="text-right ${colorClass}" style="font-weight:700">${isUp?'+':''}¥${item.total_pnl.toFixed(2)}</td>
+            <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}${item.pnl_pct.toFixed(2)}%</td>
+            <td class="text-right" style="color:var(--text-muted)">¥${item.total_fees.toFixed(2)}</td>
+            <td class="text-center">${item.trade_count} 笔</td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function renderDailyStats(list) {
+      const tbody = document.getElementById('dailyStatsTbody');
+      if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding:20px;">暂无历史日结算数据</td></tr>';
+        return;
+      }
+      let html = '';
+      list.forEach(item => {
+        const isUp = item.daily_pnl >= 0;
+        const colorClass = isUp ? 'up' : 'down';
+        html += `
+          <tr>
+            <td><strong style="color:#f8fafc">${item.date}</strong></td>
+            <td class="text-right">¥${item.start_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+            <td class="text-right" style="font-weight:600">¥${item.end_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+            <td class="text-right ${colorClass}" style="font-weight:700">${isUp?'+':''}¥${item.daily_pnl.toFixed(2)}</td>
+            <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}${item.daily_pnl_pct.toFixed(2)}%</td>
+            <td class="text-center">${item.trade_count} 笔</td>
+            <td class="text-right" style="color:var(--text-muted)">¥${item.fees.toFixed(2)}</td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function renderEquityChart(curve, initialCash) {
+      currentCurve = curve || [];
+      currentInitialCash = initialCash || 100000;
+      const canvas = document.getElementById('equityCanvas');
+      if (!canvas) return;
+      const parent = canvas.parentElement;
+      const dpr = window.devicePixelRatio || 1;
+      const w = parent.clientWidth || 800;
+      const h = 260;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      if (!curve || curve.length < 2) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('正在积累时序净值数据...', w / 2, h / 2);
+        return;
+      }
+
+      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+
+      const equities = curve.map(d => d.equity);
+      equities.push(initialCash);
+      const minEq = Math.min(...equities) * 0.998;
+      const maxEq = Math.max(...equities) * 1.002;
+      const range = maxEq - minEq || 1;
+
+      const getX = i => padding.left + (i / (curve.length - 1 || 1)) * plotW;
+      const getY = val => padding.top + plotH - ((val - minEq) / range) * plotH;
+
+      // 1. 水平参考线与 Y 轴刻度 (5 条)
+      ctx.strokeStyle = '#273549';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+
+      for (let i = 0; i <= 4; i++) {
+        const val = minEq + (range * (i / 4));
+        const y = getY(val);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+        ctx.fillText(`¥${val.toFixed(0)}`, padding.left - 8, y);
+      }
+
+      // 2. 本金基准虚线 (¥100,000 / 0.0%)
+      const baseY = getY(initialCash);
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = '#475569';
+      ctx.beginPath();
+      ctx.moveTo(padding.left, baseY);
+      ctx.lineTo(w - padding.right, baseY);
+      ctx.stroke();
+      ctx.restore();
+
+      // 3. X 轴时间标签
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const labelIndices = [0, Math.floor((curve.length - 1) / 2), curve.length - 1];
+      const uniqueIndices = [...new Set(labelIndices)];
+      uniqueIndices.forEach(idx => {
+        if (curve[idx]) {
+          const t = curve[idx].time || '';
+          const label = t.length > 11 ? t.substring(5, 16) : t;
+          ctx.fillText(label, getX(idx), h - padding.bottom + 8);
+        }
+      });
+
+      // 4. 资产走势曲线与面积渐变
+      const lastEq = curve[curve.length - 1].equity;
+      const isUp = lastEq >= initialCash;
+      const strokeColor = isUp ? '#ef4444' : '#10b981';
+      const gradTop = isUp ? 'rgba(239, 68, 68, 0.28)' : 'rgba(16, 185, 129, 0.28)';
+
+      // 渐变面积
+      ctx.beginPath();
+      ctx.moveTo(getX(0), h - padding.bottom);
+      for (let i = 0; i < curve.length; i++) {
+        ctx.lineTo(getX(i), getY(curve[i].equity));
+      }
+      ctx.lineTo(getX(curve.length - 1), h - padding.bottom);
+      ctx.closePath();
+
+      const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
+      gradient.addColorStop(0, gradTop);
+      gradient.addColorStop(1, 'rgba(15, 23, 42, 0.0)');
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      // 折线
+      ctx.beginPath();
+      for (let i = 0; i < curve.length; i++) {
+        const x = getX(i);
+        const y = getY(curve[i].equity);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // 当前终点实心圆
+      const lastX = getX(curve.length - 1);
+      const lastY = getY(lastEq);
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    function initChartInteractions() {
+      const canvas = document.getElementById('equityCanvas');
+      const tooltip = document.getElementById('chartTooltip');
+      if (!canvas || !tooltip) return;
+
+      canvas.addEventListener('mousemove', e => {
+        if (!currentCurve || currentCurve.length < 2) return;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const paddingLeft = 75;
+        const paddingRight = 35;
+        const plotW = rect.width - paddingLeft - paddingRight;
+        if (mouseX < paddingLeft || mouseX > rect.width - paddingRight) {
+          tooltip.style.display = 'none';
+          return;
+        }
+
+        const ratio = (mouseX - paddingLeft) / plotW;
+        const index = Math.min(Math.max(0, Math.round(ratio * (currentCurve.length - 1))), currentCurve.length - 1);
+        const pt = currentCurve[index];
+        if (!pt) return;
+
+        const isUp = pt.equity >= currentInitialCash;
+        const pnl = pt.equity - currentInitialCash;
+        const pnlPct = (pnl / currentInitialCash * 100);
+
+        tooltip.innerHTML = `
+          <div style="font-weight:600; color:#fff; margin-bottom:4px;">${pt.time}</div>
+          <div style="color:var(--text-muted)">总资产: <strong style="color:#fff">¥${pt.equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></div>
+          <div style="color:var(--text-muted)">累计收益: <strong style="color:${isUp?'var(--red-up)':'var(--green-down)'}">${isUp?'+':''}¥${pnl.toFixed(2)} (${isUp?'+':''}${pnlPct.toFixed(2)}%)</strong></div>
+          ${pt.reason ? `<div style="color:#94a3b8; font-size:11px; margin-top:2px;">${pt.reason}</div>` : ''}
+        `;
+        tooltip.style.display = 'block';
+
+        let tipLeft = mouseX + 15;
+        if (tipLeft + 190 > rect.width) tipLeft = mouseX - 200;
+        let tipTop = e.clientY - rect.top - 20;
+        if (tipTop < 10) tipTop = 10;
+        tooltip.style.left = `${tipLeft}px`;
+        tooltip.style.top = `${tipTop}px`;
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+      });
+
+      window.addEventListener('resize', () => {
+        if (currentPerfTab === 'chart' && currentCurve.length > 0) {
+          renderEquityChart(currentCurve, currentInitialCash);
+        }
+      });
     }
 
     function renderPositions(positions) {
@@ -653,7 +1065,8 @@
       }
     }
 
-    // 初始化轮询
+    // 初始化走势图与数据轮询
+    initChartInteractions();
     fetchData();
     timerId = setInterval(fetchData, refreshInterval);
   </script>

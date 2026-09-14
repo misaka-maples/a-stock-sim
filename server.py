@@ -198,6 +198,20 @@ def get_summary():
         return ctx.account.get_summary()
 
 
+@app.get("/api/performance")
+def get_performance():
+    """获取详尽的量化收益统计、收益率曲线数据、个股盈亏归因与每日盈亏明细"""
+    with ctx.lock:
+        if ctx.account:
+            return ctx.account.get_performance_metrics()
+        return {
+            "summary": {},
+            "equity_curve": [],
+            "symbol_stats": [],
+            "daily_stats": []
+        }
+
+
 @app.get("/api/positions")
 def get_positions():
     """获取当前所有持仓标的明细"""
