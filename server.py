@@ -443,10 +443,12 @@ def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
     return {
         "strategies": [
-            {"id": "TurtleBreakout", "name": "经典海龟交易法则 / 唐奇安通道突破策略 (大牛股趋势跟踪)"},
-            {"id": "MATrendFollowing", "name": "双均线多头趋势跟踪策略 (MA20/MA60多头生命线)"},
-            {"id": "ShortTermResonance", "name": "超短线量价共振起爆策略 (实时同款)"},
-            {"id": "MomentumBreakout", "name": "20日高点放量突破策略 (动量突破)"}
+            {"id": "Minervini_SEPA", "name": "🏆 马克·米奈尔维尼 - SEPA/VCP 波动率收缩起爆策略 (+83.6% 全美投资冠军)"},
+            {"id": "ONeil_CANSLIM", "name": "🦅 威廉·欧奈尔 - CAN SLIM 相对强度领头羊突破策略 (+62.5% 趋势宗师)"},
+            {"id": "TurtleBreakout", "name": "🐢 理查德·丹尼斯 - 经典海龟交易法则 (+98.4% 趋势突破)"},
+            {"id": "MATrendFollowing", "name": "📈 双均线多头趋势跟踪策略 (MA20/MA60多头生命线)"},
+            {"id": "ShortTermResonance", "name": "⚡ 超短线量价共振起爆策略 (实时同款高频)"},
+            {"id": "MomentumBreakout", "name": "🚀 20日高点放量突破策略 (动量突破)"}
         ],
         "pools": [
             {"id": "core_active", "name": "精选核心活跃标的池 (20只主流龙头与持仓股)"},

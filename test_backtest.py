@@ -163,3 +163,36 @@ def test_turtle_and_ma_trend_strategies():
     assert ma_res["summary"]["final_equity"] > 0
 
 
+def test_minervini_and_oneil_strategies():
+    """测试马克·米奈尔维尼与威廉·欧奈尔量化大师策略"""
+    # 1. 米奈尔维尼 SEPA/VCP 波动率收缩起爆策略
+    sepa_res = run_backtest(
+        start_date="2025-01-01",
+        end_date="2026-09-15",
+        initial_cash=100000.0,
+        strategy_name="Minervini_SEPA",
+        pool_type="core_active"
+    )
+    s1 = sepa_res["summary"]
+    assert s1["strategy_name"] == "Minervini_SEPA"
+    assert s1["total_return_pct"] > 0  # 保持显著正收益
+    assert s1["alpha_pct"] > 0  # 跑赢沪深300指数超额
+    assert s1["profit_loss_ratio"] > 1.5  # 盈亏比显著高于 1.5
+    assert len(sepa_res["trades"]) > 0
+
+    # 2. 欧奈尔 CAN SLIM 相对强度领头羊突破策略
+    oneil_res = run_backtest(
+        start_date="2025-01-01",
+        end_date="2026-09-15",
+        initial_cash=100000.0,
+        strategy_name="ONeil_CANSLIM",
+        pool_type="core_active"
+    )
+    s2 = oneil_res["summary"]
+    assert s2["strategy_name"] == "ONeil_CANSLIM"
+    assert s2["total_return_pct"] > 0  # 保持显著正收益
+    assert s2["alpha_pct"] > 0  # 跑赢沪深300指数超额
+    assert s2["profit_loss_ratio"] > 1.5  # 盈亏比显著高于 1.5
+    assert len(oneil_res["trades"]) > 0
+
+

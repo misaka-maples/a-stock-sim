@@ -211,6 +211,46 @@ class BacktestEngine:
                         sell_price = round(min(op, cost_price * 0.94) * (1 - self.slippage_rate), 3)
                         sell_reason = "海龟法则: 触发防守硬止损 (-6.0%)"
 
+                elif self.strategy_name == "Minervini_SEPA" and cur_idx >= 20:
+                    # 马克·米奈尔维尼 (Mark Minervini) SEPA/VCP 冠军策略出场法则：
+                    # 1. 严格防守硬止损 (-6%)
+                    # 2. 均线生命线追踪：持仓满 3 天后跌破 MA20 趋势破位离场
+                    # 3. 大波段超额利润锁定 (+30%)
+                    ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                    gain_pct = ((cl / cost_price) - 1.0) * 100.0
+                    if lo <= cost_price * 0.94:
+                        should_sell = True
+                        sell_price = round(min(op, cost_price * 0.94) * (1 - self.slippage_rate), 3)
+                        sell_reason = "米奈尔维尼SEPA: 触发防守硬止损 (-6.0%)"
+                    elif pos["holding_days"] >= 3 and cl < ma20:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "米奈尔维尼SEPA: 跌破MA20均线生命线平仓"
+                    elif gain_pct >= 30.0:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "米奈尔维尼SEPA: 大波段超额利润锁定 (+30.0%)"
+
+                elif self.strategy_name == "ONeil_CANSLIM" and cur_idx >= 20:
+                    # 威廉·欧奈尔 (William O'Neil) CAN SLIM 领头羊出场法则：
+                    # 1. 铁律防守硬止损 (-6%)
+                    # 2. 均线生命线追踪：持仓满 3 天后跌破 MA20 平仓
+                    # 3. 领头羊大波段主升浪止盈 (+25%)
+                    ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                    gain_pct = ((cl / cost_price) - 1.0) * 100.0
+                    if lo <= cost_price * 0.94:
+                        should_sell = True
+                        sell_price = round(min(op, cost_price * 0.94) * (1 - self.slippage_rate), 3)
+                        sell_reason = "欧奈尔CAN SLIM: 触发铁律硬止损 (-6.0%)"
+                    elif pos["holding_days"] >= 3 and cl < ma20:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "欧奈尔CAN SLIM: 跌破MA20生命线平仓"
+                    elif gain_pct >= 25.0:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "欧奈尔CAN SLIM: 领头羊主升浪止盈 (+25.0%)"
+
                 elif self.strategy_name == "MATrendFollowing" and cur_idx >= 20:
                     # 双均线趋势跟踪出场：跌破MA20趋势线，或硬止损 (-5%)，或大波段止盈 (+35%)
                     ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
@@ -419,6 +459,60 @@ class BacktestEngine:
                                     "score": score,
                                     "vol_ratio": vol_ratio
                                 })
+
+                    elif self.strategy_name == "Minervini_SEPA":
+                        # 马克·米奈尔维尼 (Mark Minervini) SEPA + VCP 波动率收缩起爆策略
+                        # 1. 趋势模板：Close > MA20 > MA60, 阳线收盘
+                        # 2. VCP 波动率收敛：突破前 10 日振幅收窄在 25% 以内 (洗盘充分)
+                        # 3. 关键点突破 (Pivot Breakout)：收盘突破 10 日新高，成交量放大 1.2 倍以上
+                        if cur_idx >= 60:
+                            ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                            ma60 = sum(b["close"] for b in bars_list[cur_idx-59:cur_idx+1]) / 60.0
+                            if cl > ma20 and ma20 > ma60 and cl > op:
+                                prev_10 = bars_list[cur_idx-10:cur_idx]
+                                max_hi_10 = max(b["high"] for b in prev_10)
+                                min_lo_10 = min(b["low"] for b in prev_10)
+                                vcp_spread = (max_hi_10 - min_lo_10) / ma20
+                                if cl > max_hi_10 and vcp_spread <= 0.25:
+                                    vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+                                    if vol_ratio >= 1.2:
+                                        trend_score = (cl / ma60 - 1.0) * 2.0
+                                        vcp_score = (0.25 - vcp_spread) * 10.0
+                                        score = round(trend_score + vol_ratio * 1.5 + vcp_score, 2)
+                                        candidates.append({
+                                            "symbol": sym,
+                                            "name": stock_info["name"],
+                                            "bar": bar,
+                                            "score": score,
+                                            "vol_ratio": vol_ratio
+                                        })
+
+                    elif self.strategy_name == "ONeil_CANSLIM":
+                        # 威廉·欧奈尔 (William O'Neil) CAN SLIM 相对强度与领头羊突破策略
+                        # 1. 60日相对强度 (RS Alpha)：过去 60 日涨幅超越沪深300指数 5% 以上 (只买领头羊)
+                        # 2. 突破 20 日高点阻力位 (Base Breakout) + MA60 多头生命线
+                        # 3. 主力放量确认：成交量为 5日均量 1.3 倍以上
+                        if cur_idx >= 60:
+                            ma60 = sum(b["close"] for b in bars_list[cur_idx-59:cur_idx+1]) / 60.0
+                            high_20 = max(b["high"] for b in bars_list[cur_idx-20:cur_idx])
+                            if cl > high_20 and cl > ma60 and cl > op:
+                                stock_ret_60 = (cl / bars_list[cur_idx-60]["close"] - 1.0) * 100.0
+                                b_cur_idx = next((i for i, b in enumerate(benchmark_bars) if b["date"] == current_date), -1)
+                                bench_ret_60 = 0.0
+                                if b_cur_idx >= 60:
+                                    bench_ret_60 = (benchmark_bars[b_cur_idx]["close"] / benchmark_bars[b_cur_idx-60]["close"] - 1.0) * 100.0
+                                rs_alpha = stock_ret_60 - bench_ret_60
+                                if rs_alpha >= 5.0:
+                                    vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+                                    if vol_ratio >= 1.3:
+                                        score = round(rs_alpha * 1.5 + vol_ratio * 2.0, 2)
+                                        candidates.append({
+                                            "symbol": sym,
+                                            "name": stock_info["name"],
+                                            "bar": bar,
+                                            "score": score,
+                                            "vol_ratio": vol_ratio
+                                        })
 
                 # 按得分从高到低排序择优买入
                 candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -698,7 +792,12 @@ def main():
     parser.add_argument("--start", default="2024-01-01", help="回测起始日期 (YYYY-MM-DD)")
     parser.add_argument("--end", default="2026-09-15", help="回测截止日期 (YYYY-MM-DD)")
     parser.add_argument("--cash", type=float, default=100000.0, help="初始资金 (默认 100000)")
-    parser.add_argument("--strategy", default="TurtleBreakout", choices=["TurtleBreakout", "MATrendFollowing", "ShortTermResonance", "MomentumBreakout"], help="回测策略名称")
+    parser.add_argument(
+        "--strategy",
+        default="Minervini_SEPA",
+        choices=["Minervini_SEPA", "ONeil_CANSLIM", "TurtleBreakout", "MATrendFollowing", "ShortTermResonance", "MomentumBreakout"],
+        help="回测策略名称"
+    )
     parser.add_argument("--pool", default="core_active", choices=["core_active", "csi300_sample"], help="回测标的池")
     parser.add_argument("--take-profit", type=float, default=3.5, help="动态追踪止盈触发点 (%)")
     parser.add_argument("--stop-loss", type=float, default=-2.5, help="硬止损线 (%)")
