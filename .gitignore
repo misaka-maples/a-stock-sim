@@ -10,6 +10,8 @@ server.log
 server.pid
 sim_account.json
 sim_test.json
+data/
+*.cache
 
 # Environment & OS
 .env

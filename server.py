@@ -28,6 +28,8 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), "/home/maple"])
 
 from sim_trader import SimAccount, MarketFeed, StockUniverse, MomentumBreakoutStrategy, ShortTermResonanceStrategy, PaperTradingEngine, BEIJING
+from backtest import run_backtest
+from history_data import PRESET_POOLS
 
 # 日志配置
 logging.basicConfig(
@@ -176,6 +178,19 @@ class StrategyConfigRequest(BaseModel):
 
 class AccountResetRequest(BaseModel):
     cash: Optional[float] = Field(1_000_000.0, description="重置初始资金")
+
+
+class BacktestRequest(BaseModel):
+    start_date: str = Field("2024-01-01", description="回测起始日期 (YYYY-MM-DD)")
+    end_date: str = Field("2026-09-15", description="回测截止日期 (YYYY-MM-DD)")
+    initial_cash: float = Field(100000.0, description="初始本金")
+    strategy_name: str = Field("ShortTermResonance", description="回测策略名称")
+    pool_type: str = Field("core_active", description="预设股票池 (core_active / csi300_sample)")
+    symbols: Optional[List[str]] = Field(None, description="自定义股票代码列表")
+    take_profit: float = Field(3.5, description="动态追踪止盈点%")
+    stop_loss: float = Field(-2.5, description="硬止损线%")
+    max_holding_days: int = Field(5, description="最大持仓轮动天数")
+    max_positions: int = Field(3, description="最大持仓标的数")
 
 
 # ==============================================================================
@@ -421,6 +436,75 @@ def reset_account(req: AccountResetRequest):
         ctx.strategy.account = ctx.account
         logger.info(f"模拟账户已重置，初始资金: ¥{req.cash:,.2f}")
         return {"success": True, "summary": ctx.account.get_summary()}
+
+
+@app.get("/api/backtest/config")
+def get_backtest_config():
+    """获取回测可用策略列表与预设股票池"""
+    return {
+        "strategies": [
+            {"id": "ShortTermResonance", "name": "超短线量价共振起爆策略 (实时同款)"},
+            {"id": "MomentumBreakout", "name": "20日高点放量突破策略 (动量突破)"}
+        ],
+        "pools": [
+            {"id": "core_active", "name": "精选核心活跃标的池 (20只主流龙头与持仓股)"},
+            {"id": "csi300_sample", "name": "沪深300指数样本池 (20只代表性蓝筹)"}
+        ],
+        "default_start": "2024-01-01",
+        "default_end": "2026-09-15",
+        "default_cash": 100000.0,
+        "default_take_profit": 3.5,
+        "default_stop_loss": -2.5,
+        "default_max_holding_days": 5
+    }
+
+
+@app.post("/api/backtest/run")
+def run_backtest_endpoint(req: BacktestRequest):
+    """触发量化策略历史回测并返回绩效报告与资产曲线"""
+    try:
+        res = run_backtest(
+            start_date=req.start_date,
+            end_date=req.end_date,
+            initial_cash=req.initial_cash,
+            strategy_name=req.strategy_name,
+            pool_type=req.pool_type,
+            symbols=req.symbols,
+            take_profit_trigger_pct=req.take_profit,
+            stop_loss_pct=req.stop_loss,
+            max_holding_days=req.max_holding_days,
+            max_positions=req.max_positions
+        )
+        return {"success": True, "data": res}
+    except Exception as e:
+        logger.error(f"回测执行失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/backtest/run")
+def run_backtest_get(
+    start: str = "2024-01-01",
+    end: str = "2026-09-15",
+    cash: float = 100000.0,
+    strategy: str = "ShortTermResonance",
+    pool: str = "core_active",
+    take_profit: float = 3.5,
+    stop_loss: float = -2.5
+):
+    """GET 方式调用回测接口，方便快速调试"""
+    try:
+        res = run_backtest(
+            start_date=start,
+            end_date=end,
+            initial_cash=cash,
+            strategy_name=strategy,
+            pool_type=pool,
+            take_profit_trigger_pct=take_profit,
+            stop_loss_pct=stop_loss
+        )
+        return {"success": True, "data": res}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/health")

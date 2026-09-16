@@ -176,6 +176,36 @@
       opacity: 0; transition: opacity 0.3s; pointer-events: none;
     }
     #toast.show { opacity: 1; pointer-events: auto; }
+
+    /* 回测面板表单与样式 */
+    .bt-form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      align-items: flex-end;
+      background: #0f172a;
+      padding: 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      margin-bottom: 16px;
+    }
+    .bt-field { display: flex; flex-direction: column; gap: 4px; }
+    .bt-field label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+    .bt-metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .bt-metric-card {
+      background: #0f172a;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 10px 14px;
+    }
+    .bt-metric-card .bt-title { font-size: 11px; color: var(--text-muted); }
+    .bt-metric-card .bt-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+    .bt-metric-card .bt-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -197,6 +227,7 @@
     </div>
   </header>
 
+  <!-- 核心资产看板 -->
   <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
@@ -205,11 +236,20 @@
       <div id="equitySub" class="sub">初始资金: ¥0.00</div>
     </div>
     <div class="metric-card">
+      <div class="title">可用现金</div>
+      <div id="cash" class="value">¥0.00</div>
+      <div class="sub">随时可委托买入</div>
       <div class="title">今日收益 / 收益率</div>
       <div id="todayPnl" class="value">¥0.00</div>
       <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
     </div>
     <div class="metric-card">
+      <div class="title">持仓总市值</div>
+      <div id="marketValue" class="value">¥0.00</div>
+      <div id="posCount" class="sub">持仓标的: 0 只</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">累计浮盈 / 收益率</div>
       <div class="title">累计总收益 / 总收益率</div>
       <div id="totalPnl" class="value">¥0.00</div>
       <div id="totalPnlPct" class="sub">+0.00%</div>
@@ -309,6 +349,155 @@
             <tr><td colspan="7" class="text-center" style="color:var(--text-muted)">正在统计每日盈亏...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🧪 策略历史回测实验台 -->
+  <div class="panel" style="margin-bottom: 20px;">
+    <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div class="panel-title" style="font-size: 16px;">🧪 策略历史回测实验台</div>
+        <span class="badge badge-market">前复权日K线 · 真实T+1与税费 · 沪深300基准对齐</span>
+      </div>
+      <div style="font-size: 12px; color: var(--text-muted);">
+        回测数据源：腾讯 / 东方财富前复权行情
+      </div>
+    </div>
+
+    <!-- 回测参数表单 -->
+    <div class="bt-form">
+      <div class="bt-field">
+        <label for="btStart">起始日期</label>
+        <input type="date" id="btStart" class="form-control" value="2024-01-01">
+      </div>
+      <div class="bt-field">
+        <label for="btEnd">截止日期</label>
+        <input type="date" id="btEnd" class="form-control" value="2026-09-15">
+      </div>
+      <div class="bt-field">
+        <label for="btCash">初始本金 (元)</label>
+        <input type="number" id="btCash" class="form-control" value="100000" step="10000">
+      </div>
+      <div class="bt-field">
+        <label for="btStrategy">测试策略</label>
+        <select id="btStrategy" class="form-control">
+          <option value="ShortTermResonance">量价共振起爆与动态风控 (当前实盘)</option>
+          <option value="MomentumBreakout">20日高点突破动量策略</option>
+        </select>
+      </div>
+      <div class="bt-field">
+        <label for="btPool">标的池</label>
+        <select id="btPool" class="form-control">
+          <option value="core_active">精选核心活跃标的池 (20只主流龙头)</option>
+          <option value="csi300_sample">沪深300指数样本池 (20只代表性蓝筹)</option>
+        </select>
+      </div>
+      <div class="bt-field" style="max-width: 110px;">
+        <label for="btTakeProfit">追踪止盈点 (%)</label>
+        <input type="number" id="btTakeProfit" class="form-control" value="3.5" step="0.5">
+      </div>
+      <div class="bt-field" style="max-width: 110px;">
+        <label for="btStopLoss">硬止损线 (%)</label>
+        <input type="number" id="btStopLoss" class="form-control" value="-2.5" step="0.5">
+      </div>
+      <div>
+        <button id="btRunBtn" class="btn btn-primary" style="width: 100%; padding: 8px 16px; font-weight: 600;" onclick="runBacktestUI()">
+          🚀 开始运行回测
+        </button>
+      </div>
+    </div>
+
+    <!-- 回测结果展示区 (默认隐藏，运行后呈现) -->
+    <div id="btResultContainer" style="display: none;">
+      <!-- 核心指标卡片 -->
+      <div class="bt-metrics-grid">
+        <div class="bt-metric-card">
+          <div class="bt-title">累计总收益率</div>
+          <div id="btTotalReturn" class="bt-value">--</div>
+          <div id="btPnlSub" class="bt-sub">净盈亏: --</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">年化复合收益率 (CAGR)</div>
+          <div id="btCagr" class="bt-value">--</div>
+          <div id="btDaysSub" class="bt-sub">共 0 个交易日</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">同期沪深300基准</div>
+          <div id="btBenchReturn" class="bt-value">--</div>
+          <div class="bt-sub">大盘基准收益率</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">超额收益 (Alpha)</div>
+          <div id="btAlpha" class="bt-value">--</div>
+          <div class="bt-sub">相对大盘超额回报</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">最大资产回撤 (MDD)</div>
+          <div id="btMaxDd" class="bt-value" style="color: var(--green-down)">--</div>
+          <div id="btMaxDdValSub" class="bt-sub">回撤金额: --</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">交易胜率 / 盈亏比</div>
+          <div id="btWinRate" class="bt-value">--</div>
+          <div id="btPlRatioSub" class="bt-sub">盈亏比: --</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">夏普比率 / 卡玛比率</div>
+          <div id="btSharpe" class="bt-value">--</div>
+          <div id="btCalmarSub" class="bt-sub">卡玛比率: --</div>
+        </div>
+        <div class="bt-metric-card">
+          <div class="bt-title">总交易笔数 / 平均持仓</div>
+          <div id="btTradesCount" class="bt-value">--</div>
+          <div id="btAvgHoldSub" class="bt-sub">平均持仓: -- 天</div>
+        </div>
+      </div>
+
+      <!-- 双曲线走势对比图 (Canvas) -->
+      <div style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+          <div style="font-size: 13px; font-weight: 600; color: #fff;">📈 回测资产净值走势对比 (策略 vs 沪深300基准)</div>
+          <div style="display: flex; gap: 14px; font-size: 11px; color: var(--text-muted);">
+            <span><span style="display:inline-block; width:12px; height:3px; background:#ef4444; margin-right:4px; vertical-align:middle;"></span>策略净值</span>
+            <span><span style="display:inline-block; width:12px; height:3px; background:#38bdf8; margin-right:4px; vertical-align:middle;"></span>沪深300基准</span>
+            <span><span style="display:inline-block; width:12px; height:2px; background:#64748b; margin-right:4px; vertical-align:middle;"></span>初始本金</span>
+          </div>
+        </div>
+        <div style="position: relative; width: 100%; height: 260px;">
+          <canvas id="btCanvas" style="width: 100%; height: 100%; display: block;"></canvas>
+          <div id="btTooltip" style="display:none; position:absolute; pointer-events:none; background:rgba(15,23,42,0.92); border:1px solid var(--accent-blue); padding:8px 12px; border-radius:6px; font-size:12px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.5); line-height: 1.5;"></div>
+        </div>
+      </div>
+
+      <!-- 回测成交流水表格 -->
+      <div style="background: #0f172a; border: 1px solid var(--border-color); border-radius: 6px; padding: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <div id="btTradesTitle" style="font-size: 13px; font-weight: 600; color: #fff;">📜 回测交易明细记录</div>
+          <span style="font-size: 11px; color: var(--text-muted);">包含全部买入、卖出、盈亏及出场归因</span>
+        </div>
+        <div style="max-height: 260px; overflow-y: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>标的代码</th>
+                <th>股票名称</th>
+                <th>买入日期</th>
+                <th class="text-right">买入均价</th>
+                <th>卖出日期</th>
+                <th class="text-right">卖出均价</th>
+                <th class="text-center">持仓天数</th>
+                <th class="text-right">净盈亏</th>
+                <th class="text-right">收益率</th>
+                <th class="text-right">发生税费</th>
+                <th>出场原因</th>
+              </tr>
+            </thead>
+            <tbody id="btTradesTbody">
+              <tr><td colspan="11" class="text-center" style="color:var(--text-muted)">无交易记录</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -497,15 +686,18 @@
 
     async function fetchData() {
       try {
+        const [sumRes, posRes, quoteRes, tradeRes, statusRes] = await Promise.all([
         const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = await Promise.all([
           fetch('/api/summary').then(r => r.json()),
           fetch('/api/positions').then(r => r.json()),
           fetch('/api/quotes').then(r => r.json()),
           fetch('/api/trades').then(r => r.json()),
+          fetch('/api/status').then(r => r.json())
           fetch('/api/status').then(r => r.json()),
           fetch('/api/performance').then(r => r.json()).catch(() => null)
         ]);
 
+        renderSummary(sumRes);
         const summaryData = (perfRes && perfRes.summary) ? perfRes.summary : sumRes;
         renderSummary(summaryData);
         renderPositions(posRes);
@@ -521,6 +713,11 @@
     }
 
     function renderSummary(s) {
+      document.getElementById('totalEquity').innerText = `¥${s.total_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('equitySub').innerText = `初始资金: ¥${s.initial_cash.toLocaleString('zh-CN')}`;
+      document.getElementById('cash').innerText = `¥${s.cash.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('marketValue').innerText = `¥${s.market_value.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('posCount').innerText = `持仓标的: ${s.position_count} 只`;
       if (!s) return;
       document.getElementById('totalEquity').innerText = `¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       document.getElementById('equitySub').innerText = `初始本金: ¥${(s.initial_cash||0).toLocaleString('zh-CN')}`;
@@ -539,10 +736,12 @@
       // 累计总收益
       const pnlEl = document.getElementById('totalPnl');
       const pnlPctEl = document.getElementById('totalPnlPct');
+      const pnl = s.total_pnl;
       const pnl = s.total_pnl || 0;
       const isUp = pnl >= 0;
       pnlEl.innerText = `${isUp ? '+' : ''}¥${pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       pnlEl.className = `value ${isUp ? 'up' : 'down'}`;
+      pnlPctEl.innerText = `${isUp ? '+' : ''}${s.total_pnl_pct.toFixed(2)}%`;
       pnlPctEl.innerText = `总收益率: ${isUp ? '+' : ''}${(s.total_pnl_pct||0).toFixed(2)}%`;
       pnlPctEl.className = `sub ${isUp ? 'up' : 'down'}`;
 
@@ -1065,8 +1264,311 @@
       }
     }
 
+    // =========================================================================
+    // 回测模块 (Backtest Lab UI & Canvas)
+    // =========================================================================
+    let currentBtCurve = [];
+    let currentBtInitialCash = 100000;
+
+    async function runBacktestUI() {
+      const btn = document.getElementById('btRunBtn');
+      const container = document.getElementById('btResultContainer');
+      const start = document.getElementById('btStart').value;
+      const end = document.getElementById('btEnd').value;
+      const cash = parseFloat(document.getElementById('btCash').value) || 100000;
+      const strategy = document.getElementById('btStrategy').value;
+      const pool = document.getElementById('btPool').value;
+      const tp = parseFloat(document.getElementById('btTakeProfit').value) || 3.5;
+      const sl = parseFloat(document.getElementById('btStopLoss').value) || -2.5;
+
+      btn.disabled = true;
+      btn.innerText = '⏳ 正在拉取数据与回测撮合...';
+
+      try {
+        const res = await fetch('/api/backtest/run', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            start_date: start,
+            end_date: end,
+            initial_cash: cash,
+            strategy_name: strategy,
+            pool_type: pool,
+            take_profit: tp,
+            stop_loss: sl
+          })
+        }).then(r => r.json());
+
+        if (res.success && res.data) {
+          showToast('历史回测运行成功！');
+          container.style.display = 'block';
+          renderBacktestResults(res.data);
+          container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+          showToast(`回测失败: ${res.error || '未知错误'}`, true);
+        }
+      } catch (err) {
+        showToast(`回测请求异常: ${err}`, true);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '🚀 开始运行回测';
+      }
+    }
+
+    function renderBacktestResults(data) {
+      const s = data.summary || {};
+      const curve = data.equity_curve || [];
+      const trades = data.trades || [];
+      currentBtCurve = curve;
+      currentBtInitialCash = s.initial_cash || 100000;
+
+      // 1. 核心指标卡
+      const isUp = s.total_return_pct >= 0;
+      const retEl = document.getElementById('btTotalReturn');
+      retEl.innerText = `${isUp ? '+' : ''}${s.total_return_pct.toFixed(2)}%`;
+      retEl.className = `bt-value ${isUp ? 'up' : 'down'}`;
+      document.getElementById('btPnlSub').innerText = `净盈亏: ${s.total_pnl >= 0 ? '+' : ''}¥${s.total_pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+
+      const cagrEl = document.getElementById('btCagr');
+      const cagrUp = s.cagr_pct >= 0;
+      cagrEl.innerText = `${cagrUp ? '+' : ''}${s.cagr_pct.toFixed(2)}%`;
+      cagrEl.className = `bt-value ${cagrUp ? 'up' : 'down'}`;
+      document.getElementById('btDaysSub').innerText = `共 ${s.trading_days} 个交易日 (${(s.trading_days/250).toFixed(1)}年)`;
+
+      const bUp = s.benchmark_return_pct >= 0;
+      const bEl = document.getElementById('btBenchReturn');
+      bEl.innerText = `${bUp ? '+' : ''}${s.benchmark_return_pct.toFixed(2)}%`;
+      bEl.className = `bt-value ${bUp ? 'up' : 'down'}`;
+
+      const aUp = s.alpha_pct >= 0;
+      const aEl = document.getElementById('btAlpha');
+      aEl.innerText = `${aUp ? '+' : ''}${s.alpha_pct.toFixed(2)}%`;
+      aEl.className = `bt-value ${aUp ? 'up' : 'down'}`;
+
+      document.getElementById('btMaxDd').innerText = `-${s.max_drawdown_pct.toFixed(2)}%`;
+      document.getElementById('btMaxDdValSub').innerText = `回撤金额: -¥${s.max_drawdown_val.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+
+      document.getElementById('btWinRate').innerText = `${s.win_rate.toFixed(1)}%`;
+      document.getElementById('btPlRatioSub').innerText = `${s.win_count}胜 ${s.loss_count}负 | 盈亏比: ${s.profit_loss_ratio.toFixed(2)}`;
+
+      document.getElementById('btSharpe').innerText = `${s.sharpe_ratio.toFixed(2)}`;
+      document.getElementById('btCalmarSub').innerText = `卡玛比率: ${s.calmar_ratio.toFixed(2)}`;
+
+      document.getElementById('btTradesCount').innerText = `${s.total_trades} 笔`;
+      document.getElementById('btAvgHoldSub').innerText = `均持仓: ${s.avg_holding_days.toFixed(1)}天 | 税费: ¥${s.total_fees.toFixed(1)}`;
+
+      // 2. 绘制双曲线 Canvas
+      renderBacktestChart(curve, s.initial_cash || 100000);
+
+      // 3. 填充交易清单
+      renderBacktestTrades(trades);
+    }
+
+    function renderBacktestChart(curve, initialCash) {
+      const canvas = document.getElementById('btCanvas');
+      if (!canvas) return;
+      const parent = canvas.parentElement;
+      const dpr = window.devicePixelRatio || 1;
+      const w = parent.clientWidth || 800;
+      const h = 260;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      if (!curve || curve.length < 2) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('无足够回测净值数据', w / 2, h / 2);
+        return;
+      }
+
+      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+
+      // 计算极值
+      const allVals = [];
+      curve.forEach(d => {
+        allVals.push(d.equity);
+        if (d.benchmark_equity) allVals.push(d.benchmark_equity);
+      });
+      allVals.push(initialCash);
+
+      const minVal = Math.min(...allVals) * 0.99;
+      const maxVal = Math.max(...allVals) * 1.01;
+      const range = maxVal - minVal || 1;
+
+      const getX = i => padding.left + (i / (curve.length - 1 || 1)) * plotW;
+      const getY = val => padding.top + plotH - ((val - minVal) / range) * plotH;
+
+      // 1. 水平参考线与刻度
+      ctx.strokeStyle = '#273549';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+
+      for (let i = 0; i <= 4; i++) {
+        const val = minVal + (range * (i / 4));
+        const y = getY(val);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+        ctx.fillText(`¥${val.toFixed(0)}`, padding.left - 8, y);
+      }
+
+      // 2. 本金基准线 (灰色点状虚线)
+      const baseY = getY(initialCash);
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(padding.left, baseY);
+      ctx.lineTo(w - padding.right, baseY);
+      ctx.stroke();
+      ctx.restore();
+
+      // 3. 绘制沪深300基准曲线 (蓝色虚线)
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < curve.length; i++) {
+        const x = getX(i);
+        const y = getY(curve[i].benchmark_equity || initialCash);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // 4. 绘制策略净值曲线 (红/绿实线)
+      const lastEquity = curve[curve.length - 1].equity;
+      const isProfitable = lastEquity >= initialCash;
+      const lineColor = isProfitable ? '#ef4444' : '#10b981';
+
+      ctx.save();
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      for (let i = 0; i < curve.length; i++) {
+        const x = getX(i);
+        const y = getY(curve[i].equity);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // 5. X 轴日期标签
+      ctx.fillStyle = '#64748b';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const labelIndices = [0, Math.floor((curve.length - 1) / 2), curve.length - 1];
+      const uniqueIndices = [...new Set(labelIndices)];
+      uniqueIndices.forEach(idx => {
+        const d = curve[idx];
+        if (d && d.date) {
+          ctx.fillText(d.date, getX(idx), h - padding.bottom + 8);
+        }
+      });
+    }
+
+    function renderBacktestTrades(trades) {
+      const tbody = document.getElementById('btTradesTbody');
+      document.getElementById('btTradesTitle').innerText = `📜 回测交易明细记录 (共 ${trades.length} 笔)`;
+      if (!trades || trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center" style="color:var(--text-muted); padding:20px;">未发生交易</td></tr>';
+        return;
+      }
+      let html = '';
+      trades.slice(0, 100).forEach(t => {
+        const isUp = t.net_pnl >= 0;
+        const colorClass = isUp ? 'up' : 'down';
+        html += `
+          <tr>
+            <td><strong style="color:var(--accent-blue)">${t.symbol}</strong></td>
+            <td><strong>${t.name}</strong></td>
+            <td>${t.buy_date}</td>
+            <td class="text-right">¥${t.buy_price.toFixed(2)}</td>
+            <td>${t.sell_date}</td>
+            <td class="text-right">¥${t.sell_price.toFixed(2)}</td>
+            <td class="text-center">${t.holding_days} 天</td>
+            <td class="text-right ${colorClass}" style="font-weight:700">${isUp?'+':''}¥${t.net_pnl.toFixed(2)}</td>
+            <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}${t.pnl_pct.toFixed(2)}%</td>
+            <td class="text-right" style="color:var(--text-muted)">¥${t.fees.toFixed(2)}</td>
+            <td style="font-size:11px; color:#cbd5e1">${t.reason}</td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function initBacktestChartInteractions() {
+      const canvas = document.getElementById('btCanvas');
+      const tooltip = document.getElementById('btTooltip');
+      if (!canvas || !tooltip) return;
+
+      canvas.addEventListener('mousemove', e => {
+        if (!currentBtCurve || currentBtCurve.length < 2) return;
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const w = rect.width;
+        const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+        const plotW = w - padding.left - padding.right;
+
+        if (mouseX < padding.left || mouseX > w - padding.right) {
+          tooltip.style.display = 'none';
+          return;
+        }
+
+        const ratio = (mouseX - padding.left) / plotW;
+        const index = Math.round(ratio * (currentBtCurve.length - 1));
+        const item = currentBtCurve[Math.max(0, Math.min(index, currentBtCurve.length - 1))];
+        if (!item) return;
+
+        const isUp = item.pnl >= 0;
+        const bUp = item.benchmark_return_pct >= 0;
+        const alpha = (item.pnl_pct - (item.benchmark_return_pct || 0)).toFixed(2);
+        const aUp = parseFloat(alpha) >= 0;
+
+        tooltip.innerHTML = `
+          <div style="font-weight:700; color:#fff; border-bottom:1px solid #334155; padding-bottom:3px; margin-bottom:4px;">📅 ${item.date}</div>
+          <div>策略净值: <strong class="${isUp ? 'up' : 'down'}">¥${item.equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong> (${isUp ? '+' : ''}${item.pnl_pct.toFixed(2)}%)</div>
+          <div>沪深300: <strong class="${bUp ? 'up' : 'down'}">¥${(item.benchmark_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong> (${bUp ? '+' : ''}${(item.benchmark_return_pct||0).toFixed(2)}%)</div>
+          <div>超额 Alpha: <strong class="${aUp ? 'up' : 'down'}">${aUp ? '+' : ''}${alpha}%</strong></div>
+          <div style="color:var(--text-muted); font-size:11px;">回撤: -${(item.drawdown_pct||0).toFixed(2)}% | 持仓: ${item.holding_count||0}只</div>
+        `;
+
+        tooltip.style.display = 'block';
+        let tipX = mouseX + 15;
+        if (tipX + 220 > w) tipX = mouseX - 230;
+        let tipY = e.clientY - rect.top - 10;
+        if (tipY < 10) tipY = 10;
+        tooltip.style.left = `${tipX}px`;
+        tooltip.style.top = `${tipY}px`;
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
+      });
+
+      window.addEventListener('resize', () => {
+        if (currentBtCurve && currentBtCurve.length > 1) {
+          renderBacktestChart(currentBtCurve, currentBtInitialCash);
+        }
+      });
+    }
+
     // 初始化走势图与数据轮询
     initChartInteractions();
+    initBacktestChartInteractions();
     fetchData();
     timerId = setInterval(fetchData, refreshInterval);
   </script>

@@ -133,6 +133,29 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("win_rate", s)
         self.assertIn("profit_loss_ratio", s)
 
+    def test_backtest_endpoints(self):
+        """测试历史回测配置与执行接口"""
+        cfg_res = self.client.get("/api/backtest/config")
+        self.assertEqual(cfg_res.status_code, 200)
+        cfg_data = cfg_res.json()
+        self.assertIn("strategies", cfg_data)
+        self.assertIn("pools", cfg_data)
+
+        # 测试简易回测运行
+        run_res = self.client.post("/api/backtest/run", json={
+            "start_date": "2026-08-01",
+            "end_date": "2026-09-15",
+            "initial_cash": 100000.0,
+            "strategy_name": "ShortTermResonance",
+            "symbols": ["sz300319", "sh600237"]
+        })
+        self.assertEqual(run_res.status_code, 200)
+        run_data = run_res.json()
+        self.assertTrue(run_data.get("success"))
+        self.assertIn("data", run_data)
+        self.assertIn("summary", run_data["data"])
+        self.assertIn("equity_curve", run_data["data"])
+
 
 if __name__ == "__main__":
     unittest.main()
