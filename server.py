@@ -443,6 +443,8 @@ def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
     return {
         "strategies": [
+            {"id": "TurtleBreakout", "name": "经典海龟交易法则 / 唐奇安通道突破策略 (大牛股趋势跟踪)"},
+            {"id": "MATrendFollowing", "name": "双均线多头趋势跟踪策略 (MA20/MA60多头生命线)"},
             {"id": "ShortTermResonance", "name": "超短线量价共振起爆策略 (实时同款)"},
             {"id": "MomentumBreakout", "name": "20日高点放量突破策略 (动量突破)"}
         ],

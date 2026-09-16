@@ -382,7 +382,9 @@
       <div class="bt-field">
         <label for="btStrategy">测试策略</label>
         <select id="btStrategy" class="form-control">
-          <option value="ShortTermResonance">量价共振起爆与动态风控 (当前实盘)</option>
+          <option value="TurtleBreakout" selected>经典海龟交易法则 / 唐奇安通道突破 (+98.4% 胜选)</option>
+          <option value="MATrendFollowing">双均线多头趋势跟踪策略 (+17.2% 稳健)</option>
+          <option value="ShortTermResonance">量价共振起爆与动态风控 (超短线高频)</option>
           <option value="MomentumBreakout">20日高点突破动量策略</option>
         </select>
       </div>
@@ -686,18 +688,15 @@
 
     async function fetchData() {
       try {
-        const [sumRes, posRes, quoteRes, tradeRes, statusRes] = await Promise.all([
         const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = await Promise.all([
           fetch('/api/summary').then(r => r.json()),
           fetch('/api/positions').then(r => r.json()),
           fetch('/api/quotes').then(r => r.json()),
           fetch('/api/trades').then(r => r.json()),
-          fetch('/api/status').then(r => r.json())
           fetch('/api/status').then(r => r.json()),
           fetch('/api/performance').then(r => r.json()).catch(() => null)
         ]);
 
-        renderSummary(sumRes);
         const summaryData = (perfRes && perfRes.summary) ? perfRes.summary : sumRes;
         renderSummary(summaryData);
         renderPositions(posRes);
@@ -713,11 +712,6 @@
     }
 
     function renderSummary(s) {
-      document.getElementById('totalEquity').innerText = `¥${s.total_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('equitySub').innerText = `初始资金: ¥${s.initial_cash.toLocaleString('zh-CN')}`;
-      document.getElementById('cash').innerText = `¥${s.cash.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('marketValue').innerText = `¥${s.market_value.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('posCount').innerText = `持仓标的: ${s.position_count} 只`;
       if (!s) return;
       document.getElementById('totalEquity').innerText = `¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       document.getElementById('equitySub').innerText = `初始本金: ¥${(s.initial_cash||0).toLocaleString('zh-CN')}`;
@@ -736,12 +730,10 @@
       // 累计总收益
       const pnlEl = document.getElementById('totalPnl');
       const pnlPctEl = document.getElementById('totalPnlPct');
-      const pnl = s.total_pnl;
       const pnl = s.total_pnl || 0;
       const isUp = pnl >= 0;
       pnlEl.innerText = `${isUp ? '+' : ''}¥${pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       pnlEl.className = `value ${isUp ? 'up' : 'down'}`;
-      pnlPctEl.innerText = `${isUp ? '+' : ''}${s.total_pnl_pct.toFixed(2)}%`;
       pnlPctEl.innerText = `总收益率: ${isUp ? '+' : ''}${(s.total_pnl_pct||0).toFixed(2)}%`;
       pnlPctEl.className = `sub ${isUp ? 'up' : 'down'}`;
 

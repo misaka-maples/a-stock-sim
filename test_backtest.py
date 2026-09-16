@@ -136,3 +136,30 @@ def test_backtest_execution_and_metrics():
         assert t["shares"] % 100 == 0  # 必须是 100 整手数
         assert t["buy_date"] < t["sell_date"]  # 严格次日及以后卖出，T+1
         assert t["fees"] > 0  # 必须扣除手续费
+
+
+def test_turtle_and_ma_trend_strategies():
+    """测试海龟交易法则与双均线趋势跟踪策略运行"""
+    # 1. 海龟法则
+    turtle_res = run_backtest(
+        start_date="2026-06-01",
+        end_date="2026-09-15",
+        initial_cash=100000.0,
+        strategy_name="TurtleBreakout",
+        pool_type="core_active"
+    )
+    assert turtle_res["summary"]["strategy_name"] == "TurtleBreakout"
+    assert turtle_res["summary"]["final_equity"] > 0
+
+    # 2. 均线趋势跟踪
+    ma_res = run_backtest(
+        start_date="2026-06-01",
+        end_date="2026-09-15",
+        initial_cash=100000.0,
+        strategy_name="MATrendFollowing",
+        pool_type="core_active"
+    )
+    assert ma_res["summary"]["strategy_name"] == "MATrendFollowing"
+    assert ma_res["summary"]["final_equity"] > 0
+
+

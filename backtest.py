@@ -192,39 +192,75 @@ class BacktestEngine:
                 sell_price = cl
                 sell_reason = ""
 
-                # 1. 硬止损检查 (以当日最低价判定是否击穿止损线)
-                loss_trigger_price = cost_price * (1 + self.stop_loss_pct / 100.0)
-                if lo <= loss_trigger_price:
-                    should_sell = True
-                    # 撮合价：若低开则按开盘价止损，否则按止损价扣滑点
-                    exec_p = min(op, loss_trigger_price) * (1 - self.slippage_rate)
-                    sell_price = round(max(0.01, exec_p), 3)
-                    sell_reason = f"硬止损触发 (触及 {self.stop_loss_pct:.1f}% 止损线)"
+                bars_list = stock_info["bars"]
+                try:
+                    cur_idx = next(i for i, b in enumerate(bars_list) if b["date"] == current_date)
+                except StopIteration:
+                    cur_idx = -1
 
-                # 2. 绝对大涨止盈检查 (以当日最高价判定是否达到暴涨线)
-                elif hi >= cost_price * (1 + self.max_take_profit_pct / 100.0):
-                    should_sell = True
-                    take_price = cost_price * (1 + self.max_take_profit_pct / 100.0)
-                    exec_p = max(op, take_price) * (1 - self.slippage_rate)
-                    sell_price = round(exec_p, 3)
-                    sell_reason = f"大涨止盈 (触及 +{self.max_take_profit_pct:.1f}% 暴涨止盈线)"
+                if self.strategy_name == "TurtleBreakout" and cur_idx >= 10:
+                    # 经典海龟法则出场：跌破10日低点退出，或触发大波段硬止损 (-6%)
+                    min_low_10 = min(b["low"] for b in bars_list[cur_idx-10:cur_idx])
+                    gain_pct = ((cl / cost_price) - 1.0) * 100.0
+                    if lo < min_low_10:
+                        should_sell = True
+                        sell_price = round(min(op, min_low_10) * (1 - self.slippage_rate), 3)
+                        sell_reason = "海龟法则: 跌破10日唐奇安通道低点平仓"
+                    elif gain_pct <= -6.0:
+                        should_sell = True
+                        sell_price = round(min(op, cost_price * 0.94) * (1 - self.slippage_rate), 3)
+                        sell_reason = "海龟法则: 触发防守硬止损 (-6.0%)"
 
-                # 3. 动态追踪止盈检查 (若最高涨幅曾突破门槛，回撤超过指定幅度则锁定利润)
-                elif not should_sell:
-                    peak_gain_pct = ((pos["peak_price"] / cost_price) - 1) * 100.0
-                    if peak_gain_pct >= self.take_profit_trigger_pct:
-                        trail_stop_price = pos["peak_price"] * (1 - self.trailing_callback_pct / 100.0)
-                        if lo <= trail_stop_price:
-                            should_sell = True
-                            exec_p = min(op, trail_stop_price) * (1 - self.slippage_rate)
-                            sell_price = round(max(0.01, exec_p), 3)
-                            sell_reason = f"动态追踪止盈 (最高冲至 +{peak_gain_pct:.1f}%, 从高点回撤 {self.trailing_callback_pct:.1f}%)"
+                elif self.strategy_name == "MATrendFollowing" and cur_idx >= 20:
+                    # 双均线趋势跟踪出场：跌破MA20趋势线，或硬止损 (-5%)，或大波段止盈 (+35%)
+                    ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                    gain_pct = ((cl / cost_price) - 1.0) * 100.0
+                    if cl < ma20:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "均线跟踪: 跌破MA20生命线平仓"
+                    elif gain_pct <= -5.0:
+                        should_sell = True
+                        sell_price = round(min(op, cost_price * 0.95) * (1 - self.slippage_rate), 3)
+                        sell_reason = "均线跟踪: 触发硬止损 (-5.0%)"
+                    elif gain_pct >= 35.0:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "均线跟踪: 大波段利润兑现 (+35.0%)"
 
-                # 4. 时间周期轮动 (超期未达到止盈止损则调仓)
-                if not should_sell and pos["holding_days"] >= self.max_holding_days:
-                    should_sell = True
-                    sell_price = round(cl * (1 - self.slippage_rate), 3)
-                    sell_reason = f"持仓满 {self.max_holding_days} 天轮动调仓"
+                else:
+                    # 1. 硬止损检查 (以当日最低价判定是否击穿止损线)
+                    loss_trigger_price = cost_price * (1 + self.stop_loss_pct / 100.0)
+                    if lo <= loss_trigger_price:
+                        should_sell = True
+                        exec_p = min(op, loss_trigger_price) * (1 - self.slippage_rate)
+                        sell_price = round(max(0.01, exec_p), 3)
+                        sell_reason = f"硬止损触发 (触及 {self.stop_loss_pct:.1f}% 止损线)"
+
+                    # 2. 绝对大涨止盈检查 (以当日最高价判定是否达到暴涨线)
+                    elif hi >= cost_price * (1 + self.max_take_profit_pct / 100.0):
+                        should_sell = True
+                        take_price = cost_price * (1 + self.max_take_profit_pct / 100.0)
+                        exec_p = max(op, take_price) * (1 - self.slippage_rate)
+                        sell_price = round(exec_p, 3)
+                        sell_reason = f"大涨止盈 (触及 +{self.max_take_profit_pct:.1f}% 暴涨止盈线)"
+
+                    # 3. 动态追踪止盈检查 (若最高涨幅曾突破门槛，回撤超过指定幅度则锁定利润)
+                    elif not should_sell:
+                        peak_gain_pct = ((pos["peak_price"] / cost_price) - 1) * 100.0
+                        if peak_gain_pct >= self.take_profit_trigger_pct:
+                            trail_stop_price = pos["peak_price"] * (1 - self.trailing_callback_pct / 100.0)
+                            if lo <= trail_stop_price:
+                                should_sell = True
+                                exec_p = min(op, trail_stop_price) * (1 - self.slippage_rate)
+                                sell_price = round(max(0.01, exec_p), 3)
+                                sell_reason = f"动态追踪止盈 (最高冲至 +{peak_gain_pct:.1f}%, 从高点回撤 {self.trailing_callback_pct:.1f}%)"
+
+                    # 4. 时间周期轮动 (超期未达到止盈止损则调仓)
+                    if not should_sell and pos["holding_days"] >= self.max_holding_days:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = f"持仓满 {self.max_holding_days} 天轮动调仓"
 
                 # 执行卖出结算
                 if should_sell:
@@ -303,6 +339,8 @@ class BacktestEngine:
                     chg = bar["change_pct"]
                     op = bar["open"]
                     cl = bar["close"]
+                    hi = bar["high"]
+                    lo = bar["low"]
                     turnover = bar.get("turnover_rate", 0.0)
 
                     # 策略买入条件判断
@@ -344,6 +382,43 @@ class BacktestEngine:
                                 "score": score,
                                 "vol_ratio": vol_ratio
                             })
+
+                    elif self.strategy_name == "TurtleBreakout":
+                        # 经典海龟交易法则 (20日高点唐奇安通道突破 + MA60中长期趋势过滤)
+                        if cur_idx >= 60:
+                            ma60 = sum(b["close"] for b in bars_list[cur_idx-59:cur_idx+1]) / 60.0
+                            high_20 = max(b["high"] for b in bars_list[cur_idx-20:cur_idx])
+                            # 突破20日新高 + 价格在MA60多头均线之上 + 阳线
+                            if cl > high_20 and cl > ma60 and cl > op:
+                                trend_strength = (cl / ma60 - 1.0) * 100.0
+                                vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+                                score = round(trend_strength * 1.5 + vol_ratio * 2.0, 2)
+                                candidates.append({
+                                    "symbol": sym,
+                                    "name": stock_info["name"],
+                                    "bar": bar,
+                                    "score": score,
+                                    "vol_ratio": vol_ratio
+                                })
+
+                    elif self.strategy_name == "MATrendFollowing":
+                        # 双均线多头趋势跟踪 (MA20 > MA60 中长均线多头，回踩或突破 MA20 介入)
+                        if cur_idx >= 60:
+                            ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                            ma60 = sum(b["close"] for b in bars_list[cur_idx-59:cur_idx+1]) / 60.0
+                            prev_cl = bars_list[cur_idx-1]["close"]
+                            prev_ma20 = sum(b["close"] for b in bars_list[cur_idx-20:cur_idx]) / 20.0
+                            if ma20 > ma60 and cl > ma20 and cl > op and (prev_cl <= prev_ma20 or lo <= ma20 * 1.01):
+                                trend_strength = (ma20 / ma60 - 1.0) * 100.0
+                                vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+                                score = round(trend_strength * 2.0 + vol_ratio * 1.5, 2)
+                                candidates.append({
+                                    "symbol": sym,
+                                    "name": stock_info["name"],
+                                    "bar": bar,
+                                    "score": score,
+                                    "vol_ratio": vol_ratio
+                                })
 
                 # 按得分从高到低排序择优买入
                 candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -623,7 +698,7 @@ def main():
     parser.add_argument("--start", default="2024-01-01", help="回测起始日期 (YYYY-MM-DD)")
     parser.add_argument("--end", default="2026-09-15", help="回测截止日期 (YYYY-MM-DD)")
     parser.add_argument("--cash", type=float, default=100000.0, help="初始资金 (默认 100000)")
-    parser.add_argument("--strategy", default="ShortTermResonance", choices=["ShortTermResonance", "MomentumBreakout"], help="回测策略名称")
+    parser.add_argument("--strategy", default="TurtleBreakout", choices=["TurtleBreakout", "MATrendFollowing", "ShortTermResonance", "MomentumBreakout"], help="回测策略名称")
     parser.add_argument("--pool", default="core_active", choices=["core_active", "csi300_sample"], help="回测标的池")
     parser.add_argument("--take-profit", type=float, default=3.5, help="动态追踪止盈触发点 (%)")
     parser.add_argument("--stop-loss", type=float, default=-2.5, help="硬止损线 (%)")
@@ -649,3 +724,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
