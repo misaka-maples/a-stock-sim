@@ -251,6 +251,21 @@ class BacktestEngine:
                         sell_price = round(cl * (1 - self.slippage_rate), 3)
                         sell_reason = "欧奈尔CAN SLIM: 领头羊主升浪止盈 (+25.0%)"
 
+                elif self.strategy_name == "Momentum_Rotation" and cur_idx >= 20:
+                    # 吉姆·西蒙斯 / AQR 截面领头羊动量轮动策略出场法则：
+                    # 1. 严格防守硬止损 (-6%)
+                    # 2. 均线生命线追踪：持仓满 3 天后跌破 MA20 趋势破位离场（不设固定上限，吃满大牛股主升浪）
+                    ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                    gain_pct = ((cl / cost_price) - 1.0) * 100.0
+                    if lo <= cost_price * 0.94:
+                        should_sell = True
+                        sell_price = round(min(op, cost_price * 0.94) * (1 - self.slippage_rate), 3)
+                        sell_reason = "截面动量轮动: 触发防守硬止损 (-6.0%)"
+                    elif pos["holding_days"] >= 3 and cl < ma20:
+                        should_sell = True
+                        sell_price = round(cl * (1 - self.slippage_rate), 3)
+                        sell_reason = "截面动量轮动: 跌破MA20均线生命线离场"
+
                 elif self.strategy_name == "MATrendFollowing" and cur_idx >= 20:
                     # 双均线趋势跟踪出场：跌破MA20趋势线，或硬止损 (-5%)，或大波段止盈 (+35%)
                     ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
@@ -513,6 +528,27 @@ class BacktestEngine:
                                             "score": score,
                                             "vol_ratio": vol_ratio
                                         })
+
+                    elif self.strategy_name == "Momentum_Rotation":
+                        # 吉姆·西蒙斯 / AQR 截面领头羊动量轮动策略：
+                        # 1. 均线多头攻击形态：Close > MA20 > MA60, 且阳线收盘
+                        # 2. 截面动量因子：综合过去 20 日与 60 日动量，优先重仓动量最强的领头羊
+                        if cur_idx >= 60:
+                            ma20 = sum(b["close"] for b in bars_list[cur_idx-19:cur_idx+1]) / 20.0
+                            ma60 = sum(b["close"] for b in bars_list[cur_idx-59:cur_idx+1]) / 60.0
+                            if cl > ma20 and cl > ma60 and cl > op:
+                                ret_20 = (cl / bars_list[cur_idx-20]["close"] - 1.0) * 100.0
+                                ret_60 = (cl / bars_list[cur_idx-60]["close"] - 1.0) * 100.0
+                                if ret_20 > 0 and ret_60 > 0:
+                                    score = round(ret_20 * 1.5 + ret_60 * 1.0, 2)
+                                    vol_ratio = vol / avg_vol_5 if avg_vol_5 > 0 else 1.0
+                                    candidates.append({
+                                        "symbol": sym,
+                                        "name": stock_info["name"],
+                                        "bar": bar,
+                                        "score": score,
+                                        "vol_ratio": vol_ratio
+                                    })
 
                 # 按得分从高到低排序择优买入
                 candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -794,8 +830,8 @@ def main():
     parser.add_argument("--cash", type=float, default=100000.0, help="初始资金 (默认 100000)")
     parser.add_argument(
         "--strategy",
-        default="Minervini_SEPA",
-        choices=["Minervini_SEPA", "ONeil_CANSLIM", "TurtleBreakout", "MATrendFollowing", "ShortTermResonance", "MomentumBreakout"],
+        default="Momentum_Rotation",
+        choices=["Momentum_Rotation", "Minervini_SEPA", "ONeil_CANSLIM", "TurtleBreakout", "MATrendFollowing", "ShortTermResonance", "MomentumBreakout"],
         help="回测策略名称"
     )
     parser.add_argument("--pool", default="core_active", choices=["core_active", "csi300_sample"], help="回测标的池")

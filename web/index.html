@@ -206,6 +206,48 @@
     .bt-metric-card .bt-title { font-size: 11px; color: var(--text-muted); }
     .bt-metric-card .bt-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
     .bt-metric-card .bt-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* 策略动态切换弹窗样式 */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 720px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+    }
+    .strategy-option-item {
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .strategy-option-item:hover {
+      border-color: #6366f1;
+      background: rgba(99, 102, 241, 0.08);
+    }
+    .strategy-option-item.selected {
+      border-color: #6366f1;
+      background: rgba(99, 102, 241, 0.16);
+      box-shadow: 0 0 0 1px #6366f1;
+    }
   </style>
 </head>
 <body>
@@ -216,10 +258,12 @@
       <h1>📈 A股量化模拟交易控制台</h1>
       <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
       <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
+      <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
       <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 5,260只 (排除科创板)</span>
       <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
     </div>
     <div class="header-right">
+      <button class="btn" style="background: #4f46e5; color:#fff; font-weight: 600;" onclick="openStrategyModal()">⚙️ 更改自动策略</button>
       <button id="toggleStrategyBtn" class="btn btn-primary" onclick="toggleStrategy()">暂停自动策略</button>
       <button class="btn" onclick="fetchData()">立即刷新</button>
       <button class="btn btn-danger" onclick="resetAccount()">重置账户</button>
@@ -382,7 +426,8 @@
       <div class="bt-field">
         <label for="btStrategy">测试策略</label>
         <select id="btStrategy" class="form-control">
-          <option value="Minervini_SEPA" selected>🏆 米奈尔维尼 SEPA/VCP 波动率收缩起爆 (+83.6% 全美冠军)</option>
+          <option value="Momentum_Rotation" selected>👑 截面动量轮动策略 (+77.5% 近一年最高 / 西蒙斯)</option>
+          <option value="Minervini_SEPA">🏆 米奈尔维尼 SEPA/VCP 波动率收缩起爆 (+83.6% 全美冠军)</option>
           <option value="ONeil_CANSLIM">🦅 欧奈尔 CAN SLIM 相对强度领头羊突破 (+62.5% 趋势宗师)</option>
           <option value="TurtleBreakout">🐢 经典海龟法则 / 20日通道突破 (+98.4% 趋势突破)</option>
           <option value="MATrendFollowing">📈 双均线多头趋势跟踪策略 (+17.2% 稳健防守)</option>
@@ -1164,6 +1209,10 @@
         toggleBtn.innerText = '启动自动策略';
         toggleBtn.className = 'btn btn-primary';
       }
+      const stratTag = document.getElementById('currentStrategyTag');
+      if (stratTag && (st.strategy_display_name || st.strategy_name)) {
+        stratTag.innerText = `🤖 自动策略: ${st.strategy_display_name || st.strategy_name} ⚙️`;
+      }
       if (st.universe_count) {
         document.getElementById('universeBadge').innerText = `全A股监控: ${st.universe_count.toLocaleString()}只 (排除科创板)`;
       }
@@ -1560,12 +1609,175 @@
       });
     }
 
+    // ==============================================================================
+    // 自动交易策略管理与动态切换逻辑 (Strategy Switcher)
+    // ==============================================================================
+    let availableStrategies = [];
+    let selectedStrategyId = 'Momentum_Rotation';
+
+    function handleModalOverlayClick(e) {
+      if (e.target.id === 'strategyModal') {
+        closeStrategyModal();
+      }
+    }
+
+    async function openStrategyModal() {
+      const modal = document.getElementById('strategyModal');
+      modal.style.display = 'flex';
+      const container = document.getElementById('strategyOptionsContainer');
+      container.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-muted);">正在拉取最新量化策略列表...</div>';
+
+      try {
+        const res = await fetch('/api/strategy/list');
+        const data = await res.json();
+        availableStrategies = data.strategies || [];
+        selectedStrategyId = data.current_strategy || 'Momentum_Rotation';
+        renderStrategyOptions(availableStrategies, data.current_strategy);
+      } catch (e) {
+        container.innerHTML = `<div style="color:var(--red-up); padding:20px; text-align:center;">加载失败: ${e.message}</div>`;
+      }
+    }
+
+    function closeStrategyModal() {
+      document.getElementById('strategyModal').style.display = 'none';
+    }
+
+    function selectStrategyItem(id) {
+      selectedStrategyId = id;
+      const currentId = (availableStrategies.find(s => s.id === selectedStrategyId) || {}).id;
+      renderStrategyOptions(availableStrategies, currentId);
+    }
+
+    function renderStrategyOptions(list, currentId) {
+      const container = document.getElementById('strategyOptionsContainer');
+      if (!list || list.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:20px;">暂无可用的自动策略</div>';
+        return;
+      }
+      container.innerHTML = list.map(item => {
+        const isSel = item.id === selectedStrategyId;
+        const isCurrent = item.id === currentId;
+        return `
+          <div class="strategy-option-item ${isSel ? 'selected' : ''}" onclick="selectStrategyItem('${item.id}')">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <input type="radio" name="stratRadio" value="${item.id}" ${isSel ? 'checked' : ''} style="cursor:pointer; accent-color:#6366f1;">
+                <strong style="font-size:14px; color:${isSel ? '#818cf8' : '#f8fafc'}">${item.name}</strong>
+                ${item.recommended ? '<span class="badge" style="background:rgba(239,68,68,0.25); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-size:10px;">★ 近一年冠军首选</span>' : ''}
+                ${isCurrent ? '<span class="badge" style="background:rgba(16,185,129,0.25); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-size:10px;">● 当前运行中</span>' : ''}
+              </div>
+              <div style="font-size:11px; color:#94a3b8; display:flex; gap:12px;">
+                <span>近1年收益: <strong class="up" style="font-size:13px;">${item.one_year_return}</strong></span>
+                <span>盈亏比: <strong>${item.win_loss_ratio}</strong></span>
+                <span>回撤: <strong class="down">${item.max_drawdown}</strong></span>
+              </div>
+            </div>
+            <div style="font-size:12px; color:var(--text-muted); line-height:1.5; padding-left:22px;">
+              ${item.description}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function submitStrategySwitch() {
+      const btn = document.getElementById('modalSwitchBtn');
+      btn.disabled = true;
+      btn.innerText = '正在热切换中...';
+
+      const weight = parseFloat(document.getElementById('modalMaxWeight').value) || 0.33;
+      const positions = parseInt(document.getElementById('modalMaxPositions').value) || 3;
+      const stopLoss = parseFloat(document.getElementById('modalStopLoss').value) || -6.0;
+
+      try {
+        const res = await fetch('/api/strategy/switch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            strategy_id: selectedStrategyId,
+            max_stock_weight: weight,
+            max_positions: positions,
+            stop_loss: stopLoss
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert(`✅ 策略切换成功！\n\n系统当前自动模拟交易策略已立即更换为：\n${data.strategy_name}\n\n现有账户资产与持仓已得到安全保护。`);
+          closeStrategyModal();
+          fetchData();
+        } else {
+          alert('❌ 切换失败: ' + (data.detail || data.message || '未知错误'));
+        }
+      } catch (e) {
+        alert('❌ 网络或服务异常: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '🚀 确认更换为此策略';
+      }
+    }
+
     // 初始化走势图与数据轮询
     initChartInteractions();
     initBacktestChartInteractions();
     fetchData();
     timerId = setInterval(fetchData, refreshInterval);
   </script>
+
+  <!-- 自动交易策略管理与切换弹窗 -->
+  <div id="strategyModal" class="modal-overlay" onclick="handleModalOverlayClick(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
+        <h2 style="font-size:18px; margin:0; display:flex; align-items:center; gap:8px;">
+          <span>⚙️ 自动模拟交易策略设置与在线更换</span>
+        </h2>
+        <button class="btn" onclick="closeStrategyModal()" style="padding:4px 10px; font-size:16px; line-height:1;">✕</button>
+      </div>
+
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:16px; line-height:1.5;">
+        切换策略后系统将立即按新逻辑执行全市场选股扫描与持仓生命线风控。现有持仓与账户本金将受到无损保护，无需重启服务器。
+      </p>
+
+      <!-- 策略列表选项容器 -->
+      <div id="strategyOptionsContainer">
+        <div style="text-align:center; padding:20px; color:var(--text-muted);">正在加载策略列表...</div>
+      </div>
+
+      <!-- 参数微调 -->
+      <div style="margin-top:16px; padding:14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px;">
+        <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">策略执行参数微调</div>
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+          <div>
+            <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">单票仓位上限</label>
+            <select id="modalMaxWeight" class="form-control" style="width:100%; padding:6px 10px; font-size:12px;">
+              <option value="0.25">25% (分散配置 4 只)</option>
+              <option value="0.33" selected>33% (标准均衡 3 只)</option>
+              <option value="0.50">50% (集中进取 2 只)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">最大持仓只数</label>
+            <input type="number" id="modalMaxPositions" class="form-control" value="3" min="1" max="5" style="width:100%; padding:6px 10px; font-size:12px;">
+          </div>
+          <div>
+            <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">防守硬止损线</label>
+            <select id="modalStopLoss" class="form-control" style="width:100%; padding:6px 10px; font-size:12px;">
+              <option value="-5.0">-5.0%</option>
+              <option value="-6.0" selected>-6.0% (推荐防洗盘)</option>
+              <option value="-8.0">-8.0% (宽幅防守)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+        <button class="btn" onclick="closeStrategyModal()">取消</button>
+        <button id="modalSwitchBtn" class="btn btn-primary" onclick="submitStrategySwitch()" style="padding:8px 22px; font-weight:600;">
+          🚀 确认更换为此策略
+        </button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
 

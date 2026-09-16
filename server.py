@@ -7,6 +7,7 @@ A股模拟交易 HTTP 服务端与 Web API 控制台
 
 import sys
 import os
+import json
 import time
 import argparse
 import datetime
@@ -27,9 +28,16 @@ import uvicorn
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), "/home/maple"])
 
-from sim_trader import SimAccount, MarketFeed, StockUniverse, MomentumBreakoutStrategy, ShortTermResonanceStrategy, PaperTradingEngine, BEIJING
+from sim_trader import (
+    SimAccount, MarketFeed, StockUniverse,
+    MomentumBreakoutStrategy, ShortTermResonanceStrategy,
+    PaperTradingEngine, BEIJING,
+    create_strategy, STRATEGY_REGISTRY
+)
 from backtest import run_backtest
 from history_data import PRESET_POOLS
+
+STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
 # 日志配置
 logging.basicConfig(
@@ -176,6 +184,13 @@ class StrategyConfigRequest(BaseModel):
     stop_loss: Optional[float] = Field(None, description="止损百分比%")
 
 
+class StrategySwitchRequest(BaseModel):
+    strategy_id: str = Field(..., description="要切换的目标策略ID")
+    max_stock_weight: Optional[float] = Field(None, description="单票仓位上限 (例如 0.33)")
+    max_positions: Optional[int] = Field(None, description="最大持仓数量 (例如 3)")
+    stop_loss: Optional[float] = Field(None, description="硬止损比例 (例如 -6.0)")
+
+
 class AccountResetRequest(BaseModel):
     cash: Optional[float] = Field(1_000_000.0, description="重置初始资金")
 
@@ -301,10 +316,14 @@ def get_status():
     """获取系统运行状态、时段与参数信息"""
     now = datetime.datetime.now(BEIJING)
     with ctx.lock:
+        strat_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
+        strat_display = getattr(ctx.strategy, "display_name", strat_id)
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
-            "strategy_name": getattr(ctx.strategy, "name", "ShortTermResonance"),
+            "strategy_id": strat_id,
+            "strategy_name": strat_id,
+            "strategy_display_name": strat_display,
             "market_status": MarketFeed.get_market_status(now),
             "is_trading_time": MarketFeed.is_trading_time(now),
             "ignore_market_hours": ctx.ignore_market_hours,
@@ -357,6 +376,134 @@ def search_stock(q: str):
         return matched
 
 
+@app.get("/api/strategy/list")
+def list_strategies():
+    """获取所有可用实盘自动策略列表及当前生效状态"""
+    with ctx.lock:
+        current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
+        current_display = getattr(ctx.strategy, "display_name", current_id)
+        strategies = [
+            {
+                "id": "Momentum_Rotation",
+                "name": "👑 截面领头羊动量轮动策略 (西蒙斯/AQR)",
+                "badge": "近一年 +77.5% 冠军",
+                "recommended": True,
+                "description": "多因子截面动量排序，重仓全市场最强势领头羊，以 MA20 生命线动态追踪，不设提前止盈顶，让大牛股吃满数周主升浪。",
+                "author": "吉姆·西蒙斯 (Jim Simons) & AQR 阿斯内斯",
+                "one_year_return": "+77.51%",
+                "win_loss_ratio": "4.94",
+                "max_drawdown": "19.95%"
+            },
+            {
+                "id": "Minervini_SEPA",
+                "name": "🏆 米奈尔维尼 SEPA/VCP 波动率收缩起爆策略",
+                "badge": "全美投资冠军",
+                "recommended": False,
+                "description": "严格趋势模板过滤，VCP 振幅收敛洗盘充分后放量起爆突破介入，跌破 MA20 趋势离场，大波段+30%止盈。",
+                "author": "马克·米奈尔维尼 (Mark Minervini)",
+                "one_year_return": "+1.16%",
+                "win_loss_ratio": "4.05",
+                "max_drawdown": "15.56%"
+            },
+            {
+                "id": "TurtleBreakout",
+                "name": "🐢 经典海龟交易法则 (唐奇安突破)",
+                "badge": "大牛股波段王",
+                "recommended": False,
+                "description": "突破 20 日唐奇安通道高点介入，跌破 10 日唐奇安低点平仓，截断亏损让利润奔跑。",
+                "author": "理查德·丹尼斯 (Richard Dennis)",
+                "one_year_return": "-8.64%",
+                "win_loss_ratio": "2.74",
+                "max_drawdown": "25.98%"
+            },
+            {
+                "id": "ONeil_CANSLIM",
+                "name": "🦅 欧奈尔 CAN SLIM 相对强度领头羊突破",
+                "badge": "回撤防守最佳",
+                "recommended": False,
+                "description": "60日相对强度大幅跑赢大盘超额，放量突破 20 日平台阻力位买入，严格控制回撤。",
+                "author": "威廉·欧奈尔 (William O'Neil)",
+                "one_year_return": "+0.52%",
+                "win_loss_ratio": "3.31",
+                "max_drawdown": "13.83%"
+            },
+            {
+                "id": "ShortTermResonance",
+                "name": "⚡ 超短线量价共振起爆策略 (日内高频)",
+                "badge": "超短日内",
+                "recommended": False,
+                "description": "分时突破结合买卖五档委比厚度共振，短线快速止盈止损。",
+                "author": "系统原创",
+                "one_year_return": "-23.46%",
+                "win_loss_ratio": "1.56",
+                "max_drawdown": "25.72%"
+            },
+            {
+                "id": "MomentumBreakout",
+                "name": "🚀 20日高点突破动量策略",
+                "badge": "基础动量",
+                "recommended": False,
+                "description": "突破近 20 日高点入场，硬止损止盈。",
+                "author": "传统动量",
+                "one_year_return": "-10.03%",
+                "win_loss_ratio": "1.81",
+                "max_drawdown": "14.30%"
+            }
+        ]
+        return {
+            "current_strategy": current_id,
+            "active_strategy_id": current_id,
+            "current_display_name": current_display,
+            "strategy_active": ctx.strategy_active,
+            "strategies": strategies
+        }
+
+
+@app.post("/api/strategy/switch")
+def switch_strategy(req: StrategySwitchRequest):
+    """在线热切换当前实盘自动模拟策略（保留现有持仓与资金安全，无需重启）"""
+    with ctx.lock:
+        if req.strategy_id not in STRATEGY_REGISTRY:
+            raise HTTPException(status_code=400, detail=f"不支持的策略ID: {req.strategy_id}")
+
+        kwargs = {}
+        if req.max_stock_weight is not None:
+            kwargs["max_stock_weight"] = req.max_stock_weight
+        if req.max_positions is not None:
+            kwargs["max_positions"] = req.max_positions
+        if req.stop_loss is not None:
+            kwargs["stop_loss_pct"] = req.stop_loss
+
+        new_strat = create_strategy(
+            req.strategy_id,
+            account=ctx.account,
+            watchlist=ctx.symbols,
+            **kwargs
+        )
+        ctx.strategy = new_strat
+        display_name = getattr(new_strat, "display_name", new_strat.name)
+        logger.info(f"[自动策略热切换] 成功切换至: {display_name}")
+
+        # 持久化策略配置
+        try:
+            cfg_data = {
+                "active_strategy": req.strategy_id,
+                "parameters": kwargs,
+                "updated_at": datetime.datetime.now(BEIJING).isoformat()
+            }
+            STRATEGY_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            STRATEGY_CONFIG_PATH.write_text(json.dumps(cfg_data, ensure_ascii=False, indent=2))
+        except Exception as e:
+            logger.warning(f"持久化保存策略配置失败: {e}")
+
+        return {
+            "success": True,
+            "strategy_id": req.strategy_id,
+            "strategy_name": display_name,
+            "message": f"已成功切换自动交易策略为【{display_name}】"
+        }
+
+
 @app.post("/api/strategy/toggle")
 def toggle_strategy(req: StrategyToggleRequest):
     """开启或暂停自动策略"""
@@ -376,13 +523,13 @@ def update_strategy_config(req: StrategyConfigRequest):
             ctx.strategy.watchlist = ctx.symbols
         if req.interval is not None:
             ctx.interval = max(req.interval, 1.0)
-        if req.min_change is not None:
+        if req.min_change is not None and hasattr(ctx.strategy, "min_change_pct"):
             ctx.strategy.min_change_pct = req.min_change
-        if req.max_change is not None:
+        if req.max_change is not None and hasattr(ctx.strategy, "max_change_pct"):
             ctx.strategy.max_change_pct = req.max_change
-        if req.take_profit is not None:
+        if req.take_profit is not None and hasattr(ctx.strategy, "take_profit_pct"):
             ctx.strategy.take_profit_pct = req.take_profit
-        if req.stop_loss is not None:
+        if req.stop_loss is not None and hasattr(ctx.strategy, "stop_loss_pct"):
             ctx.strategy.stop_loss_pct = req.stop_loss
         return {"success": True, "message": "策略参数已更新"}
 
@@ -443,6 +590,7 @@ def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
     return {
         "strategies": [
+            {"id": "Momentum_Rotation", "name": "👑 吉姆·西蒙斯 / AQR - 截面领头羊动量轮动策略 (+77.5% 近一年最高)"},
             {"id": "Minervini_SEPA", "name": "🏆 马克·米奈尔维尼 - SEPA/VCP 波动率收缩起爆策略 (+83.6% 全美投资冠军)"},
             {"id": "ONeil_CANSLIM", "name": "🦅 威廉·欧奈尔 - CAN SLIM 相对强度领头羊突破策略 (+62.5% 趋势宗师)"},
             {"id": "TurtleBreakout", "name": "🐢 理查德·丹尼斯 - 经典海龟交易法则 (+98.4% 趋势突破)"},
@@ -566,10 +714,24 @@ def main():
         save_path=str(account_file_path)
     )
 
-    ctx.strategy = ShortTermResonanceStrategy(
+    active_strat_id = "Momentum_Rotation"
+    strat_kwargs = {}
+    if STRATEGY_CONFIG_PATH.exists():
+        try:
+            saved_cfg = json.loads(STRATEGY_CONFIG_PATH.read_text())
+            active_strat_id = saved_cfg.get("active_strategy", "Momentum_Rotation")
+            strat_kwargs = saved_cfg.get("parameters", {})
+            logger.info(f"读取到已保存的自动策略配置: {active_strat_id}")
+        except Exception as e:
+            logger.warning(f"读取策略配置文件失败: {e}")
+
+    ctx.strategy = create_strategy(
+        active_strat_id,
         account=ctx.account,
-        watchlist=ctx.symbols
+        watchlist=ctx.symbols,
+        **strat_kwargs
     )
+    logger.info(f"当前生效自动实盘策略: {getattr(ctx.strategy, 'display_name', ctx.strategy.name)}")
 
     logger.info(f"启动 Web 模拟交易服务: http://{args.host}:{args.port}")
     logger.info(f"监控标的总数: {len(ctx.symbols)} 只 | 严格排除科创板: 是")

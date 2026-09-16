@@ -53,6 +53,8 @@ try:
 except ImportError:
     HAS_A_STOCK = False
 
+from history_data import HistoricalDataFeed
+
 # 终端富文本展示
 try:
     from rich.console import Console
@@ -1387,9 +1389,636 @@ class ShortTermResonanceStrategy(BaseStrategy):
                         current_holding_count += 1
 
 
+
+class MomentumRotationStrategy(BaseStrategy):
+    """
+    吉姆·西蒙斯 / AQR 截面领头羊动量轮动策略 (Cross-Sectional Momentum Rotation)
+    近一年实盘回测最高收益策略 (+77.51%)
+    """
+
+    def __init__(
+        self,
+        account: SimAccount,
+        watchlist: List[str],
+        max_stock_weight: float = 0.33,
+        max_positions: int = 3,
+        stop_loss_pct: float = -6.0,
+        **kwargs
+    ):
+        super().__init__(account, name="Momentum_Rotation")
+        self.display_name = "截面领头羊动量轮动策略 (西蒙斯/AQR 近一年+77.5%)"
+        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
+        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions
+        self.stop_loss_pct = stop_loss_pct
+        self.latest_candidates: List[Dict[str, Any]] = []
+        self.feed = HistoricalDataFeed()
+        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_history_update = 0.0
+
+    def _ensure_history_data(self):
+        """确保标的历史K线数据已加载（优先使用本地磁盘缓存）"""
+        now_ts = time.time()
+        if now_ts - self._last_history_update < 1800 and self.history_cache:
+            return
+
+        needed = list(self.watchlist[:100])
+        for sym in self.account.positions.keys():
+            if sym not in needed:
+                needed.append(sym)
+
+        try:
+            data = self.feed.fetch_universe_klines(needed, use_cache=True)
+            for sym, item in data.items():
+                if item and item.get("bars"):
+                    self.history_cache[sym] = item["bars"]
+            self._last_history_update = now_ts
+        except Exception as e:
+            print(f"[警告] 加载动量历史K线失败: {e}", file=sys.stderr)
+
+    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
+        self._ensure_history_data()
+        summary = self.account.get_summary()
+        total_equity = summary["total_equity"]
+        just_sold = set()
+
+        # 1. 检查现有持仓的出场与风控
+        for sym, pos in list(self.account.positions.items()):
+            q = quotes.get(sym)
+            if not q or q.get("current", 0) <= 0:
+                continue
+
+            current_price = q["current"]
+            cost_price = pos.get("cost_price", current_price)
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            if avail <= 0:
+                continue
+
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            bars = self.history_cache.get(sym, [])
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else cost_price
+
+            bids = q.get("bids", [])
+            exec_price = bids[0]["price"] if bids else current_price
+
+            # 规则 A: 严格防守硬止损 (-6.0%)
+            if pnl_pct <= self.stop_loss_pct:
+                reason = f"动量轮动硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            # 规则 B: 跌破 MA20 生命线离场
+            if current_price < ma20 and pnl_pct < -2.0:
+                reason = f"动量轮动破位止损 (现价 ¥{current_price:.2f} < MA20 ¥{ma20:.2f})"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+            elif current_price < ma20 and pnl_pct > 3.0:
+                reason = f"动量轮动均线止盈 (回落破位 MA20 ¥{ma20:.2f}，锁定浮盈 {pnl_pct:+.2f}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+        # 2. 扫描截面领头羊
+        candidates = []
+        for sym in self.watchlist:
+            if sym in self.account.positions or sym in just_sold:
+                continue
+            if StockUniverse.is_sci_tech_board(sym):
+                continue
+            q = quotes.get(sym)
+            if not q or not q.get("fresh", True):
+                continue
+
+            name = q.get("name", "")
+            if "ST" in name.upper() or "退" in name:
+                continue
+
+            current_price = q.get("current", 0.0)
+            open_p = q.get("open", 0.0)
+            change_pct = q.get("change_pct", 0.0)
+            if current_price <= 0 or (open_p > 0 and current_price < open_p):
+                continue
+
+            bars = self.history_cache.get(sym, [])
+            if len(bars) < 60:
+                continue
+
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0
+            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
+            if not (current_price > ma20 and ma20 > ma60):
+                continue
+
+            ret_20 = (current_price / bars[-20]["close"] - 1.0) * 100.0
+            ret_60 = (current_price / bars[-60]["close"] - 1.0) * 100.0
+            if ret_20 <= 0 or ret_60 <= 0:
+                continue
+
+            score = round(ret_20 * 1.5 + ret_60 * 1.0, 2)
+            asks = q.get("asks", [])
+            exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
+
+            candidates.append({
+                "symbol": sym,
+                "code": q.get("code", sym),
+                "name": name,
+                "current": current_price,
+                "change_pct": change_pct,
+                "open": open_p,
+                "score": score,
+                "ret_20": round(ret_20, 2),
+                "ret_60": round(ret_60, 2),
+                "exec_price": exec_p,
+                "fresh": True
+            })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        self.latest_candidates = candidates[:50]
+
+        # 择优买入动量最高的领头羊
+        current_holding_count = len(self.account.positions)
+        if current_holding_count < self.max_positions:
+            for cand in candidates:
+                if current_holding_count >= self.max_positions:
+                    break
+                sym = cand["symbol"]
+                exec_price = cand["exec_price"]
+                name = cand["name"]
+                target_amount = total_equity * self.max_stock_weight
+                max_shares = int(target_amount / (exec_price * 100)) * 100
+                if max_shares < 100:
+                    continue
+
+                cost_estimate = max_shares * exec_price * 1.001
+                if self.account.cash >= cost_estimate:
+                    reason = f"截面动量领头羊买入 (动量分 {cand['score']:.1f}, 20日 {cand['ret_20']:+.1f}%, 60日 {cand['ret_60']:+.1f}%)"
+                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
+                    if res.get("success"):
+                        current_holding_count += 1
+
+
+class MinerviniSEPAStrategy(BaseStrategy):
+    """
+    马克·米奈尔维尼 SEPA + VCP 波动率收缩起爆策略
+    """
+
+    def __init__(
+        self,
+        account: SimAccount,
+        watchlist: List[str],
+        max_stock_weight: float = 0.33,
+        max_positions: int = 3,
+        stop_loss_pct: float = -6.0,
+        **kwargs
+    ):
+        super().__init__(account, name="Minervini_SEPA")
+        self.display_name = "米奈尔维尼 SEPA/VCP 波动率收缩起爆策略 (全美冠军)"
+        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
+        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions
+        self.stop_loss_pct = stop_loss_pct
+        self.latest_candidates: List[Dict[str, Any]] = []
+        self.feed = HistoricalDataFeed()
+        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_history_update = 0.0
+
+    def _ensure_history_data(self):
+        now_ts = time.time()
+        if now_ts - self._last_history_update < 1800 and self.history_cache:
+            return
+        needed = list(self.watchlist[:100])
+        for sym in self.account.positions.keys():
+            if sym not in needed:
+                needed.append(sym)
+        try:
+            data = self.feed.fetch_universe_klines(needed, use_cache=True)
+            for sym, item in data.items():
+                if item and item.get("bars"):
+                    self.history_cache[sym] = item["bars"]
+            self._last_history_update = now_ts
+        except Exception as e:
+            print(f"[警告] 加载SEPA历史K线失败: {e}", file=sys.stderr)
+
+    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
+        self._ensure_history_data()
+        summary = self.account.get_summary()
+        total_equity = summary["total_equity"]
+        just_sold = set()
+
+        for sym, pos in list(self.account.positions.items()):
+            q = quotes.get(sym)
+            if not q or q.get("current", 0) <= 0:
+                continue
+            current_price = q["current"]
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            if avail <= 0:
+                continue
+
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            bars = self.history_cache.get(sym, [])
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else current_price
+
+            bids = q.get("bids", [])
+            exec_price = bids[0]["price"] if bids else current_price
+
+            if pnl_pct <= self.stop_loss_pct:
+                reason = f"米奈尔维尼硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            if current_price < ma20:
+                reason = f"米奈尔维尼均线离场 (破位 MA20 ¥{ma20:.2f})"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            if pnl_pct >= 30.0:
+                reason = f"米奈尔维尼波段止盈 (浮盈 {pnl_pct:+.2f}% >= +30.0%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+        candidates = []
+        for sym in self.watchlist:
+            if sym in self.account.positions or sym in just_sold:
+                continue
+            if StockUniverse.is_sci_tech_board(sym):
+                continue
+            q = quotes.get(sym)
+            if not q or not q.get("fresh", True):
+                continue
+            name = q.get("name", "")
+            if "ST" in name.upper() or "退" in name:
+                continue
+            current_price = q.get("current", 0.0)
+            open_p = q.get("open", 0.0)
+            change_pct = q.get("change_pct", 0.0)
+            if current_price <= 0 or (open_p > 0 and current_price < open_p):
+                continue
+
+            bars = self.history_cache.get(sym, [])
+            if len(bars) < 60:
+                continue
+
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0
+            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
+            if not (current_price > ma20 and ma20 > ma60):
+                continue
+
+            prev_10 = bars[-10:]
+            max_hi_10 = max(b["high"] for b in prev_10)
+            min_lo_10 = min(b["low"] for b in prev_10)
+            vcp_spread = (max_hi_10 - min_lo_10) / ma20
+
+            if current_price > max_hi_10 and vcp_spread <= 0.25:
+                trend_score = (current_price / ma60 - 1.0) * 2.0
+                vcp_score = (0.25 - vcp_spread) * 10.0
+                score = round(trend_score + vcp_score + (change_pct / 5.0) * 1.5, 2)
+                asks = q.get("asks", [])
+                exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
+                candidates.append({
+                    "symbol": sym, "code": q.get("code", sym), "name": name,
+                    "current": current_price, "change_pct": change_pct, "open": open_p,
+                    "score": score, "exec_price": exec_p, "fresh": True
+                })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        self.latest_candidates = candidates[:50]
+
+        current_holding_count = len(self.account.positions)
+        if current_holding_count < self.max_positions:
+            for cand in candidates:
+                if current_holding_count >= self.max_positions:
+                    break
+                sym = cand["symbol"]
+                exec_price = cand["exec_price"]
+                name = cand["name"]
+                target_amount = total_equity * self.max_stock_weight
+                max_shares = int(target_amount / (exec_price * 100)) * 100
+                if max_shares < 100:
+                    continue
+                cost_estimate = max_shares * exec_price * 1.001
+                if self.account.cash >= cost_estimate:
+                    reason = f"米奈尔维尼VCP起爆买入 (突破10日高点, 评分 {cand['score']:.1f})"
+                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
+                    if res.get("success"):
+                        current_holding_count += 1
+
+
+class TurtleBreakoutStrategy(BaseStrategy):
+    """
+    理查德·丹尼斯 经典海龟交易法则 (唐奇安通道突破策略)
+    """
+
+    def __init__(
+        self,
+        account: SimAccount,
+        watchlist: List[str],
+        max_stock_weight: float = 0.33,
+        max_positions: int = 3,
+        stop_loss_pct: float = -6.0,
+        **kwargs
+    ):
+        super().__init__(account, name="TurtleBreakout")
+        self.display_name = "经典海龟交易法则 (唐奇安突破/大牛股趋势波段王)"
+        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
+        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions
+        self.stop_loss_pct = stop_loss_pct
+        self.latest_candidates: List[Dict[str, Any]] = []
+        self.feed = HistoricalDataFeed()
+        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_history_update = 0.0
+
+    def _ensure_history_data(self):
+        now_ts = time.time()
+        if now_ts - self._last_history_update < 1800 and self.history_cache:
+            return
+        needed = list(self.watchlist[:100])
+        for sym in self.account.positions.keys():
+            if sym not in needed:
+                needed.append(sym)
+        try:
+            data = self.feed.fetch_universe_klines(needed, use_cache=True)
+            for sym, item in data.items():
+                if item and item.get("bars"):
+                    self.history_cache[sym] = item["bars"]
+            self._last_history_update = now_ts
+        except Exception as e:
+            print(f"[警告] 加载海龟历史K线失败: {e}", file=sys.stderr)
+
+    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
+        self._ensure_history_data()
+        summary = self.account.get_summary()
+        total_equity = summary["total_equity"]
+        just_sold = set()
+
+        for sym, pos in list(self.account.positions.items()):
+            q = quotes.get(sym)
+            if not q or q.get("current", 0) <= 0:
+                continue
+            current_price = q["current"]
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            if avail <= 0:
+                continue
+
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            bars = self.history_cache.get(sym, [])
+            min_low_10 = min(b["low"] for b in bars[-10:]) if len(bars) >= 10 else current_price * 0.94
+
+            bids = q.get("bids", [])
+            exec_price = bids[0]["price"] if bids else current_price
+
+            if pnl_pct <= self.stop_loss_pct:
+                reason = f"海龟硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            if current_price < min_low_10:
+                reason = f"海龟法则跌破10日低点平仓 (现价 ¥{current_price:.2f} < ¥{min_low_10:.2f})"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+        candidates = []
+        for sym in self.watchlist:
+            if sym in self.account.positions or sym in just_sold:
+                continue
+            if StockUniverse.is_sci_tech_board(sym):
+                continue
+            q = quotes.get(sym)
+            if not q or not q.get("fresh", True):
+                continue
+            name = q.get("name", "")
+            if "ST" in name.upper() or "退" in name:
+                continue
+            current_price = q.get("current", 0.0)
+            open_p = q.get("open", 0.0)
+            change_pct = q.get("change_pct", 0.0)
+            if current_price <= 0 or (open_p > 0 and current_price < open_p):
+                continue
+
+            bars = self.history_cache.get(sym, [])
+            if len(bars) < 60:
+                continue
+
+            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
+            high_20 = max(b["high"] for b in bars[-20:])
+
+            if current_price > high_20 and current_price > ma60:
+                trend_score = (current_price / ma60 - 1.0) * 2.0
+                score = round(trend_score + (change_pct / 5.0) * 1.5, 2)
+                asks = q.get("asks", [])
+                exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
+                candidates.append({
+                    "symbol": sym, "code": q.get("code", sym), "name": name,
+                    "current": current_price, "change_pct": change_pct, "open": open_p,
+                    "score": score, "exec_price": exec_p, "fresh": True
+                })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        self.latest_candidates = candidates[:50]
+
+        current_holding_count = len(self.account.positions)
+        if current_holding_count < self.max_positions:
+            for cand in candidates:
+                if current_holding_count >= self.max_positions:
+                    break
+                sym = cand["symbol"]
+                exec_price = cand["exec_price"]
+                name = cand["name"]
+                target_amount = total_equity * self.max_stock_weight
+                max_shares = int(target_amount / (exec_price * 100)) * 100
+                if max_shares < 100:
+                    continue
+                cost_estimate = max_shares * exec_price * 1.001
+                if self.account.cash >= cost_estimate:
+                    reason = f"海龟法则突破20日高点买入 (评分 {cand['score']:.1f})"
+                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
+                    if res.get("success"):
+                        current_holding_count += 1
+
+
+class ONeilCANSLIMStrategy(BaseStrategy):
+    """
+    威廉·欧奈尔 CAN SLIM 相对强度领头羊突破策略
+    """
+
+    def __init__(
+        self,
+        account: SimAccount,
+        watchlist: List[str],
+        max_stock_weight: float = 0.33,
+        max_positions: int = 3,
+        stop_loss_pct: float = -6.0,
+        **kwargs
+    ):
+        super().__init__(account, name="ONeil_CANSLIM")
+        self.display_name = "欧奈尔 CAN SLIM 相对强度领头羊突破策略"
+        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
+        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions
+        self.stop_loss_pct = stop_loss_pct
+        self.latest_candidates: List[Dict[str, Any]] = []
+        self.feed = HistoricalDataFeed()
+        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_history_update = 0.0
+
+    def _ensure_history_data(self):
+        now_ts = time.time()
+        if now_ts - self._last_history_update < 1800 and self.history_cache:
+            return
+        needed = list(self.watchlist[:100])
+        for sym in self.account.positions.keys():
+            if sym not in needed:
+                needed.append(sym)
+        try:
+            data = self.feed.fetch_universe_klines(needed, use_cache=True)
+            for sym, item in data.items():
+                if item and item.get("bars"):
+                    self.history_cache[sym] = item["bars"]
+            self._last_history_update = now_ts
+        except Exception as e:
+            print(f"[警告] 加载CAN SLIM历史K线失败: {e}", file=sys.stderr)
+
+    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
+        self._ensure_history_data()
+        summary = self.account.get_summary()
+        total_equity = summary["total_equity"]
+        just_sold = set()
+
+        for sym, pos in list(self.account.positions.items()):
+            q = quotes.get(sym)
+            if not q or q.get("current", 0) <= 0:
+                continue
+            current_price = q["current"]
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            if avail <= 0:
+                continue
+
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            bars = self.history_cache.get(sym, [])
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else current_price
+
+            bids = q.get("bids", [])
+            exec_price = bids[0]["price"] if bids else current_price
+
+            if pnl_pct <= self.stop_loss_pct:
+                reason = f"欧奈尔硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            if current_price < ma20:
+                reason = f"欧奈尔跌破MA20平仓 (现价 ¥{current_price:.2f} < MA20 ¥{ma20:.2f})"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            if pnl_pct >= 25.0:
+                reason = f"欧奈尔领头羊止盈 (浮盈 {pnl_pct:+.2f}% >= +25.0%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+        candidates = []
+        for sym in self.watchlist:
+            if sym in self.account.positions or sym in just_sold:
+                continue
+            if StockUniverse.is_sci_tech_board(sym):
+                continue
+            q = quotes.get(sym)
+            if not q or not q.get("fresh", True):
+                continue
+            name = q.get("name", "")
+            if "ST" in name.upper() or "退" in name:
+                continue
+            current_price = q.get("current", 0.0)
+            open_p = q.get("open", 0.0)
+            change_pct = q.get("change_pct", 0.0)
+            if current_price <= 0 or (open_p > 0 and current_price < open_p):
+                continue
+
+            bars = self.history_cache.get(sym, [])
+            if len(bars) < 60:
+                continue
+
+            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
+            high_20 = max(b["high"] for b in bars[-20:])
+            ret_60 = (current_price / bars[-60]["close"] - 1.0) * 100.0
+
+            if current_price > high_20 and current_price > ma60 and ret_60 > 5.0:
+                score = round(ret_60 * 1.5 + (change_pct / 5.0) * 1.0, 2)
+                asks = q.get("asks", [])
+                exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
+                candidates.append({
+                    "symbol": sym, "code": q.get("code", sym), "name": name,
+                    "current": current_price, "change_pct": change_pct, "open": open_p,
+                    "score": score, "exec_price": exec_p, "fresh": True
+                })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        self.latest_candidates = candidates[:50]
+
+        current_holding_count = len(self.account.positions)
+        if current_holding_count < self.max_positions:
+            for cand in candidates:
+                if current_holding_count >= self.max_positions:
+                    break
+                sym = cand["symbol"]
+                exec_price = cand["exec_price"]
+                name = cand["name"]
+                target_amount = total_equity * self.max_stock_weight
+                max_shares = int(target_amount / (exec_price * 100)) * 100
+                if max_shares < 100:
+                    continue
+                cost_estimate = max_shares * exec_price * 1.001
+                if self.account.cash >= cost_estimate:
+                    reason = f"欧奈尔领头羊突破买入 (评分 {cand['score']:.1f})"
+                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
+                    if res.get("success"):
+                        current_holding_count += 1
+
+
+STRATEGY_REGISTRY = {
+    "Momentum_Rotation": MomentumRotationStrategy,
+    "Minervini_SEPA": MinerviniSEPAStrategy,
+    "TurtleBreakout": TurtleBreakoutStrategy,
+    "ONeil_CANSLIM": ONeilCANSLIMStrategy,
+    "ShortTermResonance": ShortTermResonanceStrategy,
+    "MomentumBreakout": MomentumBreakoutStrategy,
+}
+
+
+def create_strategy(
+    strategy_id: str,
+    account: SimAccount,
+    watchlist: List[str],
+    **kwargs
+) -> BaseStrategy:
+    """策略工厂创建方法"""
+    cls = STRATEGY_REGISTRY.get(strategy_id, MomentumRotationStrategy)
+    return cls(account=account, watchlist=watchlist, **kwargs)
+
+
 # ==============================================================================
 # 4. 定时调度与终端渲染器 (Scheduler & Dashboard)
 # ==============================================================================
+
 
 class PaperTradingEngine:
     """模拟交易执行引擎与定时调度器"""

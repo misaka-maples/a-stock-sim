@@ -156,6 +156,52 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("summary", run_data["data"])
         self.assertIn("equity_curve", run_data["data"])
 
+    def test_strategy_list(self):
+        """测试获取可用量化策略列表接口"""
+        res = self.client.get("/api/strategy/list")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("strategies", data)
+        self.assertIn("active_strategy_id", data)
+        strat_ids = [s["id"] for s in data["strategies"]]
+        self.assertIn("Momentum_Rotation", strat_ids)
+        self.assertIn("Minervini_SEPA", strat_ids)
+        self.assertIn("TurtleBreakout", strat_ids)
+
+        # 检查冠军策略信息
+        champion = next(s for s in data["strategies"] if s["id"] == "Momentum_Rotation")
+        self.assertIn("77.5", champion["one_year_return"])
+        self.assertTrue(champion["recommended"])
+
+    def test_strategy_switch(self):
+        """测试在线热切换自动交易策略接口"""
+        # 切换到近一年最高收益冠军策略 Momentum_Rotation
+        switch_res = self.client.post("/api/strategy/switch", json={
+            "strategy_id": "Momentum_Rotation"
+        })
+        self.assertEqual(switch_res.status_code, 200)
+        switch_data = switch_res.json()
+        self.assertTrue(switch_data["success"])
+        self.assertEqual(switch_data["strategy_id"], "Momentum_Rotation")
+        self.assertIn("领头羊动量轮动", switch_data["strategy_name"])
+
+        # 检查 /api/status 反映的新策略
+        status_res = self.client.get("/api/status")
+        self.assertEqual(status_res.status_code, 200)
+        status_data = status_res.json()
+        self.assertEqual(status_data["strategy_id"], "Momentum_Rotation")
+
+        # 检查内部 ctx.strategy 是否更新
+        from sim_trader import MomentumRotationStrategy
+        self.assertIsInstance(ctx.strategy, MomentumRotationStrategy)
+
+        # 测试切换非法策略报错
+        bad_res = self.client.post("/api/strategy/switch", json={
+            "strategy_id": "NonExistentStrategy"
+        })
+        self.assertEqual(bad_res.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
+
