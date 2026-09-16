@@ -8,10 +8,11 @@ __pycache__/
 # Runtime data & logs
 server.log
 server.pid
-sim_account.json
+sim_account.json*
 sim_test.json
 data/
 *.cache
+index.html
 
 # Environment & OS
 .env
