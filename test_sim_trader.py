@@ -230,6 +230,90 @@ class TestSimTrader(unittest.TestCase):
         self.assertFalse(StockUniverse.is_sci_tech_board("sz000001"))
         self.assertFalse(StockUniverse.is_sci_tech_board("sz300750"))
 
+    def test_is_main_board(self):
+        """测试沪深纯主板判断逻辑 (仅允许 600/601/603/605/000/001/002/003)"""
+        # 沪市主板: 600, 601, 603, 605
+        self.assertTrue(StockUniverse.is_main_board("sh600519"))
+        self.assertTrue(StockUniverse.is_main_board("sh601398"))
+        self.assertTrue(StockUniverse.is_main_board("sh603288"))
+        self.assertTrue(StockUniverse.is_main_board("sh605117"))
+        self.assertTrue(StockUniverse.is_main_board("600519"))
+
+        # 深市主板: 000, 001, 002, 003
+        self.assertTrue(StockUniverse.is_main_board("sz000001"))
+        self.assertTrue(StockUniverse.is_main_board("sz001234"))
+        self.assertTrue(StockUniverse.is_main_board("sz002594"))
+        self.assertTrue(StockUniverse.is_main_board("sz003001"))
+        self.assertTrue(StockUniverse.is_main_board("002594"))
+
+        # 严格排除: 科创板 (688*)
+        self.assertFalse(StockUniverse.is_main_board("sh688001"))
+        self.assertFalse(StockUniverse.is_main_board("688981"))
+
+        # 严格排除: 创业板 (300*, 301*)
+        self.assertFalse(StockUniverse.is_main_board("sz300750"))
+        self.assertFalse(StockUniverse.is_main_board("sz301520"))
+        self.assertFalse(StockUniverse.is_main_board("sz301611"))
+        self.assertFalse(StockUniverse.is_main_board("300059"))
+
+        # 严格排除: 北交所 (43*, 83*, 87*, 920*)
+        self.assertFalse(StockUniverse.is_main_board("bj430017"))
+        self.assertFalse(StockUniverse.is_main_board("bj830001"))
+        self.assertFalse(StockUniverse.is_main_board("bj870001"))
+        self.assertFalse(StockUniverse.is_main_board("bj920002"))
+
+        # 严格排除: B股与退市/无效代码
+        self.assertFalse(StockUniverse.is_main_board("sh900901"))
+        self.assertFalse(StockUniverse.is_main_board("sz200002"))
+        self.assertFalse(StockUniverse.is_main_board("abc123"))
+
+    def test_can_buy_rejects_non_main_board(self):
+        """测试 SimAccount.can_buy 严格拦截非主板标的"""
+        # 主板标的允许买入 (以浦发银行 sh600000 为例)
+        ok_sh, msg_sh = self.account.can_buy("sh600000", 10.0, 100)
+        self.assertTrue(ok_sh, msg_sh)
+
+        ok_sz, msg_sz = self.account.can_buy("sz002594", 250.0, 100)
+        self.assertTrue(ok_sz, msg_sz)
+
+        # 创业板标的拦截
+        ok_cy, msg_cy = self.account.can_buy("sz301520", 35.0, 100)
+        self.assertFalse(ok_cy)
+        self.assertIn("不属于沪深主板", msg_cy)
+
+        # 科创板标的拦截
+        ok_kc, msg_kc = self.account.can_buy("sh688001", 50.0, 100)
+        self.assertFalse(ok_kc)
+        self.assertIn("不属于沪深主板", msg_kc)
+
+        # 北交所标的拦截
+        ok_bj, msg_bj = self.account.can_buy("bj430017", 10.0, 100)
+        self.assertFalse(ok_bj)
+        self.assertIn("不属于沪深主板", msg_bj)
+
+    def test_can_sell_allows_existing_non_main_board_positions(self):
+        """测试存量非主板持仓（如创业板万邦医药、珂玛科技）依然可以正常受保护并平仓卖出"""
+        # 模拟历史持有的创业板仓位
+        self.account.positions["sz301520"] = {
+            "symbol": "sz301520",
+            "name": "万邦医药",
+            "total_shares": 500,
+            "available_shares": 500,
+            "cost_price": 28.0,
+            "current_price": 35.0,
+            "market_value": 17500.0,
+            "pnl": 3500.0,
+            "pnl_pct": 25.0
+        }
+        # can_sell 必须允许通过，不得阻碍平仓
+        can_sell, reason = self.account.can_sell("sz301520", 35.0, 500)
+        self.assertTrue(can_sell, reason)
+
+        # 执行卖出必须成功
+        res = self.account.execute_sell("sz301520", 35.0, 500, reason="止盈平仓测试")
+        self.assertTrue(res["success"])
+        self.assertNotIn("sz301520", self.account.positions)
+
 
 if __name__ == "__main__":
     unittest.main()

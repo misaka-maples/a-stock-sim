@@ -75,8 +75,27 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 # ==============================================================================
 
 class StockUniverse:
-    """全A股股票池管理（严格排除科创板 688* 标的）"""
+    """全A股股票池管理（默认仅限沪深纯主板 10% 标的，严格排除创业板、科创板与北交所）"""
     UNIVERSE_FILE = BASE_DIR / "stock_universe.json"
+
+    @staticmethod
+    def is_main_board(symbol_or_code: str) -> bool:
+        """检查是否属于沪深纯主板股票 (10% 涨跌幅限制)
+
+        主板代码规则:
+        - 沪市主板: 600xxx, 601xxx, 603xxx, 605xxx (代码带有 sh 前缀或6位纯数字)
+        - 深市主板: 000xxx, 001xxx, 002xxx, 003xxx (原中小板已与深市主板合并，代码带有 sz 前缀或6位纯数字)
+        严格排除:
+        - 创业板 (300xxx, 301xxx)
+        - 科创板 (688xxx)
+        - 北交所 (43xxxx, 83xxxx, 87xxxx, 920xxx)
+        - B股、新三板与退市三板等
+        """
+        s = symbol_or_code.strip().lower()
+        code = s[2:] if s.startswith(("sh", "sz", "bj")) else s
+        if not (len(code) == 6 and code.isdigit()):
+            return False
+        return code.startswith(("600", "601", "603", "605", "000", "001", "002", "003"))
 
     @staticmethod
     def is_sci_tech_board(symbol_or_code: str) -> bool:
@@ -89,10 +108,10 @@ class StockUniverse:
         return False
 
     @classmethod
-    def generate_candidate_codes(cls) -> List[str]:
-        """生成全A股待探测代码空间（严格排除 688 科创板）"""
+    def generate_candidate_codes(cls, only_main_board: bool = True) -> List[str]:
+        """生成待探测代码空间（默认仅包含沪深纯主板）"""
         candidates = []
-        # 1. 沪市主板 (600xxx, 601xxx, 603xxx, 605xxx) - 排除 688 科创板
+        # 1. 沪市主板 (600xxx, 601xxx, 603xxx, 605xxx) - 严格排除 688 科创板
         for i in range(600000, 602000): candidates.append(f"sh{i:06d}")
         for i in range(603000, 604000): candidates.append(f"sh{i:06d}")
         for i in range(605000, 605600): candidates.append(f"sh{i:06d}")
@@ -101,22 +120,23 @@ class StockUniverse:
         for i in range(1, 1400): candidates.append(f"sz{i:06d}")
         for i in range(2001, 3100): candidates.append(f"sz{i:06d}")
 
-        # 3. 创业板 (300xxx, 301xxx)
-        for i in range(300001, 301650): candidates.append(f"sz{i:06d}")
+        if not only_main_board:
+            # 3. 创业板 (300xxx, 301xxx)
+            for i in range(300001, 301650): candidates.append(f"sz{i:06d}")
 
-        # 4. 北交所 (920xxx, 430xxx, 83xxxx, 87xxxx)
-        for i in range(920000, 920150): candidates.append(f"bj{i:06d}")
-        for i in range(430001, 430600): candidates.append(f"bj{i:06d}")
-        for i in range(830001, 839999): candidates.append(f"bj{i:06d}")
-        for i in range(870001, 874000): candidates.append(f"bj{i:06d}")
+            # 4. 北交所 (920xxx, 430xxx, 83xxxx, 87xxxx)
+            for i in range(920000, 920150): candidates.append(f"bj{i:06d}")
+            for i in range(430001, 430600): candidates.append(f"bj{i:06d}")
+            for i in range(830001, 839999): candidates.append(f"bj{i:06d}")
+            for i in range(870001, 874000): candidates.append(f"bj{i:06d}")
 
         return candidates
 
     @classmethod
-    def scan_and_save(cls, save_path: Optional[Path] = None, max_workers: int = 16) -> List[Dict[str, Any]]:
+    def scan_and_save(cls, save_path: Optional[Path] = None, max_workers: int = 16, only_main_board: bool = True) -> List[Dict[str, Any]]:
         """全网并发探测有效上市股票并保存为本地缓存"""
         path = save_path or cls.UNIVERSE_FILE
-        candidates = cls.generate_candidate_codes()
+        candidates = cls.generate_candidate_codes(only_main_board=only_main_board)
         chunks = [candidates[i:i+200] for i in range(0, len(candidates), 200)]
 
         headers = {
@@ -138,8 +158,12 @@ class StockUniverse:
                         name = parts[1].strip()
                         code = parts[2].strip()
                         current = float(parts[3]) if parts[3] else 0.0
-                        if code.startswith("688"):
-                            continue
+                        if only_main_board:
+                            if not cls.is_main_board(code):
+                                continue
+                        else:
+                            if code.startswith("688"):
+                                continue
                         if current <= 0:
                             continue
                         market = "sh" if code.startswith(("60", "68")) else ("bj" if code.startswith(("43", "83", "87", "92")) else "sz")
@@ -155,10 +179,12 @@ class StockUniverse:
                 all_stocks.extend(res)
 
         all_stocks.sort(key=lambda x: x["symbol"])
+        exclude_rules = ["创业板 (300*/301*)", "科创板 (688*)", "北交所 (43*/83*/87*/92*)", "已退市/零价格标的"] if only_main_board else ["科创板 (688*)", "已退市/零价格标的"]
         out_data = {
             "updated_at": datetime.datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M:%S"),
             "count": len(all_stocks),
-            "exclude_rules": ["科创板 (688*)", "已退市/零价格标的"],
+            "board_type": "仅限沪深主板 (10% 涨跌幅)" if only_main_board else "全A股(排除科创板)",
+            "exclude_rules": exclude_rules,
             "stocks": all_stocks
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,22 +192,26 @@ class StockUniverse:
         return all_stocks
 
     @classmethod
-    def load_universe(cls, save_path: Optional[Path] = None, force_refresh: bool = False) -> List[str]:
-        """读取全市场股票代码列表（严格排除科创板）"""
+    def load_universe(cls, save_path: Optional[Path] = None, force_refresh: bool = False, only_main_board: bool = True) -> List[str]:
+        """读取全市场股票代码列表（默认仅限沪深纯主板）"""
         path = save_path or cls.UNIVERSE_FILE
         if force_refresh or not path.exists():
-            stocks = cls.scan_and_save(path)
+            stocks = cls.scan_and_save(path, only_main_board=only_main_board)
             return [s["symbol"] for s in stocks]
 
         try:
             data = json.loads(path.read_text())
-            symbols = [s["symbol"] for s in data.get("stocks", []) if not cls.is_sci_tech_board(s.get("symbol", ""))]
+            all_stocks = data.get("stocks", [])
+            if only_main_board:
+                symbols = [s["symbol"] for s in all_stocks if cls.is_main_board(s.get("symbol", ""))]
+            else:
+                symbols = [s["symbol"] for s in all_stocks if not cls.is_sci_tech_board(s.get("symbol", ""))]
             if not symbols:
-                stocks = cls.scan_and_save(path)
+                stocks = cls.scan_and_save(path, only_main_board=only_main_board)
                 return [s["symbol"] for s in stocks]
             return symbols
         except Exception:
-            stocks = cls.scan_and_save(path)
+            stocks = cls.scan_and_save(path, only_main_board=only_main_board)
             return [s["symbol"] for s in stocks]
 
 
@@ -460,6 +490,8 @@ class SimAccount:
             return False, "A股买入必须是100股的整数倍（整手）"
         if price <= 0:
             return False, "买入价格必须大于0"
+        if not StockUniverse.is_main_board(symbol):
+            return False, f"标的 {symbol} 不属于沪深主板 (当前交易系统限制仅交易沪深纯主板股票，严格排除创业板、科创板与北交所)"
 
         amount = price * shares
         fees = self.calculate_fees("BUY", amount)
@@ -1147,6 +1179,10 @@ class MomentumBreakoutStrategy(BaseStrategy):
             if sym in self.account.positions:
                 continue
 
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
+                continue
+
             q = quotes.get(sym)
             if not q or not q.get("fresh", True):
                 continue
@@ -1307,8 +1343,8 @@ class ShortTermResonanceStrategy(BaseStrategy):
             if sym in self.account.positions or sym in just_sold:
                 continue
 
-            # 严格剔除科创板标的 (688*)
-            if StockUniverse.is_sci_tech_board(sym):
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
                 continue
 
             q = quotes.get(sym)
@@ -1506,7 +1542,8 @@ class MomentumRotationStrategy(BaseStrategy):
         for sym in self.watchlist:
             if sym in self.account.positions or sym in just_sold:
                 continue
-            if StockUniverse.is_sci_tech_board(sym):
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
                 continue
             q = quotes.get(sym)
             if not q or not q.get("fresh", True):
@@ -1668,7 +1705,8 @@ class MinerviniSEPAStrategy(BaseStrategy):
         for sym in self.watchlist:
             if sym in self.account.positions or sym in just_sold:
                 continue
-            if StockUniverse.is_sci_tech_board(sym):
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
                 continue
             q = quotes.get(sym)
             if not q or not q.get("fresh", True):
@@ -1813,7 +1851,8 @@ class TurtleBreakoutStrategy(BaseStrategy):
         for sym in self.watchlist:
             if sym in self.account.positions or sym in just_sold:
                 continue
-            if StockUniverse.is_sci_tech_board(sym):
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
                 continue
             q = quotes.get(sym)
             if not q or not q.get("fresh", True):
@@ -1957,7 +1996,8 @@ class ONeilCANSLIMStrategy(BaseStrategy):
         for sym in self.watchlist:
             if sym in self.account.positions or sym in just_sold:
                 continue
-            if StockUniverse.is_sci_tech_board(sym):
+            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
+            if not StockUniverse.is_main_board(sym):
                 continue
             q = quotes.get(sym)
             if not q or not q.get("fresh", True):

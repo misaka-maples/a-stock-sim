@@ -102,6 +102,57 @@ class TestServerAPI(unittest.TestCase):
         sell_data = sell_res.json()
         self.assertTrue(sell_data["success"], f"卖出失败: {sell_data.get('reason')}")
 
+    def test_manual_trade_rejects_non_main_board(self):
+        """测试手动买入拦截非沪深主板标的（创业板、科创板），但允许卖出存量持仓"""
+        # 1. 尝试买入创业板标的 (sz301520 万邦医药) -> 严格拦截
+        buy_cy = self.client.post("/api/trade/order", json={
+            "symbol": "sz301520",
+            "side": "BUY",
+            "shares": 100,
+            "price": 30.0,
+            "reason": "违规买入创业板测试"
+        })
+        self.assertEqual(buy_cy.status_code, 200)
+        cy_data = buy_cy.json()
+        self.assertFalse(cy_data["success"])
+        self.assertIn("不属于沪深主板", cy_data.get("reason", ""))
+
+        # 2. 尝试买入科创板标的 (sh688001) -> 严格拦截
+        buy_kc = self.client.post("/api/trade/order", json={
+            "symbol": "sh688001",
+            "side": "BUY",
+            "shares": 100,
+            "price": 50.0,
+            "reason": "违规买入科创板测试"
+        })
+        self.assertEqual(buy_kc.status_code, 200)
+        kc_data = buy_kc.json()
+        self.assertFalse(kc_data["success"])
+        self.assertIn("不属于沪深主板", kc_data.get("reason", ""))
+
+        # 3. 验证存量创业板持仓仍然可以正常卖出平仓
+        ctx.account.positions["sz301520"] = {
+            "symbol": "sz301520",
+            "name": "万邦医药",
+            "total_shares": 300,
+            "available_shares": 300,
+            "cost_price": 25.0,
+            "current_price": 32.0,
+            "market_value": 9600.0,
+            "pnl": 2100.0,
+            "pnl_pct": 28.0
+        }
+        sell_cy = self.client.post("/api/trade/order", json={
+            "symbol": "sz301520",
+            "side": "SELL",
+            "shares": 300,
+            "price": 32.0,
+            "reason": "平仓历史持仓创业板"
+        })
+        self.assertEqual(sell_cy.status_code, 200)
+        self.assertTrue(sell_cy.json()["success"])
+        self.assertNotIn("sz301520", ctx.account.positions)
+
     def test_universe_and_search(self):
         """测试全市场股票池概况与个股快速检索接口"""
         # 测试全市场股票池概况
@@ -110,6 +161,8 @@ class TestServerAPI(unittest.TestCase):
         u_data = u_res.json()
         self.assertIn("total_count", u_data)
         self.assertIn("exclude_rules", u_data)
+        self.assertIn("board_type", u_data)
+        self.assertIn("主板", u_data["board_type"])
 
         # 测试个股检索 (平安银行 000001)
         s_res = self.client.get("/api/stock/search?q=000001")

@@ -260,7 +260,7 @@
       <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
       <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
       <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
-      <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 5,260只 (排除科创板)</span>
+      <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
       <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
     </div>
     <div class="header-right">
@@ -586,7 +586,7 @@
       <!-- 全市场起爆共振雷达池 -->
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">⚡ 全市场起爆共振雷达池 (排除科创板)</div>
+          <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
           <span id="radarCountBadge" style="font-size:12px; color:var(--accent-blue); font-weight:600">全市场高频扫描</span>
         </div>
         <table>
@@ -624,7 +624,7 @@
             <div id="sideSellBtn" class="side-btn" onclick="setSide('SELL')">卖出委托</div>
           </div>
           <div class="form-group">
-            <label>股票代码 / 标的 (支持全A股 5000+ 标的搜索)</label>
+            <label>股票代码 / 标的 (仅限沪深主板 3,400+ 标的搜索)</label>
             <div style="display:flex; gap:8px;">
               <input type="text" id="orderSymbol" class="form-control" placeholder="如 600519 或 sz002594" onchange="onSymbolChange()" style="flex:1">
               <button class="btn" style="padding:6px 12px; font-size:12px;" onclick="searchAndFillStock()">查行情</button>
@@ -1216,7 +1216,7 @@
         stratTag.innerText = `🤖 自动策略: ${st.strategy_display_name || st.strategy_name} ⚙️`;
       }
       if (st.universe_count) {
-        document.getElementById('universeBadge').innerText = `全A股监控: ${st.universe_count.toLocaleString()}只 (排除科创板)`;
+        document.getElementById('universeBadge').innerText = `全A股监控: 沪深主板 ${st.universe_count.toLocaleString()}只 (严控10%主板)`;
       }
       if (st.radar_count !== undefined) {
         document.getElementById('radarCountBadge').innerText = `全市场共振起爆: ${st.radar_count} 只`;

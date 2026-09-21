@@ -383,7 +383,9 @@ def get_status():
             "interval": ctx.interval,
             "universe_count": len(ctx.symbols),
             "radar_count": len(ctx.radar_candidates),
+            "board_type": "仅限沪深主板 (10% 涨跌幅)",
             "exclude_sci_tech": True,
+            "only_main_board": True,
             "symbols_sample": ctx.symbols[:10],
             "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None
@@ -396,7 +398,8 @@ def get_universe_info():
     with ctx.lock:
         return {
             "total_count": len(ctx.symbols),
-            "exclude_rules": ["科创板 (688*)", "已退市/零价格标的"],
+            "board_type": "仅限沪深主板 (10% 涨跌幅限制)",
+            "exclude_rules": ["创业板 (300*/301*)", "科创板 (688*)", "北交所 (43*/83*/87*/92*)", "已退市/零价格标的"],
             "radar_candidates_count": len(ctx.radar_candidates),
             "is_full_market": len(ctx.symbols) > 1000
         }
@@ -718,6 +721,11 @@ def place_order(req: OrderRequest):
                 price = bids[0]["price"] if (bids and bids[0]["price"] > 0) else q["current"]
 
         if side == "BUY":
+            if not StockUniverse.is_main_board(sym):
+                return {
+                    "success": False,
+                    "reason": f"标的 {sym} 不属于沪深主板。当前交易系统仅允许交易沪深纯主板股票（严格排除创业板 300*/301*、科创板 688*、北交所）。"
+                }
             res = ctx.account.execute_buy(sym, name, price, req.shares, reason=req.reason)
         else:
             res = ctx.account.execute_sell(sym, price, req.shares, reason=req.reason)
@@ -831,7 +839,7 @@ def main():
     parser.add_argument("--host", type=str, default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="服务端口 (默认 8000)")
     parser.add_argument("--symbols", nargs="+", default=None, help="自定义监控股票池（默认不传则启用全A股监控）")
-    parser.add_argument("--full-market", action="store_true", default=True, help="启用全A股市场监控（排除科创板，默认开启）")
+    parser.add_argument("--full-market", action="store_true", default=True, help="启用全A股市场监控（仅限沪深主板，默认开启）")
     parser.add_argument("--refresh-universe", action="store_true", help="强制重新探测并刷新 stock_universe.json")
     parser.add_argument("--interval", type=float, default=3.0, help="策略轮询秒数 (默认 3.0)")
     parser.add_argument("--cash", type=float, default=100_000.0, help="初始资金 (默认 10 万元)")
@@ -847,18 +855,18 @@ def main():
         account_file_path.unlink()
         logger.info(f"已清除历史账户存储: {account_file_path}")
 
-    # 标的池确定 (全市场非科创板或指定自选)
+    # 标的池确定 (仅限沪深纯主板 10% 标的)
     if args.refresh_universe:
-        logger.info("正在全网并发探测全A股代码（排除科创板）...")
-        stocks = StockUniverse.scan_and_save()
+        logger.info("正在全网并发探测全A股代码（仅限沪深纯主板）...")
+        stocks = StockUniverse.scan_and_save(only_main_board=True)
         symbols = [s["symbol"] for s in stocks]
-        logger.info(f"全市场探测完成，共加载 {len(symbols)} 只非科创板标的。")
+        logger.info(f"全市场探测完成，共加载 {len(symbols)} 只沪深主板标的。")
     elif args.symbols:
-        symbols = [MarketFeed.normalize_symbol(s) for s in args.symbols]
-        logger.info(f"使用指定监控池 ({len(symbols)} 只标的): {symbols}")
+        symbols = [MarketFeed.normalize_symbol(s) for s in args.symbols if StockUniverse.is_main_board(s)]
+        logger.info(f"使用指定监控池 ({len(symbols)} 只沪深主板标的): {symbols}")
     else:
-        symbols = StockUniverse.load_universe()
-        logger.info(f"已全量加载全A股监控池（严格排除科创板），共监控 {len(symbols)} 只标的。")
+        symbols = StockUniverse.load_universe(only_main_board=True)
+        logger.info(f"已全量加载全A股监控池（严格仅限沪深主板），共监控 {len(symbols)} 只标的。")
 
     # 初始化上下文
     ctx.symbols = symbols
@@ -892,7 +900,7 @@ def main():
     logger.info(f"当前生效自动实盘策略: {getattr(ctx.strategy, 'display_name', ctx.strategy.name)}")
 
     logger.info(f"启动 Web 模拟交易服务: http://{args.host}:{args.port}")
-    logger.info(f"监控标的总数: {len(ctx.symbols)} 只 | 严格排除科创板: 是")
+    logger.info(f"监控标的总数: {len(ctx.symbols)} 只 | 严格限制沪深主板: 是")
     logger.info(f"刷新间隔: {ctx.interval}s | 测试模式: {ctx.ignore_market_hours} | T+1: {not args.no_t1}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
