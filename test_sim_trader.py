@@ -314,6 +314,42 @@ class TestSimTrader(unittest.TestCase):
         self.assertTrue(res["success"])
         self.assertNotIn("sz301520", self.account.positions)
 
+    def test_purge_non_main_board(self):
+        """测试清洗剔除非沪深纯主板持仓与历史收益"""
+        # 构造混合持仓与成交
+        self.account.positions = {
+            "sh601208": {
+                "symbol": "sh601208", "name": "东材科技", "total_shares": 500,
+                "cost_price": 50.0, "current_price": 52.0, "market_value": 26000.0, "unrealized_pnl": 1000.0
+            },
+            "sz301611": {
+                "symbol": "sz301611", "name": "珂玛科技", "total_shares": 300,
+                "cost_price": 90.0, "current_price": 98.0, "market_value": 29400.0, "unrealized_pnl": 2400.0
+            }
+        }
+        self.account.trades = [
+            {"symbol": "sh601208", "name": "东材科技", "side": "BUY", "shares": 500, "price": 50.0, "amount": 25000.0, "fees": 6.5, "realized_pnl": None},
+            {"symbol": "sz301611", "name": "珂玛科技", "side": "BUY", "shares": 300, "price": 90.0, "amount": 27000.0, "fees": 7.0, "realized_pnl": None},
+            {"symbol": "sz301520", "name": "万邦医药", "side": "BUY", "shares": 400, "price": 60.0, "amount": 24000.0, "fees": 6.0, "realized_pnl": None},
+            {"symbol": "sz301520", "name": "万邦医药", "side": "SELL", "shares": 400, "price": 80.0, "amount": 32000.0, "fees": 24.0, "realized_pnl": 7970.0}
+        ]
+        self.account.initial_cash = 100000.0
+
+        res = self.account.purge_non_main_board()
+        self.assertTrue(res["success"])
+
+        # 验证仅保留纯主板持仓 sh601208
+        self.assertIn("sh601208", self.account.positions)
+        self.assertNotIn("sz301611", self.account.positions)
+
+        # 验证仅保留纯主板交易
+        self.assertEqual(len(self.account.trades), 1)
+        self.assertEqual(self.account.trades[0]["symbol"], "sh601208")
+
+        # 验证可用现金重算: 100000 - 25000 - 6.5 = 74993.5
+        expected_cash = round(100000.0 - 25000.0 - 6.5, 2)
+        self.assertEqual(self.account.cash, expected_cash)
+
 
 if __name__ == "__main__":
     unittest.main()

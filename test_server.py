@@ -325,6 +325,23 @@ class TestServerAPI(unittest.TestCase):
             self.assertEqual(test_res.status_code, 200)
             self.assertTrue(test_res.json()["success"])
 
+    def test_purge_non_main_api(self):
+        """测试 /api/account/purge_non_main 接口"""
+        ctx.account.positions["sz301611"] = {
+            "symbol": "sz301611", "name": "珂玛科技", "total_shares": 300,
+            "cost_price": 90.0, "current_price": 98.0, "market_value": 29400.0, "unrealized_pnl": 2400.0
+        }
+        ctx.account.trades.append({
+            "symbol": "sz301611", "name": "珂玛科技", "side": "BUY", "shares": 300, "price": 90.0, "amount": 27000.0, "fees": 7.0
+        })
+
+        res = self.client.post("/api/account/purge_non_main")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertNotIn("sz301611", ctx.account.positions)
+        self.assertIn("sz301611", data["removed_positions"])
+
 
 if __name__ == "__main__":
     unittest.main()

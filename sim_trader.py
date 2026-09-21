@@ -832,6 +832,116 @@ class SimAccount:
 
         self.equity_history.sort(key=lambda x: x["time"])
 
+    def purge_non_main_board(self) -> Dict[str, Any]:
+        """清除所有非沪深纯主板（如创业板、科创板、北交所）的持仓、成交与订单记录，并依据保留的主板交易精确重算可用现金与净值历史"""
+        removed_positions = {sym: pos for sym, pos in self.positions.items() if not StockUniverse.is_main_board(sym)}
+        removed_trades = [t for t in self.trades if not StockUniverse.is_main_board(t.get("symbol", ""))]
+        removed_orders = [o for o in self.orders if not StockUniverse.is_main_board(o.get("symbol", ""))]
+
+        # 1. 过滤持仓，仅保留纯主板
+        self.positions = {
+            sym: pos for sym, pos in self.positions.items()
+            if StockUniverse.is_main_board(sym)
+        }
+
+        # 2. 过滤交易记录
+        self.trades = [
+            t for t in self.trades
+            if StockUniverse.is_main_board(t.get("symbol", ""))
+        ]
+
+        # 3. 过滤订单记录
+        self.orders = [
+            o for o in self.orders
+            if StockUniverse.is_main_board(o.get("symbol", ""))
+        ]
+
+        # 4. 根据保留的纯主板成交流水精确重算现金
+        recalc_cash = self.initial_cash
+        for t in self.trades:
+            amt = float(t.get("amount", 0.0))
+            fees = float(t.get("fees", 0.0))
+            if t.get("side") == "BUY":
+                recalc_cash -= (amt + fees)
+            elif t.get("side") == "SELL":
+                recalc_cash += (amt - fees)
+        self.cash = round(recalc_cash, 2)
+
+        # 5. 重构净值历史 (根据纯主板时序回溯)
+        self.rebuild_equity_history_for_main_board()
+        self.save()
+
+        return {
+            "success": True,
+            "cash": self.cash,
+            "remaining_positions": list(self.positions.keys()),
+            "remaining_trades_count": len(self.trades),
+            "removed_positions": list(removed_positions.keys()),
+            "removed_trades_count": len(removed_trades)
+        }
+
+    def rebuild_equity_history_for_main_board(self):
+        """根据纯主板历史成交流水与当前盘口重构净值曲线"""
+        self.equity_history = []
+        now_dt = datetime.datetime.now(BEIJING)
+        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. 初始基准点
+        start_time = self.trades[0].get("time", now_str) if self.trades else now_str
+        self.equity_history.append({
+            "time": start_time,
+            "equity": self.initial_cash,
+            "cash": self.initial_cash,
+            "market_value": 0.0,
+            "pnl": 0.0,
+            "pnl_pct": 0.0,
+            "reason": "账户初始启动 (沪深纯主板)"
+        })
+
+        # 2. 从纯主板交易时序记录净值变化
+        running_cash = self.initial_cash
+        cumulative_realized = 0.0
+        for t in self.trades:
+            t_time = t.get("time", now_str)
+            side = t.get("side", "BUY")
+            amt = float(t.get("amount", 0.0))
+            fees = float(t.get("fees", 0.0))
+            realized = float(t.get("realized_pnl") or 0.0)
+
+            if side == "BUY":
+                running_cash = round(running_cash - amt - fees, 2)
+            else:
+                running_cash = round(running_cash + amt - fees, 2)
+                cumulative_realized = round(cumulative_realized + realized, 2)
+
+            eq = round(self.initial_cash + cumulative_realized, 2)
+            self.equity_history.append({
+                "time": t_time,
+                "equity": eq,
+                "cash": running_cash,
+                "market_value": round(eq - running_cash, 2),
+                "pnl": round(eq - self.initial_cash, 2),
+                "pnl_pct": round((eq - self.initial_cash) / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0,
+                "reason": f"{'买入' if side=='BUY' else '卖出'} {t.get('name', t.get('symbol'))}"
+            })
+
+        # 3. 最新盘口点
+        market_val = round(sum(p.get("market_value", 0.0) for p in self.positions.values()), 2)
+        total_equity = round(self.cash + market_val, 2)
+        tot_pnl = round(total_equity - self.initial_cash, 2)
+        tot_pct = round(tot_pnl / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0
+
+        self.equity_history.append({
+            "time": now_str,
+            "equity": total_equity,
+            "cash": round(self.cash, 2),
+            "market_value": market_val,
+            "pnl": tot_pnl,
+            "pnl_pct": tot_pct,
+            "reason": "最新盘口结算 (沪深纯主板)"
+        })
+        self.equity_history.sort(key=lambda x: x["time"])
+
     def get_performance_metrics(self) -> Dict[str, Any]:
         """计算全面的账户收益、量化绩效与风险分析指标"""
         market_val = round(sum(p.get("market_value", 0.0) for p in self.positions.values()), 2)

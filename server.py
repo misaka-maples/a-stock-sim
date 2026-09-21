@@ -750,6 +750,15 @@ def reset_account(req: AccountResetRequest):
         return {"success": True, "summary": ctx.account.get_summary()}
 
 
+@app.post("/api/account/purge_non_main")
+def purge_non_main_board_assets():
+    """剔除非沪深主板标的的所有收益、交易记录与持仓，并依据主板真实流水重算净值与可用现金"""
+    with ctx.lock:
+        res = ctx.account.purge_non_main_board()
+        logger.info(f"已剔除非主板资产与收益: {res}")
+        return res
+
+
 @app.get("/api/backtest/config")
 def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
@@ -846,6 +855,7 @@ def main():
     parser.add_argument("--reset", action="store_true", help="清空历史持仓与交易记录，重新初始化账户")
     parser.add_argument("--test", action="store_true", help="测试模式: 忽略交易时段限制")
     parser.add_argument("--no-t1", action="store_true", help="关闭 T+1 交易制度 (允许当日卖出)")
+    parser.add_argument("--purge-non-main", action="store_true", help="启动时剔除非沪深纯主板的持仓与历史收益，重新平衡现金")
     parser.add_argument("--account-file", type=str, default="sim_account.json", help="账户存储路径")
 
     args = parser.parse_args()
@@ -878,6 +888,10 @@ def main():
         strict_t1=(not args.no_t1),
         save_path=str(account_file_path)
     )
+    if args.purge_non_main:
+        purge_res = ctx.account.purge_non_main_board()
+        logger.info(f"已剥离历史非沪深主板资产与收益: {purge_res}")
+
     setup_account_trade_notification(ctx.account)
 
     active_strat_id = "Momentum_Rotation"
