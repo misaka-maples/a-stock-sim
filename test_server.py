@@ -202,6 +202,78 @@ class TestServerAPI(unittest.TestCase):
         self.assertEqual(bad_res.status_code, 400)
 
 
+    def test_notification_endpoints(self):
+        """测试微信推送通知相关 API 接口"""
+        from unittest.mock import patch, MagicMock
+
+        # 1. 获取通知配置
+        cfg_res = self.client.get("/api/notification/config")
+        self.assertEqual(cfg_res.status_code, 200)
+        cfg_data = cfg_res.json()
+        self.assertIn("enabled", cfg_data)
+        self.assertIn("provider", cfg_data)
+
+        # 2. 更新通知配置
+        up_res = self.client.post("/api/notification/config", json={
+            "enabled": True,
+            "provider": "both",
+            "wxpusher_app_token": "AT_test_mock_token_123456",
+            "wxpusher_uids": ["UID_user_1"],
+            "serverchan_sendkey": "SCT_test_key_123456",
+            "notify_on_buy": True,
+            "notify_on_sell": True
+        })
+        self.assertEqual(up_res.status_code, 200)
+        up_data = up_res.json()
+        self.assertTrue(up_data["success"])
+        self.assertTrue(up_data["config"]["enabled"])
+
+        # 3. 测试生成 WxPusher 关注二维码接口 (Mock 远端返回)
+        with patch("notifier.WxPusherClient.create_qrcode") as mock_qr:
+            mock_qr.return_value = {
+                "success": True,
+                "data": {
+                    "url": "https://mp.weixin.qq.com/qrcode_mock",
+                    "code": "ticket_mock_888"
+                }
+            }
+            qr_res = self.client.post("/api/notification/wxpusher/qrcode", json={
+                "app_token": "AT_test_mock_token_123456"
+            })
+            self.assertEqual(qr_res.status_code, 200)
+            self.assertEqual(qr_res.json()["data"]["code"], "ticket_mock_888")
+
+        # 4. 测试扫码状态查询与自动绑定 UID (Mock 远端返回)
+        with patch("notifier.WxPusherClient.query_scan_status") as mock_scan:
+            mock_scan.return_value = {
+                "success": True,
+                "scanned": True,
+                "uid": "UID_scanned_wechat_user_999"
+            }
+            scan_res = self.client.get("/api/notification/wxpusher/scan_status?code=ticket_mock_888")
+            self.assertEqual(scan_res.status_code, 200)
+            scan_data = scan_res.json()
+            self.assertTrue(scan_data["scanned"])
+            self.assertEqual(scan_data["uid"], "UID_scanned_wechat_user_999")
+            self.assertIn("UID_scanned_wechat_user_999", scan_data["bound_uids"])
+
+        # 5. 测试 WxPusher Webhook 回调绑定
+        cb_res = self.client.post("/api/notification/wxpusher/callback", json={
+            "action": "app_subscribe",
+            "data": {"uid": "UID_webhook_new_user_777"}
+        })
+        self.assertEqual(cb_res.status_code, 200)
+        self.assertEqual(cb_res.json()["code"], 1000)
+
+        # 6. 测试测试消息发送接口 (Mock 派发)
+        with patch("notifier.NotificationManager.dispatch_message") as mock_disp:
+            mock_disp.return_value = [{"success": True, "channel": "wxpusher", "message": "OK"}]
+            test_res = self.client.post("/api/notification/test")
+            self.assertEqual(test_res.status_code, 200)
+            self.assertTrue(test_res.json()["success"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

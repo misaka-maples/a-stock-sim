@@ -36,6 +36,7 @@ from sim_trader import (
 )
 from backtest import run_backtest
 from history_data import PRESET_POOLS
+from notifier import NotificationManager, WxPusherClient
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -71,9 +72,28 @@ class ServerContext:
 ctx = ServerContext()
 
 
+def setup_account_trade_notification(account: SimAccount):
+    """为账户挂载微信交易成交通知回调"""
+    def on_trade_callback(trade: Dict[str, Any], acc: SimAccount):
+        try:
+            summary = acc.get_summary() if acc else {}
+            NotificationManager().notify_trade(
+                trade=trade,
+                total_equity=summary.get("total_equity"),
+                cash=summary.get("cash")
+            )
+        except Exception as e:
+            logger.error(f"微信交易推送执行异常: {e}")
+
+    if hasattr(account, "register_trade_callback"):
+        account.register_trade_callback(on_trade_callback)
+
+
 def background_worker():
     """后台定时执行交易策略的守护线程"""
     logger.info("后台交易轮询线程已启动...")
+    last_daily_summary_date: Optional[str] = None
+
     while ctx.running:
         try:
             now = datetime.datetime.now(BEIJING)
@@ -85,6 +105,20 @@ def background_worker():
                 held_symbols = list(ctx.account.positions.keys()) if ctx.account else []
                 symbols_to_monitor = list(ctx.symbols)
                 strategy_active = ctx.strategy_active
+
+            # 每日 15:00~15:10 收盘快报推送 (交易日执行一次)
+            today_str = now.strftime("%Y-%m-%d")
+            is_closing_time = (datetime.time(15, 0) <= now.time() <= datetime.time(15, 10))
+            if is_closing_time and last_daily_summary_date != today_str and now.weekday() < 5:
+                last_daily_summary_date = today_str
+                with ctx.lock:
+                    if ctx.account:
+                        try:
+                            summary = ctx.account.get_summary()
+                            positions = dict(ctx.account.positions)
+                            NotificationManager().notify_daily_summary(summary, positions)
+                        except Exception as e:
+                            logger.error(f"每日收盘微信战报推送失败: {e}")
 
             # 2. 休市降频保护：
             # 若处于收盘/休市时段（且非忽略时段测试模式），且已有今日最新收盘行情，
@@ -129,6 +163,8 @@ def background_worker():
 async def lifespan(app: FastAPI):
     """服务启动与关闭生命周期管理"""
     ctx.running = True
+    if ctx.account:
+        setup_account_trade_notification(ctx.account)
     ctx.worker_thread = threading.Thread(target=background_worker, daemon=True)
     ctx.worker_thread.start()
     logger.info("HTTP API 服务启动完成。")
@@ -206,6 +242,23 @@ class BacktestRequest(BaseModel):
     stop_loss: float = Field(-2.5, description="硬止损线%")
     max_holding_days: int = Field(5, description="最大持仓轮动天数")
     max_positions: int = Field(3, description="最大持仓标的数")
+
+
+class NotificationConfigRequest(BaseModel):
+    enabled: bool = Field(..., description="是否启用微信推送")
+    provider: str = Field("wxpusher", description="推送渠道: wxpusher | serverchan | both")
+    wxpusher_app_token: Optional[str] = Field(None, description="WxPusher AppToken")
+    wxpusher_uids: Optional[List[str]] = Field(None, description="WxPusher 接收者 UID 列表")
+    wxpusher_spt: Optional[str] = Field(None, description="WxPusher 极简推送 SPT")
+    serverchan_sendkey: Optional[str] = Field(None, description="Server酱 SendKey")
+    notify_on_buy: Optional[bool] = Field(True, description="是否推送买入成交")
+    notify_on_sell: Optional[bool] = Field(True, description="是否推送卖出成交")
+    notify_on_daily_summary: Optional[bool] = Field(True, description="是否推送每日收盘战报")
+    notify_on_risk_alert: Optional[bool] = Field(True, description="是否推送风控预警")
+
+
+class WxPusherQrcodeRequest(BaseModel):
+    app_token: Optional[str] = Field(None, description="WxPusher AppToken (若不传则尝试读取已配置的 Token)")
 
 
 # ==============================================================================
@@ -534,6 +587,110 @@ def update_strategy_config(req: StrategyConfigRequest):
         return {"success": True, "message": "策略参数已更新"}
 
 
+# ==============================================================================
+# 微信推送与消息通知 API
+# ==============================================================================
+
+@app.get("/api/notification/config")
+def get_notification_config():
+    """获取当前微信通知配置（包含脱敏凭证供前端安全展示）"""
+    mgr = NotificationManager()
+    return mgr.get_safe_config()
+
+
+@app.post("/api/notification/config")
+def update_notification_config(req: NotificationConfigRequest):
+    """更新微信推送配置并持久化保存"""
+    mgr = NotificationManager()
+    update_dict = {
+        "enabled": req.enabled,
+        "provider": req.provider
+    }
+    if req.wxpusher_app_token is not None:
+        if "****" not in req.wxpusher_app_token:
+            update_dict["wxpusher_app_token"] = req.wxpusher_app_token.strip()
+    if req.wxpusher_uids is not None:
+        update_dict["wxpusher_uids"] = [u.strip() for u in req.wxpusher_uids if u.strip()]
+    if req.wxpusher_spt is not None:
+        if "****" not in req.wxpusher_spt:
+            update_dict["wxpusher_spt"] = req.wxpusher_spt.strip()
+    if req.serverchan_sendkey is not None:
+        if "****" not in req.serverchan_sendkey:
+            update_dict["serverchan_sendkey"] = req.serverchan_sendkey.strip()
+    if req.notify_on_buy is not None:
+        update_dict["notify_on_buy"] = req.notify_on_buy
+    if req.notify_on_sell is not None:
+        update_dict["notify_on_sell"] = req.notify_on_sell
+    if req.notify_on_daily_summary is not None:
+        update_dict["notify_on_daily_summary"] = req.notify_on_daily_summary
+    if req.notify_on_risk_alert is not None:
+        update_dict["notify_on_risk_alert"] = req.notify_on_risk_alert
+
+    ok = mgr.save_config(update_dict)
+    if not ok:
+        raise HTTPException(status_code=500, detail="保存推送配置失败")
+    return {"success": True, "message": "微信推送配置已保存", "config": mgr.get_safe_config()}
+
+
+@app.post("/api/notification/test")
+def test_notification():
+    """向配置的微信渠道发送一条即时测试消息"""
+    mgr = NotificationManager()
+    res = mgr.send_test_message()
+    return res
+
+
+@app.post("/api/notification/wxpusher/qrcode")
+def create_wxpusher_qrcode(req: WxPusherQrcodeRequest):
+    """在网页上生成 WxPusher 微信扫码关注二维码"""
+    mgr = NotificationManager()
+    token = req.app_token.strip() if req.app_token else mgr.config.get("wxpusher_app_token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="请先输入 WxPusher AppToken")
+
+    res = WxPusherClient.create_qrcode(app_token=token, extra="quant_sim")
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("message", "生成二维码失败"))
+    return res
+
+
+@app.get("/api/notification/wxpusher/scan_status")
+def get_wxpusher_scan_status(code: str):
+    """查询二维码扫码状态；若用户已扫码授权，则自动绑定 UID 并保存"""
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少 code 参数")
+
+    res = WxPusherClient.query_scan_status(code)
+    if res.get("success") and res.get("scanned") and res.get("uid"):
+        uid = res["uid"]
+        mgr = NotificationManager()
+        current_uids = list(mgr.config.get("wxpusher_uids", []))
+        if uid not in current_uids:
+            current_uids.append(uid)
+            mgr.save_config({"wxpusher_uids": current_uids})
+            logger.info(f"[WxPusher] 扫码成功，已自动绑定 UID: {uid}")
+        res["bound_uids"] = current_uids
+    return res
+
+
+@app.post("/api/notification/wxpusher/callback")
+async def wxpusher_callback(payload: Dict[str, Any] = Body(...)):
+    """接收 WxPusher 官方 Webhook 回调（用户扫码关注事件）"""
+    logger.info(f"[WxPusher Webhook] 收到事件: {payload}")
+    action = payload.get("action")
+    data = payload.get("data", {})
+    if action == "app_subscribe":
+        uid = data.get("uid")
+        if uid:
+            mgr = NotificationManager()
+            current_uids = list(mgr.config.get("wxpusher_uids", []))
+            if uid not in current_uids:
+                current_uids.append(uid)
+                mgr.save_config({"wxpusher_uids": current_uids})
+                logger.info(f"[WxPusher Webhook] 自动绑定新关注用户 UID: {uid}")
+    return {"code": 1000, "msg": "ok"}
+
+
 @app.post("/api/trade/order")
 def place_order(req: OrderRequest):
     """手动买入/卖出委托撮合"""
@@ -713,6 +870,7 @@ def main():
         strict_t1=(not args.no_t1),
         save_path=str(account_file_path)
     )
+    setup_account_trade_notification(ctx.account)
 
     active_strat_id = "Momentum_Rotation"
     strat_kwargs = {}

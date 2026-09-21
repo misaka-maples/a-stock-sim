@@ -408,12 +408,18 @@ class SimAccount:
         self.orders: List[Dict[str, Any]] = []
         self.equity_history: List[Dict[str, Any]] = []
         self._last_snapshot_time: float = 0.0
+        self.trade_callbacks: List[Any] = []
 
         # 尝试加载持久化数据
         if self.save_path.exists():
             self.load()
         else:
             self.save()
+
+    def register_trade_callback(self, callback: Any):
+        """注册成交事件监听回调函数，签名: callback(trade: Dict[str, Any], account: SimAccount)"""
+        if callback not in self.trade_callbacks:
+            self.trade_callbacks.append(callback)
 
     def update_t1_available_shares(self, today_str: Optional[str] = None):
         """T+1 规则：次日结算，将此前日期买入的股数转为可用股数"""
@@ -558,6 +564,12 @@ class SimAccount:
         }
         self.trades.append(trade)
 
+        for cb in getattr(self, "trade_callbacks", []):
+            try:
+                cb(trade, self)
+            except Exception as e:
+                logger.error(f"成交事件回调执行异常: {e}")
+
         order = {
             "order_id": order_id, "time": now_str, "symbol": symbol, "name": name,
             "side": "BUY", "price": price, "shares": shares, "status": "FILLED", "reason": reason
@@ -644,6 +656,12 @@ class SimAccount:
             "reason": reason
         }
         self.trades.append(trade)
+
+        for cb in getattr(self, "trade_callbacks", []):
+            try:
+                cb(trade, self)
+            except Exception as e:
+                logger.error(f"成交事件回调执行异常: {e}")
 
         order = {
             "order_id": order_id, "time": now_str, "symbol": symbol, "name": name,

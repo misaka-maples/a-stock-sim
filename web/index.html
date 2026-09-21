@@ -259,10 +259,12 @@
       <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
       <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
       <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
+      <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
       <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 5,260只 (排除科创板)</span>
       <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
     </div>
     <div class="header-right">
+      <button class="btn" style="background: #0284c7; color:#fff; font-weight: 600;" onclick="openNotifyModal()">🔔 微信推送</button>
       <button class="btn" style="background: #4f46e5; color:#fff; font-weight: 600;" onclick="openStrategyModal()">⚙️ 更改自动策略</button>
       <button id="toggleStrategyBtn" class="btn btn-primary" onclick="toggleStrategy()">暂停自动策略</button>
       <button class="btn" onclick="fetchData()">立即刷新</button>
@@ -1716,10 +1718,238 @@
       }
     }
 
+    // =========================================================================
+    // 微信推送管理与 WxPusher 网页扫码交互
+    // =========================================================================
+    let wxScanTimer = null;
+    let currentNotifyProvider = 'wxpusher';
+
+    async function fetchNotifyStatus() {
+      try {
+        const res = await fetch('/api/notification/config');
+        if (!res.ok) return;
+        const cfg = await res.json();
+        const badge = document.getElementById('notifyStatusBadge');
+        if (!badge) return;
+        if (cfg.enabled) {
+          const providerText = cfg.provider === 'wxpusher' ? 'WxPusher' : (cfg.provider === 'serverchan' ? 'Server酱' : '双通道');
+          badge.innerText = `🔔 微信推送: 已开启 (${providerText})`;
+          badge.style.background = 'rgba(16, 185, 129, 0.2)';
+          badge.style.color = '#34d399';
+          badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+        } else {
+          badge.innerText = '🔔 微信推送: 未开启';
+          badge.style.background = 'rgba(14, 165, 233, 0.15)';
+          badge.style.color = '#38bdf8';
+          badge.style.borderColor = 'rgba(14, 165, 233, 0.3)';
+        }
+      } catch (e) {
+        console.error('获取微信推送状态失败:', e);
+      }
+    }
+
+    async function openNotifyModal() {
+      const modal = document.getElementById('notifyModal');
+      modal.style.display = 'flex';
+      
+      try {
+        const res = await fetch('/api/notification/config');
+        if (res.ok) {
+          const cfg = await res.json();
+          document.getElementById('notifyEnabled').checked = !!cfg.enabled;
+          currentNotifyProvider = cfg.provider || 'wxpusher';
+          switchNotifyTab(currentNotifyProvider);
+
+          document.getElementById('wxAppToken').value = cfg.wxpusher_app_token_masked || cfg.wxpusher_app_token || '';
+          document.getElementById('wxUids').value = (cfg.wxpusher_uids || []).join(', ');
+          document.getElementById('wxSpt').value = cfg.wxpusher_spt_masked || cfg.wxpusher_spt || '';
+          document.getElementById('serverchanSendkey').value = cfg.serverchan_sendkey_masked || cfg.serverchan_sendkey || '';
+
+          document.getElementById('notifyOnBuy').checked = cfg.notify_on_buy !== false;
+          document.getElementById('notifyOnSell').checked = cfg.notify_on_sell !== false;
+          document.getElementById('notifyOnDaily').checked = cfg.notify_on_daily_summary !== false;
+          document.getElementById('notifyOnRisk').checked = cfg.notify_on_risk_alert !== false;
+        }
+      } catch (err) {
+        showToast('读取推送配置失败: ' + err.message, true);
+      }
+    }
+
+    function closeNotifyModal() {
+      const modal = document.getElementById('notifyModal');
+      modal.style.display = 'none';
+      if (wxScanTimer) {
+        clearInterval(wxScanTimer);
+        wxScanTimer = null;
+      }
+      const qbox = document.getElementById('wxQrcodeBox');
+      if (qbox) qbox.style.display = 'none';
+      const successOverlay = document.getElementById('wxScanSuccessOverlay');
+      if (successOverlay) successOverlay.style.display = 'none';
+    }
+
+    function handleNotifyOverlayClick(e) {
+      if (e.target.id === 'notifyModal') {
+        closeNotifyModal();
+      }
+    }
+
+    function switchNotifyTab(provider) {
+      currentNotifyProvider = provider;
+      document.getElementById('tabBtnWxPusher').className = (provider === 'wxpusher' ? 'tab-btn active' : 'tab-btn');
+      document.getElementById('tabBtnServerChan').className = (provider === 'serverchan' ? 'tab-btn active' : 'tab-btn');
+      document.getElementById('tabBtnBoth').className = (provider === 'both' ? 'tab-btn active' : 'tab-btn');
+
+      const wxTab = document.getElementById('notifyTabWxPusher');
+      const scTab = document.getElementById('notifyTabServerChan');
+      if (provider === 'wxpusher') {
+        wxTab.style.display = 'block';
+        scTab.style.display = 'none';
+      } else if (provider === 'serverchan') {
+        wxTab.style.display = 'none';
+        scTab.style.display = 'block';
+      } else {
+        wxTab.style.display = 'block';
+        scTab.style.display = 'block';
+      }
+    }
+
+    async function generateWxPusherQrcode() {
+      const tokenInput = document.getElementById('wxAppToken');
+      const token = tokenInput.value.trim();
+      if (!token) {
+        showToast('请先输入 WxPusher AppToken', true);
+        tokenInput.focus();
+        return;
+      }
+
+      const qbox = document.getElementById('wxQrcodeBox');
+      const qimg = document.getElementById('wxQrcodeImg');
+      const qtxt = document.getElementById('wxScanStatusText');
+      const successOverlay = document.getElementById('wxScanSuccessOverlay');
+
+      successOverlay.style.display = 'none';
+      qbox.style.display = 'block';
+      qtxt.innerHTML = '⏳ 正在向微信请求生成专属关注二维码...';
+
+      try {
+        const res = await fetch('/api/notification/wxpusher/qrcode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ app_token: token })
+        });
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+          throw new Error(result.message || result.detail || '生成二维码失败');
+        }
+
+        const qrData = result.data;
+        qimg.src = qrData.url;
+        qtxt.innerHTML = '👉 <strong>请使用手机微信扫码关注</strong>。系统正实时监听扫码状态（已激活自动绑定）...';
+
+        if (wxScanTimer) clearInterval(wxScanTimer);
+        const code = qrData.code;
+        let pollCount = 0;
+        wxScanTimer = setInterval(async () => {
+          pollCount++;
+          if (pollCount > 180) {
+            clearInterval(wxScanTimer);
+            wxScanTimer = null;
+            qtxt.innerHTML = '<span style="color:#ef4444;">二维码已超时失效，请重新生成</span>';
+            return;
+          }
+          try {
+            const pollRes = await fetch(`/api/notification/wxpusher/scan_status?code=${encodeURIComponent(code)}`);
+            if (pollRes.ok) {
+              const pollData = await pollRes.json();
+              if (pollData.scanned && pollData.uid) {
+                clearInterval(wxScanTimer);
+                wxScanTimer = null;
+                successOverlay.style.display = 'flex';
+                qtxt.innerHTML = `<span style="color:#34d399; font-weight:700;">🎉 扫码成功！已自动绑定 UID: ${pollData.uid}</span>`;
+                
+                const uidsInput = document.getElementById('wxUids');
+                const existing = uidsInput.value.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+                if (!existing.includes(pollData.uid)) {
+                  existing.push(pollData.uid);
+                }
+                uidsInput.value = existing.join(', ');
+                document.getElementById('notifyEnabled').checked = true;
+                showToast(`微信扫码绑定成功！已授权 UID: ${pollData.uid}`);
+                fetchNotifyStatus();
+              }
+            }
+          } catch (e) {
+            console.error('轮询扫码状态异常:', e);
+          }
+        }, 10000);
+
+      } catch (err) {
+        qbox.style.display = 'none';
+        showToast('生成二维码失败: ' + err.message, true);
+      }
+    }
+
+    async function saveNotifyConfig() {
+      const enabled = document.getElementById('notifyEnabled').checked;
+      const appToken = document.getElementById('wxAppToken').value.trim();
+      const uidsRaw = document.getElementById('wxUids').value.trim();
+      const uids = uidsRaw ? uidsRaw.split(/[,，\s]+/).filter(Boolean) : [];
+      const spt = document.getElementById('wxSpt').value.trim();
+      const sendkey = document.getElementById('serverchanSendkey').value.trim();
+
+      const payload = {
+        enabled: enabled,
+        provider: currentNotifyProvider,
+        wxpusher_app_token: appToken,
+        wxpusher_uids: uids,
+        wxpusher_spt: spt,
+        serverchan_sendkey: sendkey,
+        notify_on_buy: document.getElementById('notifyOnBuy').checked,
+        notify_on_sell: document.getElementById('notifyOnSell').checked,
+        notify_on_daily_summary: document.getElementById('notifyOnDaily').checked,
+        notify_on_risk_alert: document.getElementById('notifyOnRisk').checked
+      };
+
+      try {
+        const res = await fetch('/api/notification/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) {
+          throw new Error(data.message || data.detail || '保存失败');
+        }
+        showToast('✅ 微信推送配置已保存成功！');
+        fetchNotifyStatus();
+        closeNotifyModal();
+      } catch (err) {
+        showToast('保存配置失败: ' + err.message, true);
+      }
+    }
+
+    async function sendTestNotification() {
+      showToast('正在发送微信测试消息...');
+      try {
+        const res = await fetch('/api/notification/test', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast('🎉 测试消息已成功发送至您的微信，请打开手机查收！');
+        } else {
+          const detail = (data.results || []).map(r => `[${r.channel}] ${r.message}`).join('; ');
+          showToast('⚠️ 发送失败: ' + (detail || data.message), true);
+        }
+      } catch (err) {
+        showToast('测试消息请求异常: ' + err.message, true);
+      }
+    }
+
     // 初始化走势图与数据轮询
     initChartInteractions();
     initBacktestChartInteractions();
     fetchData();
+    fetchNotifyStatus();
     timerId = setInterval(fetchData, refreshInterval);
   </script>
 
@@ -1775,6 +2005,134 @@
         <button id="modalSwitchBtn" class="btn btn-primary" onclick="submitStrategySwitch()" style="padding:8px 22px; font-weight:600;">
           🚀 确认更换为此策略
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 微信推送管理弹窗 (WxPusher 扫码关注 + Server酱) -->
+  <div id="notifyModal" class="modal-overlay" onclick="handleNotifyOverlayClick(event)">
+    <div class="modal-card" style="max-width: 680px;" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
+        <h2 style="font-size:18px; margin:0; display:flex; align-items:center; gap:8px;">
+          <span>🔔 微信消息推送设置 (实时成交 · 每日战报)</span>
+        </h2>
+        <button class="btn" onclick="closeNotifyModal()" style="padding:4px 10px; font-size:16px; line-height:1;">✕</button>
+      </div>
+
+      <!-- 全局总开关与渠道切换 -->
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <input type="checkbox" id="notifyEnabled" style="width:18px; height:18px; cursor:pointer;">
+          <label for="notifyEnabled" style="font-weight:600; font-size:14px; cursor:pointer; color:#fff;">
+            启用微信消息推送
+          </label>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button id="tabBtnWxPusher" class="tab-btn active" onclick="switchNotifyTab('wxpusher')">📱 WxPusher (网页扫码)</button>
+          <button id="tabBtnServerChan" class="tab-btn" onclick="switchNotifyTab('serverchan')">⚡ Server酱 (SendKey)</button>
+          <button id="tabBtnBoth" class="tab-btn" onclick="switchNotifyTab('both')">🔗 双通道同时推</button>
+        </div>
+      </div>
+
+      <!-- Tab 1: WxPusher 设置 (含网页扫码直连功能) -->
+      <div id="notifyTabWxPusher" style="display:block;">
+        <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="font-size:13px; font-weight:600; color:#38bdf8; display:flex; align-items:center; gap:6px;">
+              <span>📱 方式 A：自建应用 + 网页扫码自动绑定 UID (强烈推荐)</span>
+            </div>
+            <a href="https://wxpusher.zjiecode.com/admin/" target="_blank" style="font-size:12px; color:#818cf8; text-decoration:none;">
+              🔗 免费注册/获取 AppToken →
+            </a>
+          </div>
+
+          <div style="display:flex; gap:10px; margin-bottom:12px;">
+            <input type="text" id="wxAppToken" class="form-control" placeholder="输入 WxPusher AppToken (形如 AT_xxxxxxxx...)" style="flex:1;">
+            <button class="btn" style="background:#0284c7; color:#fff; font-weight:600; white-space:nowrap;" onclick="generateWxPusherQrcode()">
+              📷 生成网页扫码关注二维码
+            </button>
+          </div>
+
+          <!-- 扫码展示区域 -->
+          <div id="wxQrcodeBox" style="display:none; text-align:center; padding:16px; background:#0b1120; border:1px dashed #38bdf8; border-radius:8px; margin-bottom:12px;">
+            <div style="font-size:13px; color:#e2e8f0; font-weight:600; margin-bottom:8px;">请用手机微信扫描下方二维码关注并授权绑定</div>
+            <div style="display:inline-block; padding:8px; background:#fff; border-radius:8px; margin-bottom:8px; position:relative;">
+              <img id="wxQrcodeImg" src="" alt="WxPusher 关注二维码" style="width:160px; height:160px; display:block;">
+              <div id="wxScanSuccessOverlay" style="display:none; position:absolute; top:0; left:0; right:0; bottom:0; background:rgba(16,185,129,0.9); border-radius:8px; flex-direction:column; align-items:center; justify-content:center; color:#fff;">
+                <span style="font-size:32px;">✅</span>
+                <span style="font-weight:700; font-size:13px; margin-top:4px;">扫码关注成功！</span>
+              </div>
+            </div>
+            <div id="wxScanStatusText" style="font-size:12px; color:#94a3b8;">
+              ⏳ 等待手机微信扫码中，检测到关注后将自动绑定...
+            </div>
+          </div>
+
+          <!-- 绑定的 UID 列表 -->
+          <div style="margin-top:10px;">
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">
+              接收者 UID 列表 (扫码后自动填入，亦可手动英文逗号分隔填入)
+            </label>
+            <input type="text" id="wxUids" class="form-control" placeholder="UID_xxxxxxxx (多个以逗号分隔)" style="width:100%;">
+          </div>
+
+          <div style="margin-top:14px; border-top:1px dashed #334155; padding-top:10px;">
+            <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:6px;">
+              ⚡ 方式 B：极简推送 (SPT，无需自建应用)
+            </div>
+            <input type="text" id="wxSpt" class="form-control" placeholder="输入 SPT_ 开头的令牌 (可选)" style="width:100%;">
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Server酱 设置 -->
+      <div id="notifyTabServerChan" style="display:none;">
+        <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div style="font-size:13px; font-weight:600; color:#f59e0b;">
+              ⚡ Server酱 Turbo 版 (方糖微信推送)
+            </div>
+            <a href="https://sct.ftqq.com/" target="_blank" style="font-size:12px; color:#818cf8; text-decoration:none;">
+              🔗 登录 Server酱 获取 SendKey →
+            </a>
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Server酱 SendKey</label>
+            <input type="text" id="serverchanSendkey" class="form-control" placeholder="输入以 SCT 开头的 SendKey" style="width:100%;">
+          </div>
+        </div>
+      </div>
+
+      <!-- 推送事件场景选项 -->
+      <div style="padding:12px 14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+        <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">推送场景开关</div>
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:13px;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="notifyOnBuy" checked> 🟢 买入成交实时提醒
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="notifyOnSell" checked> 🔴 卖出成交实时提醒
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="notifyOnDaily" checked> 📊 每日 15:00 收盘收益战报
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="notifyOnRisk" checked> ⚠️ 大幅回撤/风控预警
+          </label>
+        </div>
+      </div>
+
+      <!-- 底部操作按钮 -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
+        <button class="btn" style="background:#0284c7; color:#fff;" onclick="sendTestNotification()">
+          🧪 发送微信测试消息
+        </button>
+        <div style="display:flex; gap:10px;">
+          <button class="btn" onclick="closeNotifyModal()">取消</button>
+          <button class="btn btn-primary" onclick="saveNotifyConfig()" style="padding:8px 24px; font-weight:600;">
+            💾 保存推送设置
+          </button>
+        </div>
       </div>
     </div>
   </div>
