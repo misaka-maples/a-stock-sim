@@ -112,27 +112,6 @@
     .panel-title { font-size: 15px; font-weight: 600; color: #fff; }
 
     /* 表格 */
-    /* 表格与移动端响应式横向滚动 */
-    .table-responsive {
-      width: 100%;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      margin-bottom: 6px;
-    }
-    .table-responsive::-webkit-scrollbar {
-      height: 6px;
-    }
-    .table-responsive::-webkit-scrollbar-track {
-      background: #0f172a;
-    }
-    .table-responsive::-webkit-scrollbar-thumb {
-      background: #334155;
-      border-radius: 3px;
-    }
-    .table-responsive table {
-      min-width: 600px;
-      white-space: nowrap;
-    }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th { text-align: left; padding: 10px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-color); font-weight: 500; }
     td { padding: 10px 8px; border-bottom: 1px solid #1e293b; color: var(--text-main); }
@@ -271,10 +250,8 @@
     }
 
     /* ========================================================================= */
-    /* 移动端排版优化 (Responsive Layout for Mobile & Tablet)                      */
+    /* 移动端排版优化 (仅在屏幕宽度 <= 768px 生效，严禁影响电脑端原本布局)           */
     /* ========================================================================= */
-    .header-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-
     @media (max-width: 768px) {
       body {
         padding: 10px 10px 40px;
@@ -287,19 +264,17 @@
         padding-bottom: 12px;
       }
       .header-left {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 8px;
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
         width: 100%;
       }
       .header-left h1 {
-        font-size: 17px;
-      }
-      .header-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
         width: 100%;
+        font-size: 17px;
+        margin-bottom: 2px;
       }
       .header-right {
         display: grid;
@@ -324,9 +299,6 @@
       .metric-card {
         padding: 10px 12px;
       }
-      .metric-card.span-full {
-        grid-column: span 2;
-      }
       .metric-card .title {
         font-size: 11px;
         margin-bottom: 4px;
@@ -341,6 +313,21 @@
         padding: 12px;
         margin-bottom: 14px;
         border-radius: 8px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .panel table {
+        min-width: 580px;
+        white-space: nowrap;
+      }
+      .table-responsive {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .table-responsive table {
+        min-width: 580px;
+        white-space: nowrap;
       }
       .panel-title {
         font-size: 14px;
@@ -461,14 +448,6 @@
       <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
       <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
       <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
-      <div class="header-badges">
-        <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
-        <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
-        <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
-        <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
-        <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
-        <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted); display:inline-flex; align-items:center;">自动刷新: 3秒</span>
-      </div>
     </div>
     <div class="header-right">
       <button class="btn" style="background: #0284c7; color:#fff; font-weight: 600;" onclick="openNotifyModal()">🔔 微信推送</button>
@@ -481,7 +460,6 @@
     </div>
   </header>
 
-  <!-- 核心资产看板 -->
   <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
@@ -496,11 +474,6 @@
       <div class="title">今日收益 / 收益率</div>
       <div id="todayPnl" class="value">¥0.00</div>
       <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">可用现金</div>
-      <div id="cash" class="value">¥0.00</div>
-      <div id="cashSub" class="sub">随时可委托买入</div>
     </div>
     <div class="metric-card">
       <div class="title">持仓总市值</div>
@@ -519,7 +492,6 @@
       <div id="unrealizedPnlSub" class="sub">当前在持浮盈: ¥0.00</div>
     </div>
     <div class="metric-card">
-    <div class="metric-card span-full">
       <div class="title">交易胜率 / 盈亏比</div>
       <div id="winRate" class="value">0.0%</div>
       <div id="plRatioSub" class="sub">0胜 0负 | 盈亏比: 0.00</div>
@@ -568,7 +540,6 @@
     <!-- Tab 2: 标的盈亏排行 -->
     <div id="perfTabSymbols" class="perf-tab-content" style="display: none;">
       <div style="max-height: 280px; overflow-y: auto;">
-      <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
             <tr>
@@ -594,7 +565,6 @@
     <!-- Tab 3: 每日盈亏明细 -->
     <div id="perfTabDaily" class="perf-tab-content" style="display: none;">
       <div style="max-height: 280px; overflow-y: auto;">
-      <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
             <tr>
@@ -744,7 +714,6 @@
           <span style="font-size: 11px; color: var(--text-muted);">包含全部买入、卖出、盈亏及出场归因</span>
         </div>
         <div style="max-height: 260px; overflow-y: auto;">
-        <div class="table-responsive" style="max-height: 260px; overflow: auto;">
           <table>
             <thead>
               <tr>
@@ -798,26 +767,6 @@
             <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
           </tbody>
         </table>
-        <div class="table-responsive">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th class="text-right">总持仓</th>
-                <th class="text-right">可用(T+1)</th>
-                <th class="text-right">成本价</th>
-                <th class="text-right">最新市价</th>
-                <th class="text-right">持仓市值</th>
-                <th class="text-right">浮动盈亏</th>
-                <th class="text-center">操作</th>
-              </tr>
-            </thead>
-            <tbody id="positionsTbody">
-              <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
-            </tbody>
-          </table>
-        </div>
       </div>
 
       <!-- 全市场起爆共振雷达池 -->
@@ -845,27 +794,6 @@
             <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
           </tbody>
         </table>
-        <div class="table-responsive">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th class="text-right">最新价</th>
-                <th class="text-right">今日涨跌幅</th>
-                <th class="text-right">今开盘</th>
-                <th class="text-center">买一 / 卖一</th>
-                <th class="text-center">五档委比</th>
-                <th class="text-right">成交额</th>
-                <th class="text-center">共振评分</th>
-                <th class="text-center">快速下单</th>
-              </tr>
-            </thead>
-            <tbody id="quotesTbody">
-              <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
-            </tbody>
-          </table>
-        </div>
       </div>
     </div>
 
@@ -1058,18 +986,15 @@
       document.getElementById('plRatioSub').innerText = `${s.win_count||0}胜 ${s.loss_count||0}负 | 盈亏比: ${(s.profit_loss_ratio||0).toFixed(2)}`;
 
       // 现金与持仓
-      document.getElementById('cash').innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('posCount').innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
-      if (document.getElementById('cashSub')) {
-        const posPct = s.total_equity ? ((s.market_value||0) / s.total_equity * 100).toFixed(1) : '0.0';
-        document.getElementById('cashSub').innerText = `仓位: ${posPct}% | 可随时买入`;
-      }
       if (document.getElementById('marketValue')) {
         document.getElementById('marketValue').innerText = `¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       }
-      if (document.getElementById('posCount')) {
-        document.getElementById('posCount').innerText = `持仓标的: ${s.position_count||0} 只`;
-      }
+      document.querySelectorAll('#cash').forEach(el => {
+        el.innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      });
+      document.querySelectorAll('#posCount').forEach(el => {
+        el.innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
+      });
     }
 
     function switchPerfTab(tab) {
