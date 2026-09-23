@@ -342,6 +342,56 @@ class TestServerAPI(unittest.TestCase):
         self.assertNotIn("sz301611", ctx.account.positions)
         self.assertIn("sz301611", data["removed_positions"])
 
+    def test_snapshot_api(self):
+        """测试系统快照与整机离线迁移接口"""
+        # 1. 创建即时快照
+        create_res = self.client.post("/api/snapshot/create", json={
+            "tag": "manual",
+            "description": "API自动化测试快照"
+        })
+        self.assertEqual(create_res.status_code, 200)
+        c_data = create_res.json()
+        self.assertTrue(c_data["success"])
+        snap_id = c_data["snapshot"]["meta"]["snapshot_id"]
+        self.assertIn("manual_", snap_id)
+
+        # 2. 获取快照列表
+        list_res = self.client.get("/api/snapshot/list")
+        self.assertEqual(list_res.status_code, 200)
+        l_data = list_res.json()
+        self.assertTrue(l_data["success"])
+        self.assertTrue(any(s["snapshot_id"] == snap_id for s in l_data["snapshots"]))
+
+        # 3. 下载离线迁移包
+        dl_res = self.client.get(f"/api/snapshot/download?id={snap_id}")
+        self.assertEqual(dl_res.status_code, 200)
+        self.assertEqual(dl_res.headers.get("content-type"), "application/gzip")
+        self.assertTrue(len(dl_res.content) > 0)
+
+        # 4. 从快照恢复
+        restore_res = self.client.post("/api/snapshot/restore", json={
+            "snapshot_id": snap_id,
+            "backup_current": True
+        })
+        self.assertEqual(restore_res.status_code, 200)
+        r_data = restore_res.json()
+        self.assertTrue(r_data["success"])
+
+        # 5. 测试上传恢复离线快照包
+        upload_res = self.client.post(
+            "/api/snapshot/upload",
+            content=dl_res.content,
+            headers={"x-filename": f"{snap_id}.tar.gz", "content-type": "application/gzip"}
+        )
+        self.assertEqual(upload_res.status_code, 200)
+        u_data = upload_res.json()
+        self.assertTrue(u_data["success"])
+
+        # 6. 删除快照
+        del_res = self.client.delete(f"/api/snapshot/delete?id={snap_id}")
+        self.assertEqual(del_res.status_code, 200)
+        self.assertTrue(del_res.json()["success"])
+
 
 if __name__ == "__main__":
     unittest.main()

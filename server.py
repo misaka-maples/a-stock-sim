@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -37,6 +37,7 @@ from sim_trader import (
 from backtest import run_backtest
 from history_data import PRESET_POOLS
 from notifier import NotificationManager, WxPusherClient
+from snapshot_manager import SnapshotManager, SNAPSHOTS_DIR
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -72,8 +73,20 @@ class ServerContext:
 ctx = ServerContext()
 
 
+def on_snapshot_restored(snapshot_data: Dict[str, Any]):
+    """当系统从快照恢复时，持锁热重载内存交易引擎与账户数据"""
+    with ctx.lock:
+        if ctx.account:
+            ctx.account.load()
+            if ctx.engine:
+                ctx.engine.account = ctx.account
+        logger.info("系统快照已热重载至内存交易引擎")
+
+SnapshotManager.register_on_restore_callback(on_snapshot_restored)
+
+
 def setup_account_trade_notification(account: SimAccount):
-    """为账户挂载微信交易成交通知回调"""
+    """为账户挂载微信交易成交通知与实时快照更新回调"""
     def on_trade_callback(trade: Dict[str, Any], acc: SimAccount):
         try:
             summary = acc.get_summary() if acc else {}
@@ -84,6 +97,12 @@ def setup_account_trade_notification(account: SimAccount):
             )
         except Exception as e:
             logger.error(f"微信交易推送执行异常: {e}")
+
+        try:
+            # 交易发生后自动同步当日最新流水快照
+            SnapshotManager().update_daily_snapshot()
+        except Exception as e:
+            logger.error(f"成交快照同步异常: {e}")
 
     if hasattr(account, "register_trade_callback"):
         account.register_trade_callback(on_trade_callback)
@@ -106,7 +125,7 @@ def background_worker():
                 symbols_to_monitor = list(ctx.symbols)
                 strategy_active = ctx.strategy_active
 
-            # 每日 15:00~15:10 收盘快报推送 (交易日执行一次)
+            # 每日 15:00~15:10 收盘快报推送与每日快照归档 (交易日执行一次)
             today_str = now.strftime("%Y-%m-%d")
             is_closing_time = (datetime.time(15, 0) <= now.time() <= datetime.time(15, 10))
             if is_closing_time and last_daily_summary_date != today_str and now.weekday() < 5:
@@ -119,6 +138,12 @@ def background_worker():
                             NotificationManager().notify_daily_summary(summary, positions)
                         except Exception as e:
                             logger.error(f"每日收盘微信战报推送失败: {e}")
+
+                        try:
+                            SnapshotManager().update_daily_snapshot(date_str=today_str)
+                            logger.info(f"每日收盘系统快照 [daily_{today_str}] 已自动归档")
+                        except Exception as e:
+                            logger.error(f"每日收盘系统快照归档异常: {e}")
 
             # 2. 休市降频保护：
             # 若处于收盘/休市时段（且非忽略时段测试模式），且已有今日最新收盘行情，
@@ -837,6 +862,124 @@ def run_backtest_get(
 def health_check():
     """服务健康检查接口"""
     return {"status": "ok", "time": datetime.datetime.now(BEIJING).isoformat()}
+
+
+# ==============================================================================
+# 5. 系统快照与离线整机迁移 API (Snapshot & Migration Endpoints)
+# ==============================================================================
+
+class SnapshotCreateRequest(BaseModel):
+    tag: str = Field(default="manual", description="快照标签，如 manual / daily")
+    description: str = Field(default="", description="快照说明描述")
+
+
+class SnapshotRestoreRequest(BaseModel):
+    snapshot_id: str = Field(..., description="要恢复的快照ID")
+    backup_current: bool = Field(default=True, description="恢复前是否备份当前状态")
+
+
+@app.get("/api/snapshot/list")
+def list_snapshots():
+    """获取系统所有历史快照列表"""
+    try:
+        snapshots = SnapshotManager().list_snapshots()
+        return {"success": True, "snapshots": snapshots}
+    except Exception as e:
+        logger.error(f"获取快照列表失败: {e}")
+        return {"success": False, "error": str(e), "snapshots": []}
+
+
+@app.post("/api/snapshot/create")
+def create_snapshot(req: SnapshotCreateRequest):
+    """手动创建即时系统快照"""
+    try:
+        with ctx.lock:
+            snap = SnapshotManager().create_snapshot(
+                tag=req.tag or "manual",
+                description=req.description
+            )
+        return {"success": True, "snapshot": snap}
+    except Exception as e:
+        logger.error(f"创建快照失败: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/snapshot/download")
+def download_snapshot(id: str = Query(..., description="快照ID")):
+    """下载指定快照的 .tar.gz 独立离线迁移压缩包"""
+    try:
+        mgr = SnapshotManager()
+        archive_path = mgr.export_archive(id)
+        if not archive_path.exists():
+            raise HTTPException(status_code=404, detail="快照归档包生成失败")
+        return FileResponse(
+            path=archive_path,
+            filename=archive_path.name,
+            media_type="application/gzip"
+        )
+    except Exception as e:
+        logger.error(f"下载快照失败: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/snapshot/restore")
+def restore_snapshot(req: SnapshotRestoreRequest):
+    """从快照库中恢复系统运行状态（含热重载）"""
+    try:
+        res = SnapshotManager().restore_snapshot(req.snapshot_id, backup_current=req.backup_current)
+        return res
+    except Exception as e:
+        logger.error(f"恢复快照失败: {e}", exc_info=True)
+        return {"success": False, "message": f"恢复失败: {e}"}
+
+
+@app.post("/api/snapshot/upload")
+async def upload_snapshot(request: Request):
+    """上传离线快照文件 (.tar.gz 或 .json) 并恢复系统"""
+    try:
+        content_type = request.headers.get("content-type", "")
+        filename = request.headers.get("x-filename", "")
+        body = await request.body()
+        if not body:
+            return {"success": False, "message": "上传的文件内容为空"}
+
+        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        # 根据文件名或内容自动识别是 JSON 还是 tar.gz
+        is_json = False
+        if filename.endswith(".json") or "json" in content_type:
+            is_json = True
+        else:
+            try:
+                json.loads(body.decode("utf-8"))
+                is_json = True
+            except Exception:
+                is_json = False
+
+        ext = ".json" if is_json else ".tar.gz"
+        temp_upload = SNAPSHOTS_DIR / f"upload_{int(time.time())}{ext}"
+        with open(temp_upload, "wb") as f:
+            f.write(body)
+
+        try:
+            res = SnapshotManager().restore_snapshot(temp_upload, backup_current=True)
+            return res
+        finally:
+            if temp_upload.exists():
+                temp_upload.unlink()
+    except Exception as e:
+        logger.error(f"上传并恢复快照失败: {e}", exc_info=True)
+        return {"success": False, "message": f"上传恢复失败: {e}"}
+
+
+@app.delete("/api/snapshot/delete")
+def delete_snapshot(id: str = Query(..., description="快照ID")):
+    """删除指定的系统快照"""
+    try:
+        deleted = SnapshotManager().delete_snapshot(id)
+        return {"success": deleted, "message": "快照已成功删除" if deleted else "未找到该快照"}
+    except Exception as e:
+        logger.error(f"删除快照失败: {e}")
+        return {"success": False, "message": f"删除失败: {e}"}
 
 
 # ==============================================================================

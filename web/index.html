@@ -111,6 +111,7 @@
     }
     .panel-title { font-size: 15px; font-weight: 600; color: #fff; }
 
+    /* 表格 */
     /* 表格与移动端响应式横向滚动 */
     .table-responsive {
       width: 100%;
@@ -454,6 +455,12 @@
   <header>
     <div class="header-left">
       <h1>📈 A股量化模拟交易控制台</h1>
+      <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
+      <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
+      <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
+      <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
+      <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
+      <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
       <div class="header-badges">
         <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
         <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
@@ -465,6 +472,7 @@
     </div>
     <div class="header-right">
       <button class="btn" style="background: #0284c7; color:#fff; font-weight: 600;" onclick="openNotifyModal()">🔔 微信推送</button>
+      <button class="btn" style="background: #059669; color:#fff; font-weight: 600;" onclick="openSnapshotModal()">📷 系统快照</button>
       <button class="btn" style="background: #4f46e5; color:#fff; font-weight: 600;" onclick="openStrategyModal()">⚙️ 更改自动策略</button>
       <button id="toggleStrategyBtn" class="btn btn-primary" onclick="toggleStrategy()">暂停自动策略</button>
       <button class="btn" onclick="fetchData()">立即刷新</button>
@@ -473,6 +481,7 @@
     </div>
   </header>
 
+  <!-- 核心资产看板 -->
   <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
@@ -481,6 +490,9 @@
       <div id="equitySub" class="sub">初始资金: ¥0.00</div>
     </div>
     <div class="metric-card">
+      <div class="title">可用现金</div>
+      <div id="cash" class="value">¥0.00</div>
+      <div class="sub">随时可委托买入</div>
       <div class="title">今日收益 / 收益率</div>
       <div id="todayPnl" class="value">¥0.00</div>
       <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
@@ -496,6 +508,7 @@
       <div id="posCount" class="sub">持仓标的: 0 只</div>
     </div>
     <div class="metric-card">
+      <div class="title">累计浮盈 / 收益率</div>
       <div class="title">累计总收益 / 总收益率</div>
       <div id="totalPnl" class="value">¥0.00</div>
       <div id="totalPnlPct" class="sub">+0.00%</div>
@@ -505,10 +518,16 @@
       <div id="realizedPnl" class="value">¥0.00</div>
       <div id="unrealizedPnlSub" class="sub">当前在持浮盈: ¥0.00</div>
     </div>
+    <div class="metric-card">
     <div class="metric-card span-full">
       <div class="title">交易胜率 / 盈亏比</div>
       <div id="winRate" class="value">0.0%</div>
       <div id="plRatioSub" class="sub">0胜 0负 | 盈亏比: 0.00</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">可用现金 / 持仓市值</div>
+      <div id="cash" class="value">¥0.00</div>
+      <div id="posCount" class="sub">持仓市值: ¥0.00 (0只)</div>
     </div>
   </div>
 
@@ -548,6 +567,7 @@
 
     <!-- Tab 2: 标的盈亏排行 -->
     <div id="perfTabSymbols" class="perf-tab-content" style="display: none;">
+      <div style="max-height: 280px; overflow-y: auto;">
       <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
@@ -573,6 +593,7 @@
 
     <!-- Tab 3: 每日盈亏明细 -->
     <div id="perfTabDaily" class="perf-tab-content" style="display: none;">
+      <div style="max-height: 280px; overflow-y: auto;">
       <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
@@ -722,6 +743,7 @@
           <div id="btTradesTitle" style="font-size: 13px; font-weight: 600; color: #fff;">📜 回测交易明细记录</div>
           <span style="font-size: 11px; color: var(--text-muted);">包含全部买入、卖出、盈亏及出场归因</span>
         </div>
+        <div style="max-height: 260px; overflow-y: auto;">
         <div class="table-responsive" style="max-height: 260px; overflow: auto;">
           <table>
             <thead>
@@ -758,6 +780,24 @@
           <div class="panel-title">📦 当前持仓 (T+1锁仓管理)</div>
           <span style="font-size:12px; color:var(--text-muted)">A股真实交易规费已计入成本</span>
         </div>
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th class="text-right">总持仓</th>
+              <th class="text-right">可用(T+1)</th>
+              <th class="text-right">成本价</th>
+              <th class="text-right">最新市价</th>
+              <th class="text-right">持仓市值</th>
+              <th class="text-right">浮动盈亏</th>
+              <th class="text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody id="positionsTbody">
+            <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
+          </tbody>
+        </table>
         <div class="table-responsive">
           <table>
             <thead>
@@ -786,6 +826,25 @@
           <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
           <span id="radarCountBadge" style="font-size:12px; color:var(--accent-blue); font-weight:600">全市场高频扫描</span>
         </div>
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th class="text-right">最新价</th>
+              <th class="text-right">今日涨跌幅</th>
+              <th class="text-right">今开盘</th>
+              <th class="text-center">买一 / 卖一</th>
+              <th class="text-center">五档委比</th>
+              <th class="text-right">成交额</th>
+              <th class="text-center">共振评分</th>
+              <th class="text-center">快速下单</th>
+            </tr>
+          </thead>
+          <tbody id="quotesTbody">
+            <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
+          </tbody>
+        </table>
         <div class="table-responsive">
           <table>
             <thead>
@@ -1000,6 +1059,7 @@
 
       // 现金与持仓
       document.getElementById('cash').innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      document.getElementById('posCount').innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
       if (document.getElementById('cashSub')) {
         const posPct = s.total_equity ? ((s.market_value||0) / s.total_equity * 100).toFixed(1) : '0.0';
         document.getElementById('cashSub').innerText = `仓位: ${posPct}% | 可随时买入`;
@@ -1114,6 +1174,7 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
+      const h = 260;
       const isMobile = window.innerWidth <= 768;
       const h = isMobile ? 200 : 260;
       parent.style.height = `${h}px`;
@@ -1131,6 +1192,7 @@
         return;
       }
 
+      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
       const padding = isMobile
         ? { top: 20, right: 15, bottom: 25, left: 55 }
         : { top: 25, right: 35, bottom: 35, left: 75 };
@@ -1243,6 +1305,8 @@
         if (!currentCurve || currentCurve.length < 2) return;
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
+        const paddingLeft = 75;
+        const paddingRight = 35;
         const isMobile = window.innerWidth <= 768;
         const paddingLeft = isMobile ? 55 : 75;
         const paddingRight = isMobile ? 15 : 35;
@@ -1628,6 +1692,7 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
+      const h = 260;
       const isMobile = window.innerWidth <= 768;
       const h = isMobile ? 200 : 260;
       parent.style.height = `${h}px`;
@@ -1645,6 +1710,7 @@
         return;
       }
 
+      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
       const padding = isMobile
         ? { top: 20, right: 15, bottom: 25, left: 55 }
         : { top: 25, right: 35, bottom: 35, left: 75 };
@@ -1782,6 +1848,7 @@
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const w = rect.width;
+        const padding = { top: 25, right: 35, bottom: 35, left: 75 };
         const isMobile = window.innerWidth <= 768;
         const padding = isMobile
           ? { top: 20, right: 15, bottom: 25, left: 55 }
@@ -2165,6 +2232,215 @@
       }
     }
 
+    // ==============================================================================
+    // 系统快照与整机离线迁移管理逻辑 (Snapshot & Migration)
+    // ==============================================================================
+    let cachedSnapshots = [];
+
+    function handleSnapshotOverlayClick(e) {
+      if (e.target.id === 'snapshotModal') {
+        closeSnapshotModal();
+      }
+    }
+
+    function openSnapshotModal() {
+      const modal = document.getElementById('snapshotModal');
+      modal.style.display = 'flex';
+      fetchSnapshots();
+    }
+
+    function closeSnapshotModal() {
+      document.getElementById('snapshotModal').style.display = 'none';
+      const detailBox = document.getElementById('snapshotDetailBox');
+      if (detailBox) detailBox.style.display = 'none';
+    }
+
+    async function fetchSnapshots() {
+      const tbody = document.getElementById('snapshotsTbody');
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center" style="padding:20px; color:var(--text-muted)">正在加载历史快照库...</td></tr>';
+      try {
+        const res = await fetch('/api/snapshot/list');
+        const data = await res.json();
+        if (data.success) {
+          cachedSnapshots = data.snapshots || [];
+          renderSnapshotsTable(cachedSnapshots);
+        } else {
+          tbody.innerHTML = `<tr><td colspan="9" class="text-center" style="color:var(--red-up); padding:20px;">加载快照失败: ${data.error || '未知错误'}</td></tr>`;
+        }
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center" style="color:var(--red-up); padding:20px;">请求异常: ${err.message}</td></tr>`;
+      }
+    }
+
+    function renderSnapshotsTable(snapshots) {
+      const tbody = document.getElementById('snapshotsTbody');
+      if (!snapshots || snapshots.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center" style="padding:24px; color:var(--text-muted)">📭 暂无快照记录，您可以点击下方【📸 立即创建当前快照】或等待收盘自动归档</td></tr>';
+        return;
+      }
+
+      let html = '';
+      snapshots.forEach(s => {
+        let tagBadge = '<span class="tag-status tag-holding">手动</span>';
+        if (s.tag === 'daily') tagBadge = '<span class="tag-status" style="background:rgba(16,185,129,0.15); color:var(--green-down); border:1px solid rgba(16,185,129,0.3)">每日收盘</span>';
+        else if (s.tag === 'pre_restore') tagBadge = '<span class="tag-status" style="background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3)">安全备份</span>';
+        else if (s.tag === 'imported') tagBadge = '<span class="tag-status" style="background:rgba(168,85,247,0.15); color:#c084fc; border:1px solid rgba(168,85,247,0.3)">外部导入</span>';
+
+        const isUp = (s.today_pnl || 0) >= 0;
+        const colorClass = isUp ? 'up' : 'down';
+
+        html += `
+          <tr>
+            <td><strong style="color:var(--accent-blue)">${s.snapshot_id}</strong></td>
+            <td>${tagBadge}</td>
+            <td style="font-size:12px; color:var(--text-muted)">${s.created_at || s.date}</td>
+            <td class="text-right" style="font-weight:700">¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+            <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}¥${(s.today_pnl||0).toFixed(2)}</td>
+            <td class="text-center">${s.position_count||0} 只</td>
+            <td class="text-center">${s.today_trades||0} 笔 / ${s.total_trades||0} 笔</td>
+            <td style="font-size:11px; color:#cbd5e1; max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${s.description||''}">${s.description || '--'}</td>
+            <td class="text-center" style="white-space:nowrap;">
+              <button class="btn" style="padding:3px 8px; font-size:11px; background:#0284c7; color:#fff;" onclick="downloadSnapshot('${s.snapshot_id}')" title="下载离线 .tar.gz 迁移包">📥 导出</button>
+              <button class="btn" style="padding:3px 8px; font-size:11px; background:#4f46e5; color:#fff;" onclick="restoreSnapshot('${s.snapshot_id}')" title="恢复系统至此快照状态">🔄 恢复</button>
+              <button class="btn" style="padding:3px 6px; font-size:11px;" onclick="viewSnapshotDetail('${s.snapshot_id}')" title="查看交易与持仓详情">👁️ 明细</button>
+              <button class="btn btn-danger" style="padding:3px 6px; font-size:11px;" onclick="deleteSnapshot('${s.snapshot_id}')" title="删除快照">🗑️</button>
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    async function createManualSnapshot() {
+      const desc = prompt('请输入快照说明描述 (可选):', '手动定格当前模拟交易全量状态');
+      if (desc === null) return;
+      showToast('正在创建系统快照...');
+      try {
+        const res = await fetch('/api/snapshot/create', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ tag: 'manual', description: desc || '' })
+        }).then(r => r.json());
+
+        if (res.success) {
+          showToast(`✅ 快照 [${res.snapshot.meta.snapshot_id}] 创建成功！`);
+          fetchSnapshots();
+        } else {
+          showToast(`创建快照失败: ${res.error || '未知错误'}`, true);
+        }
+      } catch (err) {
+        showToast(`请求异常: ${err.message}`, true);
+      }
+    }
+
+    function downloadSnapshot(id) {
+      showToast(`正在导出并下载快照 [${id}]...`);
+      window.location.href = `/api/snapshot/download?id=${encodeURIComponent(id)}`;
+    }
+
+    async function restoreSnapshot(id) {
+      if (!confirm(`⚠️ 警告：确定要将当前系统恢复至快照【${id}】吗？\\n系统将自动备份当前状态为 pre_restore，然后热重载持仓、资金与交易记录。`)) {
+        return;
+      }
+      showToast('正在恢复系统快照并热重载交易引擎...');
+      try {
+        const res = await fetch('/api/snapshot/restore', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ snapshot_id: id, backup_current: true })
+        }).then(r => r.json());
+
+        if (res.success) {
+          showToast(res.message);
+          fetchData();
+          fetchSnapshots();
+        } else {
+          showToast(`恢复失败: ${res.message || '未知错误'}`, true);
+        }
+      } catch (err) {
+        showToast(`恢复请求失败: ${err.message}`, true);
+      }
+    }
+
+    function triggerSnapshotUpload() {
+      document.getElementById('snapshotFileInput').click();
+    }
+
+    async function handleSnapshotUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      if (!confirm(`确定要上传并恢复离线快照文件【${file.name}】吗？\\n当前系统状态将在恢复前自动备份。`)) {
+        event.target.value = '';
+        return;
+      }
+
+      showToast(`正在上传并解包离线快照 [${file.name}]...`);
+      try {
+        const res = await fetch('/api/snapshot/upload', {
+          method: 'POST',
+          headers: {
+            'x-filename': file.name,
+            'content-type': file.type || 'application/octet-stream'
+          },
+          body: file
+        }).then(r => r.json());
+
+        if (res.success) {
+          showToast(res.message);
+          fetchData();
+          fetchSnapshots();
+        } else {
+          showToast(`导入恢复失败: ${res.message || '未知错误'}`, true);
+        }
+      } catch (err) {
+        showToast(`上传请求异常: ${err.message}`, true);
+      } finally {
+        event.target.value = '';
+      }
+    }
+
+    async function deleteSnapshot(id) {
+      if (!confirm(`确定要删除快照【${id}】吗？删除后将无法恢复该历史记录。`)) return;
+      try {
+        const res = await fetch(`/api/snapshot/delete?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).then(r => r.json());
+        if (res.success) {
+          showToast(res.message);
+          fetchSnapshots();
+        } else {
+          showToast(`删除失败: ${res.message}`, true);
+        }
+      } catch (err) {
+        showToast(`请求失败: ${err.message}`, true);
+      }
+    }
+
+    function viewSnapshotDetail(id) {
+      const box = document.getElementById('snapshotDetailBox');
+      const snap = cachedSnapshots.find(s => s.snapshot_id === id);
+      if (!snap) return;
+
+      box.style.display = 'block';
+      box.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:8px; margin-bottom:10px;">
+          <div style="font-weight:700; color:#38bdf8;">📜 快照流水与持仓详情: ${snap.snapshot_id}</div>
+          <button class="btn" style="padding:2px 8px; font-size:12px;" onclick="document.getElementById('snapshotDetailBox').style.display='none'">关闭明细</button>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:10px; font-size:12px; margin-bottom:12px; background:rgba(15,23,42,0.6); padding:10px; border-radius:6px;">
+          <div>总资产: <strong>¥${(snap.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></div>
+          <div>可用现金: <strong>¥${(snap.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></div>
+          <div>持仓市值: <strong>¥${(snap.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></div>
+          <div>当日盈亏: <strong class="${(snap.today_pnl||0)>=0?'up':'down'}">${(snap.today_pnl||0)>=0?'+':''}¥${(snap.today_pnl||0).toFixed(2)}</strong></div>
+          <div>在持只数: <strong>${snap.position_count||0} 只</strong></div>
+          <div>当日成交: <strong>${snap.today_trades||0} 笔</strong> (累计 ${snap.total_trades||0} 笔)</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); line-height:1.6;">
+          💡 提示：该快照自包含账户资产权益、持仓成本、当日交易明细及策略/微信参数。点击【📥 导出】可下载为随时在任意新机器上一键部署恢复运行的独立压缩包。
+        </div>
+      `;
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
     // 初始化走势图与数据轮询
     initChartInteractions();
     initBacktestChartInteractions();
@@ -2195,6 +2471,7 @@
       <!-- 参数微调 -->
       <div style="margin-top:16px; padding:14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px;">
         <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">策略执行参数微调</div>
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
         <div class="modal-params-grid" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
           <div>
             <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">单票仓位上限</label>
@@ -2220,6 +2497,7 @@
       </div>
 
       <!-- 操作按钮 -->
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
       <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
         <button class="btn" onclick="closeStrategyModal()">取消</button>
         <button id="modalSwitchBtn" class="btn btn-primary" onclick="submitStrategySwitch()" style="padding:8px 22px; font-weight:600;">
@@ -2240,6 +2518,7 @@
       </div>
 
       <!-- 全局总开关与渠道切换 -->
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
       <div class="modal-toolbar" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <input type="checkbox" id="notifyEnabled" style="width:18px; height:18px; cursor:pointer;">
@@ -2247,6 +2526,7 @@
             启用微信消息推送
           </label>
         </div>
+        <div style="display:flex; gap:8px;">
         <div class="modal-toolbar-tabs" style="display:flex; gap:8px;">
           <button id="tabBtnWxPusher" class="tab-btn active" onclick="switchNotifyTab('wxpusher')">📱 WxPusher (网页扫码)</button>
           <button id="tabBtnServerChan" class="tab-btn" onclick="switchNotifyTab('serverchan')">⚡ Server酱 (SendKey)</button>
@@ -2257,6 +2537,7 @@
       <!-- Tab 1: WxPusher 设置 (含网页扫码直连功能) -->
       <div id="notifyTabWxPusher" style="display:block;">
         <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div style="font-size:13px; font-weight:600; color:#38bdf8; display:flex; align-items:center; gap:6px;">
               <span>📱 方式 A：自建应用 + 网页扫码自动绑定 UID (强烈推荐)</span>
@@ -2266,6 +2547,7 @@
             </a>
           </div>
 
+          <div style="display:flex; gap:10px; margin-bottom:12px;">
           <div class="wx-token-row" style="display:flex; gap:10px; margin-bottom:12px;">
             <input type="text" id="wxAppToken" class="form-control" placeholder="输入 WxPusher AppToken (形如 AT_xxxxxxxx...)" style="flex:1;">
             <button class="btn" style="background:#0284c7; color:#fff; font-weight:600; white-space:nowrap;" onclick="generateWxPusherQrcode()">
@@ -2308,6 +2590,7 @@
       <!-- Tab 2: Server酱 设置 -->
       <div id="notifyTabServerChan" style="display:none;">
         <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div style="font-size:13px; font-weight:600; color:#f59e0b;">
               ⚡ Server酱 Turbo 版 (方糖微信推送)
@@ -2326,6 +2609,7 @@
       <!-- 推送事件场景选项 -->
       <div style="padding:12px 14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
         <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">推送场景开关</div>
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:13px;">
         <div class="notify-events-grid" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:13px;">
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
             <input type="checkbox" id="notifyOnBuy" checked> 🟢 买入成交实时提醒
@@ -2353,6 +2637,66 @@
             💾 保存推送设置
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 系统快照与整机离线迁移管理弹窗 -->
+  <div id="snapshotModal" class="modal-overlay" onclick="handleSnapshotOverlayClick(event)">
+    <div class="modal-card" style="max-width: 900px;" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
+        <h2 style="font-size:18px; margin:0; display:flex; align-items:center; gap:8px;">
+          <span>📷 系统快照与整机离线迁移管理</span>
+        </h2>
+        <button class="btn" onclick="closeSnapshotModal()" style="padding:4px 10px; font-size:16px; line-height:1;">✕</button>
+      </div>
+
+      <p style="font-size:13px; color:var(--text-muted); margin-bottom:16px; line-height:1.6;">
+        系统每日收盘（15:00）自动定格归档全量持仓与交易明细流水。您亦可随时创建即时快照，或将快照导出为 <code>.tar.gz</code> 离线压缩包，在新机器上一键导入恢复，无缝接续实盘模拟交易。
+      </p>
+
+      <!-- 操作工具条 -->
+      <div class="modal-toolbar" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn btn-primary" onclick="createManualSnapshot()" style="padding:7px 16px; font-weight:600;">
+            📸 立即创建当前快照
+          </button>
+          <button class="btn" style="background:#0284c7; color:#fff; font-weight:600;" onclick="triggerSnapshotUpload()">
+            📤 上传恢复离线快照包 (.tar.gz / .json)
+          </button>
+          <input type="file" id="snapshotFileInput" accept=".tar.gz,.tgz,.json" style="display:none;" onchange="handleSnapshotUpload(event)">
+        </div>
+        <button class="btn" onclick="fetchSnapshots()" style="padding:7px 12px;">🔄 刷新列表</button>
+      </div>
+
+      <!-- 快照详情浮层/抽屉 -->
+      <div id="snapshotDetailBox" style="display:none; background:#0b1120; border:1px solid #38bdf8; border-radius:8px; padding:14px; margin-bottom:16px;"></div>
+
+      <!-- 快照列表表格 -->
+      <div class="table-responsive" style="max-height: 380px; overflow: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>快照标识</th>
+              <th>类型</th>
+              <th>生成时间</th>
+              <th class="text-right">总权益 (权益)</th>
+              <th class="text-right">当日盈亏</th>
+              <th class="text-center">在持</th>
+              <th class="text-center">当日/总成交</th>
+              <th>快照说明</th>
+              <th class="text-center">管理操作</th>
+            </tr>
+          </thead>
+          <tbody id="snapshotsTbody">
+            <tr><td colspan="9" class="text-center" style="padding:24px; color:var(--text-muted)">正在加载历史快照库...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 底部关闭按钮 -->
+      <div class="modal-footer" style="display:flex; justify-content:flex-end; margin-top:16px;">
+        <button class="btn" onclick="closeSnapshotModal()" style="padding:8px 24px;">关闭</button>
       </div>
     </div>
   </div>
