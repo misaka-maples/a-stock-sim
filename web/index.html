@@ -1174,7 +1174,6 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
-      const h = 260;
       const isMobile = window.innerWidth <= 768;
       const h = isMobile ? 200 : 260;
       parent.style.height = `${h}px`;
@@ -1192,7 +1191,6 @@
         return;
       }
 
-      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
       const padding = isMobile
         ? { top: 20, right: 15, bottom: 25, left: 55 }
         : { top: 25, right: 35, bottom: 35, left: 75 };
@@ -1305,8 +1303,6 @@
         if (!currentCurve || currentCurve.length < 2) return;
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
-        const paddingLeft = 75;
-        const paddingRight = 35;
         const isMobile = window.innerWidth <= 768;
         const paddingLeft = isMobile ? 55 : 75;
         const paddingRight = isMobile ? 15 : 35;
@@ -1692,7 +1688,6 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
-      const h = 260;
       const isMobile = window.innerWidth <= 768;
       const h = isMobile ? 200 : 260;
       parent.style.height = `${h}px`;
@@ -1710,7 +1705,6 @@
         return;
       }
 
-      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
       const padding = isMobile
         ? { top: 20, right: 15, bottom: 25, left: 55 }
         : { top: 25, right: 35, bottom: 35, left: 75 };
@@ -1847,8 +1841,6 @@
         if (!currentBtCurve || currentBtCurve.length < 2) return;
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
-        const w = rect.width;
-        const padding = { top: 25, right: 35, bottom: 35, left: 75 };
         const isMobile = window.innerWidth <= 768;
         const padding = isMobile
           ? { top: 20, right: 15, bottom: 25, left: 55 }
@@ -2627,6 +2619,7 @@
       </div>
 
       <!-- 底部操作按钮 -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
       <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
         <button class="btn" style="background:#0284c7; color:#fff;" onclick="sendTestNotification()">
           🧪 发送微信测试消息
