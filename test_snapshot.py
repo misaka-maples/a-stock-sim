@@ -213,3 +213,4 @@ def test_delete_snapshot(temp_snapshot_env):
 
     snaps = mgr.list_snapshots()
     assert not any(s["snapshot_id"] == sid for s in snaps)
+

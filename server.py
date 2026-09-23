@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
+from fastapi import FastAPI, HTTPException, Body
 from fastapi import FastAPI, HTTPException, Body, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,6 +87,7 @@ SnapshotManager.register_on_restore_callback(on_snapshot_restored)
 
 
 def setup_account_trade_notification(account: SimAccount):
+    """为账户挂载微信交易成交通知回调"""
     """为账户挂载微信交易成交通知与实时快照更新回调"""
     def on_trade_callback(trade: Dict[str, Any], acc: SimAccount):
         try:
@@ -125,6 +127,7 @@ def background_worker():
                 symbols_to_monitor = list(ctx.symbols)
                 strategy_active = ctx.strategy_active
 
+            # 每日 15:00~15:10 收盘快报推送 (交易日执行一次)
             # 每日 15:00~15:10 收盘快报推送与每日快照归档 (交易日执行一次)
             today_str = now.strftime("%Y-%m-%d")
             is_closing_time = (datetime.time(15, 0) <= now.time() <= datetime.time(15, 10))
