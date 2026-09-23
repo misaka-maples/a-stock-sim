@@ -111,7 +111,27 @@
     }
     .panel-title { font-size: 15px; font-weight: 600; color: #fff; }
 
-    /* 表格 */
+    /* 表格与移动端响应式横向滚动 */
+    .table-responsive {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      margin-bottom: 6px;
+    }
+    .table-responsive::-webkit-scrollbar {
+      height: 6px;
+    }
+    .table-responsive::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    .table-responsive::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+    .table-responsive table {
+      min-width: 600px;
+      white-space: nowrap;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th { text-align: left; padding: 10px 8px; color: var(--text-muted); border-bottom: 1px solid var(--border-color); font-weight: 500; }
     td { padding: 10px 8px; border-bottom: 1px solid #1e293b; color: var(--text-main); }
@@ -248,6 +268,184 @@
       background: rgba(99, 102, 241, 0.16);
       box-shadow: 0 0 0 1px #6366f1;
     }
+
+    /* ========================================================================= */
+    /* 移动端排版优化 (Responsive Layout for Mobile & Tablet)                      */
+    /* ========================================================================= */
+    .header-badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    @media (max-width: 768px) {
+      body {
+        padding: 10px 10px 40px;
+      }
+      header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        margin-bottom: 14px;
+        padding-bottom: 12px;
+      }
+      .header-left {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        width: 100%;
+      }
+      .header-left h1 {
+        font-size: 17px;
+      }
+      .header-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        width: 100%;
+      }
+      .header-right {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        width: 100%;
+      }
+      .header-right .btn, .header-right a.btn {
+        text-align: center;
+        padding: 8px 4px;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        white-space: nowrap;
+      }
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .metric-card {
+        padding: 10px 12px;
+      }
+      .metric-card.span-full {
+        grid-column: span 2;
+      }
+      .metric-card .title {
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      .metric-card .value {
+        font-size: 18px;
+      }
+      .metric-card .sub {
+        font-size: 11px;
+      }
+      .panel {
+        padding: 12px;
+        margin-bottom: 14px;
+        border-radius: 8px;
+      }
+      .panel-title {
+        font-size: 14px;
+      }
+      .tab-group {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .tab-btn {
+        padding: 5px 8px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      #chartHeaderStats {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 12px !important;
+        font-size: 11px;
+        width: 100%;
+      }
+      .bt-form {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 10px;
+      }
+      .bt-metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+      .bt-metric-card {
+        padding: 8px 10px;
+      }
+      .bt-metric-card .bt-title {
+        font-size: 10px;
+      }
+      .bt-metric-card .bt-value {
+        font-size: 16px;
+      }
+      .bt-metric-card .bt-sub {
+        font-size: 10px;
+      }
+      .modal-card {
+        padding: 16px 12px;
+        width: 95%;
+        max-height: 90vh;
+      }
+      .modal-params-grid {
+        grid-template-columns: 1fr !important;
+      }
+      .modal-toolbar {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 10px !important;
+      }
+      .modal-toolbar-tabs {
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .modal-toolbar-tabs button {
+        flex: 1;
+        text-align: center;
+        min-width: 90px;
+      }
+      .wx-token-row {
+        flex-direction: column !important;
+      }
+      .wx-token-row button {
+        width: 100%;
+      }
+      .modal-footer {
+        flex-direction: column !important;
+        gap: 10px !important;
+      }
+      .modal-footer button, .modal-footer div {
+        width: 100%;
+      }
+      .modal-footer div {
+        display: flex;
+        gap: 8px;
+      }
+      .modal-footer div button {
+        flex: 1;
+      }
+      .notify-events-grid {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+      }
+      .form-control {
+        font-size: 14px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .bt-form {
+        grid-template-columns: 1fr;
+      }
+      .side-selector {
+        flex-direction: column;
+      }
+      .quick-shares {
+        flex-wrap: wrap;
+      }
+    }
   </style>
 </head>
 <body>
@@ -256,12 +454,14 @@
   <header>
     <div class="header-left">
       <h1>📈 A股量化模拟交易控制台</h1>
-      <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
-      <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
-      <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
-      <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
-      <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
-      <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted);">自动刷新: 3秒</span>
+      <div class="header-badges">
+        <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
+        <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
+        <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
+        <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
+        <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
+        <span id="refreshTimerText" style="font-size: 12px; color: var(--text-muted); display:inline-flex; align-items:center;">自动刷新: 3秒</span>
+      </div>
     </div>
     <div class="header-right">
       <button class="btn" style="background: #0284c7; color:#fff; font-weight: 600;" onclick="openNotifyModal()">🔔 微信推送</button>
@@ -273,7 +473,6 @@
     </div>
   </header>
 
-  <!-- 核心资产看板 -->
   <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
@@ -282,12 +481,14 @@
       <div id="equitySub" class="sub">初始资金: ¥0.00</div>
     </div>
     <div class="metric-card">
-      <div class="title">可用现金</div>
-      <div id="cash" class="value">¥0.00</div>
-      <div class="sub">随时可委托买入</div>
       <div class="title">今日收益 / 收益率</div>
       <div id="todayPnl" class="value">¥0.00</div>
       <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
+    </div>
+    <div class="metric-card">
+      <div class="title">可用现金</div>
+      <div id="cash" class="value">¥0.00</div>
+      <div id="cashSub" class="sub">随时可委托买入</div>
     </div>
     <div class="metric-card">
       <div class="title">持仓总市值</div>
@@ -295,7 +496,6 @@
       <div id="posCount" class="sub">持仓标的: 0 只</div>
     </div>
     <div class="metric-card">
-      <div class="title">累计浮盈 / 收益率</div>
       <div class="title">累计总收益 / 总收益率</div>
       <div id="totalPnl" class="value">¥0.00</div>
       <div id="totalPnlPct" class="sub">+0.00%</div>
@@ -305,15 +505,10 @@
       <div id="realizedPnl" class="value">¥0.00</div>
       <div id="unrealizedPnlSub" class="sub">当前在持浮盈: ¥0.00</div>
     </div>
-    <div class="metric-card">
+    <div class="metric-card span-full">
       <div class="title">交易胜率 / 盈亏比</div>
       <div id="winRate" class="value">0.0%</div>
       <div id="plRatioSub" class="sub">0胜 0负 | 盈亏比: 0.00</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">可用现金 / 持仓市值</div>
-      <div id="cash" class="value">¥0.00</div>
-      <div id="posCount" class="sub">持仓市值: ¥0.00 (0只)</div>
     </div>
   </div>
 
@@ -353,7 +548,7 @@
 
     <!-- Tab 2: 标的盈亏排行 -->
     <div id="perfTabSymbols" class="perf-tab-content" style="display: none;">
-      <div style="max-height: 280px; overflow-y: auto;">
+      <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
             <tr>
@@ -378,7 +573,7 @@
 
     <!-- Tab 3: 每日盈亏明细 -->
     <div id="perfTabDaily" class="perf-tab-content" style="display: none;">
-      <div style="max-height: 280px; overflow-y: auto;">
+      <div class="table-responsive" style="max-height: 280px; overflow: auto;">
         <table>
           <thead>
             <tr>
@@ -527,7 +722,7 @@
           <div id="btTradesTitle" style="font-size: 13px; font-weight: 600; color: #fff;">📜 回测交易明细记录</div>
           <span style="font-size: 11px; color: var(--text-muted);">包含全部买入、卖出、盈亏及出场归因</span>
         </div>
-        <div style="max-height: 260px; overflow-y: auto;">
+        <div class="table-responsive" style="max-height: 260px; overflow: auto;">
           <table>
             <thead>
               <tr>
@@ -563,24 +758,26 @@
           <div class="panel-title">📦 当前持仓 (T+1锁仓管理)</div>
           <span style="font-size:12px; color:var(--text-muted)">A股真实交易规费已计入成本</span>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>代码</th>
-              <th>名称</th>
-              <th class="text-right">总持仓</th>
-              <th class="text-right">可用(T+1)</th>
-              <th class="text-right">成本价</th>
-              <th class="text-right">最新市价</th>
-              <th class="text-right">持仓市值</th>
-              <th class="text-right">浮动盈亏</th>
-              <th class="text-center">操作</th>
-            </tr>
-          </thead>
-          <tbody id="positionsTbody">
-            <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>名称</th>
+                <th class="text-right">总持仓</th>
+                <th class="text-right">可用(T+1)</th>
+                <th class="text-right">成本价</th>
+                <th class="text-right">最新市价</th>
+                <th class="text-right">持仓市值</th>
+                <th class="text-right">浮动盈亏</th>
+                <th class="text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody id="positionsTbody">
+              <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- 全市场起爆共振雷达池 -->
@@ -589,25 +786,27 @@
           <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
           <span id="radarCountBadge" style="font-size:12px; color:var(--accent-blue); font-weight:600">全市场高频扫描</span>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>代码</th>
-              <th>名称</th>
-              <th class="text-right">最新价</th>
-              <th class="text-right">今日涨跌幅</th>
-              <th class="text-right">今开盘</th>
-              <th class="text-center">买一 / 卖一</th>
-              <th class="text-center">五档委比</th>
-              <th class="text-right">成交额</th>
-              <th class="text-center">共振评分</th>
-              <th class="text-center">快速下单</th>
-            </tr>
-          </thead>
-          <tbody id="quotesTbody">
-            <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
-          </tbody>
-        </table>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>代码</th>
+                <th>名称</th>
+                <th class="text-right">最新价</th>
+                <th class="text-right">今日涨跌幅</th>
+                <th class="text-right">今开盘</th>
+                <th class="text-center">买一 / 卖一</th>
+                <th class="text-center">五档委比</th>
+                <th class="text-right">成交额</th>
+                <th class="text-center">共振评分</th>
+                <th class="text-center">快速下单</th>
+              </tr>
+            </thead>
+            <tbody id="quotesTbody">
+              <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -801,7 +1000,16 @@
 
       // 现金与持仓
       document.getElementById('cash').innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('posCount').innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
+      if (document.getElementById('cashSub')) {
+        const posPct = s.total_equity ? ((s.market_value||0) / s.total_equity * 100).toFixed(1) : '0.0';
+        document.getElementById('cashSub').innerText = `仓位: ${posPct}% | 可随时买入`;
+      }
+      if (document.getElementById('marketValue')) {
+        document.getElementById('marketValue').innerText = `¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      }
+      if (document.getElementById('posCount')) {
+        document.getElementById('posCount').innerText = `持仓标的: ${s.position_count||0} 只`;
+      }
     }
 
     function switchPerfTab(tab) {
@@ -906,7 +1114,9 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
-      const h = 260;
+      const isMobile = window.innerWidth <= 768;
+      const h = isMobile ? 200 : 260;
+      parent.style.height = `${h}px`;
       canvas.width = w * dpr;
       canvas.height = h * dpr;
       const ctx = canvas.getContext('2d');
@@ -921,7 +1131,9 @@
         return;
       }
 
-      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+      const padding = isMobile
+        ? { top: 20, right: 15, bottom: 25, left: 55 }
+        : { top: 25, right: 35, bottom: 35, left: 75 };
       const plotW = w - padding.left - padding.right;
       const plotH = h - padding.top - padding.bottom;
 
@@ -1031,8 +1243,9 @@
         if (!currentCurve || currentCurve.length < 2) return;
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
-        const paddingLeft = 75;
-        const paddingRight = 35;
+        const isMobile = window.innerWidth <= 768;
+        const paddingLeft = isMobile ? 55 : 75;
+        const paddingRight = isMobile ? 15 : 35;
         const plotW = rect.width - paddingLeft - paddingRight;
         if (mouseX < paddingLeft || mouseX > rect.width - paddingRight) {
           tooltip.style.display = 'none';
@@ -1415,7 +1628,9 @@
       const parent = canvas.parentElement;
       const dpr = window.devicePixelRatio || 1;
       const w = parent.clientWidth || 800;
-      const h = 260;
+      const isMobile = window.innerWidth <= 768;
+      const h = isMobile ? 200 : 260;
+      parent.style.height = `${h}px`;
       canvas.width = w * dpr;
       canvas.height = h * dpr;
       const ctx = canvas.getContext('2d');
@@ -1430,7 +1645,9 @@
         return;
       }
 
-      const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+      const padding = isMobile
+        ? { top: 20, right: 15, bottom: 25, left: 55 }
+        : { top: 25, right: 35, bottom: 35, left: 75 };
       const plotW = w - padding.left - padding.right;
       const plotH = h - padding.top - padding.bottom;
 
@@ -1565,7 +1782,10 @@
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const w = rect.width;
-        const padding = { top: 25, right: 35, bottom: 35, left: 75 };
+        const isMobile = window.innerWidth <= 768;
+        const padding = isMobile
+          ? { top: 20, right: 15, bottom: 25, left: 55 }
+          : { top: 25, right: 35, bottom: 35, left: 75 };
         const plotW = w - padding.left - padding.right;
 
         if (mouseX < padding.left || mouseX > w - padding.right) {
@@ -1975,7 +2195,7 @@
       <!-- 参数微调 -->
       <div style="margin-top:16px; padding:14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px;">
         <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">策略执行参数微调</div>
-        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
+        <div class="modal-params-grid" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px;">
           <div>
             <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">单票仓位上限</label>
             <select id="modalMaxWeight" class="form-control" style="width:100%; padding:6px 10px; font-size:12px;">
@@ -2000,7 +2220,7 @@
       </div>
 
       <!-- 操作按钮 -->
-      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+      <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
         <button class="btn" onclick="closeStrategyModal()">取消</button>
         <button id="modalSwitchBtn" class="btn btn-primary" onclick="submitStrategySwitch()" style="padding:8px 22px; font-weight:600;">
           🚀 确认更换为此策略
@@ -2020,14 +2240,14 @@
       </div>
 
       <!-- 全局总开关与渠道切换 -->
-      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
+      <div class="modal-toolbar" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <input type="checkbox" id="notifyEnabled" style="width:18px; height:18px; cursor:pointer;">
           <label for="notifyEnabled" style="font-weight:600; font-size:14px; cursor:pointer; color:#fff;">
             启用微信消息推送
           </label>
         </div>
-        <div style="display:flex; gap:8px;">
+        <div class="modal-toolbar-tabs" style="display:flex; gap:8px;">
           <button id="tabBtnWxPusher" class="tab-btn active" onclick="switchNotifyTab('wxpusher')">📱 WxPusher (网页扫码)</button>
           <button id="tabBtnServerChan" class="tab-btn" onclick="switchNotifyTab('serverchan')">⚡ Server酱 (SendKey)</button>
           <button id="tabBtnBoth" class="tab-btn" onclick="switchNotifyTab('both')">🔗 双通道同时推</button>
@@ -2037,7 +2257,7 @@
       <!-- Tab 1: WxPusher 设置 (含网页扫码直连功能) -->
       <div id="notifyTabWxPusher" style="display:block;">
         <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div style="font-size:13px; font-weight:600; color:#38bdf8; display:flex; align-items:center; gap:6px;">
               <span>📱 方式 A：自建应用 + 网页扫码自动绑定 UID (强烈推荐)</span>
             </div>
@@ -2046,7 +2266,7 @@
             </a>
           </div>
 
-          <div style="display:flex; gap:10px; margin-bottom:12px;">
+          <div class="wx-token-row" style="display:flex; gap:10px; margin-bottom:12px;">
             <input type="text" id="wxAppToken" class="form-control" placeholder="输入 WxPusher AppToken (形如 AT_xxxxxxxx...)" style="flex:1;">
             <button class="btn" style="background:#0284c7; color:#fff; font-weight:600; white-space:nowrap;" onclick="generateWxPusherQrcode()">
               📷 生成网页扫码关注二维码
@@ -2088,7 +2308,7 @@
       <!-- Tab 2: Server酱 设置 -->
       <div id="notifyTabServerChan" style="display:none;">
         <div style="padding:14px; background:rgba(15,23,42,0.6); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
             <div style="font-size:13px; font-weight:600; color:#f59e0b;">
               ⚡ Server酱 Turbo 版 (方糖微信推送)
             </div>
@@ -2106,7 +2326,7 @@
       <!-- 推送事件场景选项 -->
       <div style="padding:12px 14px; background:rgba(15,23,42,0.8); border:1px solid #334155; border-radius:8px; margin-bottom:16px;">
         <div style="font-size:12px; font-weight:600; color:#94a3b8; margin-bottom:8px;">推送场景开关</div>
-        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:13px;">
+        <div class="notify-events-grid" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:13px;">
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
             <input type="checkbox" id="notifyOnBuy" checked> 🟢 买入成交实时提醒
           </label>
@@ -2123,7 +2343,7 @@
       </div>
 
       <!-- 底部操作按钮 -->
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
         <button class="btn" style="background:#0284c7; color:#fff;" onclick="sendTestNotification()">
           🧪 发送微信测试消息
         </button>
