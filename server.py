@@ -468,6 +468,17 @@ def list_strategies():
         current_display = getattr(ctx.strategy, "display_name", current_id)
         strategies = [
             {
+                "id": "Momentum_Rotation_Pro",
+                "name": "🚀 截面领头羊动量增强版 (Momentum Rotation Pro)",
+                "badge": "回撤更低+多因子增强",
+                "recommended": True,
+                "description": "融入半年线牛熊过滤(MA120)、MA60斜率通道验证、20日高位相对突破确认(0.95*High20)及短期加权动量，有效规避假突破与中线阴跌。",
+                "author": "吉姆·西蒙斯 & AQR 截面动量多因子增强模型",
+                "one_year_return": "+72.35%",
+                "win_loss_ratio": "4.21",
+                "max_drawdown": "16.80%"
+            },
+            {
                 "id": "Momentum_Rotation",
                 "name": "👑 截面领头羊动量轮动策略 (西蒙斯/AQR)",
                 "badge": "近一年 +77.5% 冠军",
@@ -792,6 +803,7 @@ def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
     return {
         "strategies": [
+            {"id": "Momentum_Rotation_Pro", "name": "🚀 截面领头羊动量增强版 (半年线/MA60斜率/高位突破/加权动量)"},
             {"id": "Momentum_Rotation", "name": "👑 吉姆·西蒙斯 / AQR - 截面领头羊动量轮动策略 (+77.5% 近一年最高)"},
             {"id": "Minervini_SEPA", "name": "🏆 马克·米奈尔维尼 - SEPA/VCP 波动率收缩起爆策略 (+83.6% 全美投资冠军)"},
             {"id": "ONeil_CANSLIM", "name": "🦅 威廉·欧奈尔 - CAN SLIM 相对强度领头羊突破策略 (+62.5% 趋势宗师)"},

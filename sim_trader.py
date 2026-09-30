@@ -1726,6 +1726,209 @@ class MomentumRotationStrategy(BaseStrategy):
                         current_holding_count += 1
 
 
+class MomentumRotationProStrategy(BaseStrategy):
+    """
+    截面领头羊动量轮动增强版 (Momentum Rotation Pro)
+    基于西蒙斯大奖章 & AQR 截面动量多因子增强模型：
+    1. 半年线牛熊过滤 (Close > MA120)：彻底剔除处于中长期空头阴跌周期的假突破个股；
+    2. MA60 均线斜率上行验证 (MA60 > MA60[t-5])：只在个股处于中期加速上行通道时建仓；
+    3. 20日相对高位突破确认 (Close >= 0.95 * High20)：筛选临近创近期新高的真正强势爆发龙头；
+    4. 短期爆发动量加权提升：Score = ret_20 * 2.0 + ret_60 * 1.0；
+    5. 出场与风控：-6%严格硬止损，破位MA20止损，MA20生命线趋势追踪止盈。
+    """
+
+    def __init__(
+        self,
+        account: SimAccount,
+        watchlist: List[str],
+        max_stock_weight: float = 0.33,
+        max_positions: int = 3,
+        stop_loss_pct: float = -6.0,
+        momentum_w20: float = 2.0,
+        momentum_w60: float = 1.0,
+        alpha_high: float = 0.95,
+        **kwargs
+    ):
+        super().__init__(account, name="Momentum_Rotation_Pro")
+        self.display_name = "截面领头羊动量增强版 (半年线/MA60斜率/高位突破/加权动量)"
+        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
+        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions
+        self.stop_loss_pct = stop_loss_pct
+        self.momentum_w20 = momentum_w20
+        self.momentum_w60 = momentum_w60
+        self.alpha_high = alpha_high
+        self.latest_candidates: List[Dict[str, Any]] = []
+        self.feed = HistoricalDataFeed()
+        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._last_history_update = 0.0
+
+    def _ensure_history_data(self):
+        """确保标的历史K线数据已加载（优先使用本地磁盘缓存）"""
+        now_ts = time.time()
+        if now_ts - self._last_history_update < 1800 and self.history_cache:
+            return
+
+        needed = list(self.watchlist[:100])
+        for sym in self.account.positions.keys():
+            if sym not in needed:
+                needed.append(sym)
+
+        try:
+            data = self.feed.fetch_universe_klines(needed, use_cache=True)
+            for sym, item in data.items():
+                if item and item.get("bars"):
+                    self.history_cache[sym] = item["bars"]
+            self._last_history_update = now_ts
+        except Exception as e:
+            print(f"[警告] 加载动量增强历史K线失败: {e}", file=sys.stderr)
+
+    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
+        self._ensure_history_data()
+        summary = self.account.get_summary()
+        total_equity = summary["total_equity"]
+        just_sold = set()
+
+        # 1. 检查现有持仓的出场与风控
+        for sym, pos in list(self.account.positions.items()):
+            q = quotes.get(sym)
+            if not q or q.get("current", 0) <= 0:
+                continue
+
+            current_price = q["current"]
+            cost_price = pos.get("cost_price", current_price)
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            if avail <= 0:
+                continue
+
+            pnl_pct = pos.get("pnl_pct", 0.0)
+            bars = self.history_cache.get(sym, [])
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else cost_price
+
+            bids = q.get("bids", [])
+            exec_price = bids[0]["price"] if bids else current_price
+
+            # 规则 A: 严格防守硬止损 (-6.0%)
+            if pnl_pct <= self.stop_loss_pct:
+                reason = f"动量增强硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            # 规则 B: 跌破 MA20 破位止损 (微亏防假突破)
+            if current_price < ma20 and pnl_pct <= -2.0:
+                reason = f"动量增强破位止损 (现价 ¥{current_price:.2f} < MA20 ¥{ma20:.2f})"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+            # 规则 C: 均线动态追踪止盈 (主升浪结束回落跌破 MA20 锁盈)
+            elif current_price < ma20 and pnl_pct >= 3.0:
+                reason = f"动量增强均线止盈 (回落跌破 MA20 ¥{ma20:.2f}，锁定浮盈 {pnl_pct:+.2f}%)"
+                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
+                if res.get("success"):
+                    just_sold.add(sym)
+                continue
+
+        # 2. 扫描多因子精选标的
+        candidates = []
+        for sym in self.watchlist:
+            if sym in self.account.positions or sym in just_sold:
+                continue
+            # 严格仅交易沪深纯主板标的
+            if not StockUniverse.is_main_board(sym):
+                continue
+            q = quotes.get(sym)
+            if not q or not q.get("fresh", True):
+                continue
+
+            name = q.get("name", "")
+            if "ST" in name.upper() or "退" in name:
+                continue
+
+            current_price = q.get("current", 0.0)
+            open_p = q.get("open", 0.0)
+            change_pct = q.get("change_pct", 0.0)
+            if current_price <= 0 or (open_p > 0 and current_price < open_p):
+                continue
+
+            bars = self.history_cache.get(sym, [])
+            if len(bars) < 120:
+                continue
+
+            # 均线多头形态 (Close > MA20 > MA60)
+            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0
+            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
+            ma120 = (sum(b["close"] for b in bars[-119:]) + current_price) / 120.0
+            ma60_prev5 = sum(b["close"] for b in bars[-64:-4]) / 60.0
+            high20 = max(max(b["high"] for b in bars[-19:]), current_price)
+
+            # 核心增强过滤条件:
+            # 1. 均线多头：Price > MA20 > MA60
+            if not (current_price > ma20 and ma20 > ma60):
+                continue
+            # 2. 半年线牛熊过滤：Price > MA120 (彻底剔除中长期空头阴跌股)
+            if current_price < ma120:
+                continue
+            # 3. MA60上行通道斜率验证：MA60 > MA60[t-5]
+            if ma60 <= ma60_prev5:
+                continue
+            # 4. 20日高位突破确认：Close >= 0.95 * High20
+            if current_price < self.alpha_high * high20:
+                continue
+
+            # 双周期动量为正
+            ret_20 = (current_price / bars[-20]["close"] - 1.0) * 100.0
+            ret_60 = (current_price / bars[-60]["close"] - 1.0) * 100.0
+            if ret_20 <= 0 or ret_60 <= 0:
+                continue
+
+            # 强化短期爆发力加权打分：Score = ret_20 * 2.0 + ret_60 * 1.0
+            score = round(ret_20 * self.momentum_w20 + ret_60 * self.momentum_w60, 2)
+            asks = q.get("asks", [])
+            exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
+
+            candidates.append({
+                "symbol": sym,
+                "code": q.get("code", sym),
+                "name": name,
+                "current": current_price,
+                "change_pct": change_pct,
+                "open": open_p,
+                "score": score,
+                "ret_20": round(ret_20, 2),
+                "ret_60": round(ret_60, 2),
+                "exec_price": exec_p,
+                "fresh": True
+            })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        self.latest_candidates = candidates[:50]
+
+        # 择优买入动量最高的领头羊
+        current_holding_count = len(self.account.positions)
+        if current_holding_count < self.max_positions:
+            for cand in candidates:
+                if current_holding_count >= self.max_positions:
+                    break
+                sym = cand["symbol"]
+                exec_price = cand["exec_price"]
+                name = cand["name"]
+                target_amount = total_equity * self.max_stock_weight
+                max_shares = int(target_amount / (exec_price * 100)) * 100
+                if max_shares < 100:
+                    continue
+
+                cost_estimate = max_shares * exec_price * 1.001
+                if self.account.cash >= cost_estimate:
+                    reason = f"动量增强买入 (动量分 {cand['score']:.1f}, 20日 {cand['ret_20']:+.1f}%, 60日 {cand['ret_60']:+.1f}%)"
+                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
+                    if res.get("success"):
+                        current_holding_count += 1
+
+
 class MinerviniSEPAStrategy(BaseStrategy):
     """
     马克·米奈尔维尼 SEPA + VCP 波动率收缩起爆策略
@@ -2163,6 +2366,7 @@ class ONeilCANSLIMStrategy(BaseStrategy):
 
 
 STRATEGY_REGISTRY = {
+    "Momentum_Rotation_Pro": MomentumRotationProStrategy,
     "Momentum_Rotation": MomentumRotationStrategy,
     "Minervini_SEPA": MinerviniSEPAStrategy,
     "TurtleBreakout": TurtleBreakoutStrategy,

@@ -245,8 +245,18 @@ class TestServerAPI(unittest.TestCase):
         self.assertEqual(status_data["strategy_id"], "Momentum_Rotation")
 
         # 检查内部 ctx.strategy 是否更新
-        from sim_trader import MomentumRotationStrategy
+        from sim_trader import MomentumRotationStrategy, MomentumRotationProStrategy
         self.assertIsInstance(ctx.strategy, MomentumRotationStrategy)
+
+        # 切换到增强版策略 Momentum_Rotation_Pro
+        pro_res = self.client.post("/api/strategy/switch", json={
+            "strategy_id": "Momentum_Rotation_Pro"
+        })
+        self.assertEqual(pro_res.status_code, 200)
+        pro_data = pro_res.json()
+        self.assertTrue(pro_data["success"])
+        self.assertEqual(pro_data["strategy_id"], "Momentum_Rotation_Pro")
+        self.assertIsInstance(ctx.strategy, MomentumRotationProStrategy)
 
         # 测试切换非法策略报错
         bad_res = self.client.post("/api/strategy/switch", json={

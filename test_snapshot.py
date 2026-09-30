@@ -8,6 +8,7 @@ import json
 import shutil
 import tempfile
 import tarfile
+import datetime
 from pathlib import Path
 import pytest
 
@@ -58,7 +59,7 @@ def temp_snapshot_env(monkeypatch, tmp_path):
         },
         "trades": [
             {
-                "time": "2026-09-23 09:35:00",
+                "time": f"{datetime.datetime.now().strftime('%Y-%m-%d')} 09:35:00",
                 "symbol": "sh600000",
                 "name": "浦发银行",
                 "side": "BUY",
