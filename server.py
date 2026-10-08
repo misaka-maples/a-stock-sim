@@ -39,6 +39,7 @@ from backtest import run_backtest
 from history_data import PRESET_POOLS
 from notifier import NotificationManager, WxPusherClient
 from snapshot_manager import SnapshotManager, SNAPSHOTS_DIR
+from trade_calendar import is_trading_day
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -127,11 +128,10 @@ def background_worker():
                 symbols_to_monitor = list(ctx.symbols)
                 strategy_active = ctx.strategy_active
 
-            # 每日 15:00~15:10 收盘快报推送 (交易日执行一次)
-            # 每日 15:00~15:10 收盘快报推送与每日快照归档 (交易日执行一次)
+            # 每日 15:00~15:10 收盘快报推送与每日快照归档 (仅在开盘交易日执行一次，跳过周末与法定节假日)
             today_str = now.strftime("%Y-%m-%d")
             is_closing_time = (datetime.time(15, 0) <= now.time() <= datetime.time(15, 10))
-            if is_closing_time and last_daily_summary_date != today_str and now.weekday() < 5:
+            if is_closing_time and last_daily_summary_date != today_str and is_trading_day(now):
                 last_daily_summary_date = today_str
                 with ctx.lock:
                     if ctx.account:
@@ -406,6 +406,7 @@ def get_status():
             "strategy_name": strat_id,
             "strategy_display_name": strat_display,
             "market_status": MarketFeed.get_market_status(now),
+            "is_trading_day": MarketFeed.is_trading_day(now),
             "is_trading_time": MarketFeed.is_trading_time(now),
             "ignore_market_hours": ctx.ignore_market_hours,
             "interval": ctx.interval,

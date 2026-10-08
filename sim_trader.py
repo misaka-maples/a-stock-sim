@@ -32,7 +32,7 @@ import json
 import math
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 
@@ -236,49 +236,82 @@ class MarketFeed:
         return c
 
     @staticmethod
+    def is_trading_day(now: Optional[Union[datetime.date, datetime.datetime, str]] = None) -> bool:
+        """判断指定日期是否为A股开盘交易日 (排除周末与法定休市节假日)"""
+        try:
+            from trade_calendar import is_trading_day as cal_is_trading_day
+            return cal_is_trading_day(now)
+        except Exception:
+            if now is None:
+                d = datetime.datetime.now(BEIJING).date()
+            elif isinstance(now, datetime.datetime):
+                d = now.date()
+            elif isinstance(now, datetime.date):
+                d = now
+            else:
+                d = datetime.date.fromisoformat(str(now).strip().split(" ")[0])
+            if d.weekday() >= 5:
+                return False
+            md = d.strftime("%m-%d")
+            holidays = [
+                ("01-01", "01-03"), ("02-15", "02-23"), ("04-04", "04-06"),
+                ("05-01", "05-05"), ("06-19", "06-21"), ("09-25", "09-27"),
+                ("10-01", "10-07")
+            ]
+            return not any(start <= md <= end for start, end in holidays)
+
+    @staticmethod
     def get_market_status(now: Optional[datetime.datetime] = None) -> str:
         """判断市场交易状态"""
         if HAS_A_STOCK and now is None:
             return a.get_market_status()
 
-        if now is None:
-            now = datetime.datetime.now(BEIJING)
+        try:
+            from trade_calendar import get_market_status as cal_get_market_status
+            return cal_get_market_status(now)
+        except Exception:
+            if now is None:
+                now = datetime.datetime.now(BEIJING)
 
-        if now.weekday() >= 5:
-            return "休市中（周末）"
+            if now.weekday() >= 5:
+                return "休市中（周末）"
 
-        holidays = [
-            ("01-01", "01-03"), ("02-15", "02-23"), ("04-04", "04-06"),
-            ("05-01", "05-05"), ("06-19", "06-21"), ("09-25", "09-27"),
-            ("10-01", "10-07")
-        ]
-        md = now.strftime("%m-%d")
-        if any(start <= md <= end for start, end in holidays):
-            return "休市中（节假日）"
+            holidays = [
+                ("01-01", "01-03"), ("02-15", "02-23"), ("04-04", "04-06"),
+                ("05-01", "05-05"), ("06-19", "06-21"), ("09-25", "09-27"),
+                ("10-01", "10-07")
+            ]
+            md = now.strftime("%m-%d")
+            if any(start <= md <= end for start, end in holidays):
+                return "休市中（节假日）"
 
-        t = now.time()
-        if t < datetime.time(9, 15):
-            return "未开盘（盘前）"
-        elif datetime.time(9, 15) <= t < datetime.time(9, 25):
-            return "开盘集合竞价"
-        elif datetime.time(9, 25) <= t < datetime.time(9, 30):
-            return "盘前准备期"
-        elif datetime.time(9, 30) <= t <= datetime.time(11, 30):
-            return "早盘交易中"
-        elif datetime.time(11, 30) < t < datetime.time(13, 0):
-            return "午间休市"
-        elif datetime.time(13, 0) <= t < datetime.time(14, 57):
-            return "午盘交易中"
-        elif datetime.time(14, 57) <= t <= datetime.time(15, 0):
-            return "尾盘集合竞价"
-        else:
-            return "已收盘"
+            t = now.time()
+            if t < datetime.time(9, 15):
+                return "未开盘（盘前）"
+            elif datetime.time(9, 15) <= t < datetime.time(9, 25):
+                return "开盘集合竞价"
+            elif datetime.time(9, 25) <= t < datetime.time(9, 30):
+                return "盘前准备期"
+            elif datetime.time(9, 30) <= t <= datetime.time(11, 30):
+                return "早盘交易中"
+            elif datetime.time(11, 30) < t < datetime.time(13, 0):
+                return "午间休市"
+            elif datetime.time(13, 0) <= t < datetime.time(14, 57):
+                return "午盘交易中"
+            elif datetime.time(14, 57) <= t <= datetime.time(15, 0):
+                return "尾盘集合竞价"
+            else:
+                return "已收盘"
 
     @classmethod
     def is_trading_time(cls, now: Optional[datetime.datetime] = None) -> bool:
         """当前是否处于连续交易时段（9:30-11:30, 13:00-14:57）"""
-        status = cls.get_market_status(now)
-        return status in ("早盘交易中", "午盘交易中")
+        try:
+            from trade_calendar import is_trading_time as cal_is_trading_time
+            return cal_is_trading_time(now)
+        except Exception:
+            status = cls.get_market_status(now)
+            return status in ("早盘交易中", "午盘交易中")
 
     @classmethod
     def fetch_quotes(cls, symbols: List[str], max_workers: int = 16) -> Dict[str, Dict[str, Any]]:

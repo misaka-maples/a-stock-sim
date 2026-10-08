@@ -395,12 +395,33 @@ class NotificationManager:
         content = "\n".join(lines)
         self.async_dispatch(title=title, content=content, summary=summary)
 
-    def notify_daily_summary(self, summary: Dict[str, Any], positions: Dict[str, Any]):
-        """每日 15:00 收盘快报通知"""
+    def notify_daily_summary(
+        self,
+        summary: Dict[str, Any],
+        positions: Dict[str, Any],
+        force: bool = False,
+        date_str: Optional[str] = None
+    ):
+        """每日 15:00 收盘快报通知（自动跳过周末与法定休市节假日，仅在开盘日推送）"""
         if not self.config.get("notify_on_daily_summary", True):
             return
 
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        today_str = date_str or datetime.datetime.now().strftime("%Y-%m-%d")
+
+        # 检查是否为开盘交易日（非交易日跳过推送，除非 force=True）
+        if not force:
+            try:
+                from trade_calendar import is_trading_day
+                if not is_trading_day(today_str):
+                    logger.info(f"[{today_str}] 为周末或法定休市节假日，跳过每日收盘微信战报推送")
+                    return
+            except Exception as e:
+                logger.warning(f"交易日历检查异常，回退至周末检查: {e}")
+                now_dt = datetime.datetime.now()
+                if now_dt.weekday() >= 5:
+                    logger.info(f"[{today_str}] 为周末休市，跳过每日收盘微信战报推送")
+                    return
+
         total_equity = summary.get("total_equity", 0.0)
         today_pnl = summary.get("today_pnl", 0.0)
         today_pnl_pct = summary.get("today_pnl_pct", 0.0)

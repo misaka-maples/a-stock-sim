@@ -8,11 +8,10 @@ import json
 import shutil
 import tempfile
 import tarfile
-import datetime
 from pathlib import Path
 import pytest
 
-from snapshot_manager import SnapshotManager, BASE_DIR, SNAPSHOTS_DIR, SIM_ACCOUNT_PATH, STRATEGY_CONFIG_PATH, NOTIFICATION_CONFIG_PATH
+from snapshot_manager import SnapshotManager, BASE_DIR, SNAPSHOTS_DIR, SIM_ACCOUNT_PATH, STRATEGY_CONFIG_PATH, NOTIFICATION_CONFIG_PATH, get_now
 
 
 @pytest.fixture
@@ -59,7 +58,7 @@ def temp_snapshot_env(monkeypatch, tmp_path):
         },
         "trades": [
             {
-                "time": f"{datetime.datetime.now().strftime('%Y-%m-%d')} 09:35:00",
+                "time": f"{get_now().strftime('%Y-%m-%d')} 09:35:00",
                 "symbol": "sh600000",
                 "name": "浦发银行",
                 "side": "BUY",
