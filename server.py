@@ -13,6 +13,10 @@ import argparse
 import datetime
 import threading
 import logging
+import math
+import inspect
+import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -20,8 +24,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Body
 from fastapi import FastAPI, HTTPException, Body, Query, Request
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -39,7 +42,12 @@ from backtest import run_backtest
 from history_data import PRESET_POOLS
 from notifier import NotificationManager, WxPusherClient
 from snapshot_manager import SnapshotManager, SNAPSHOTS_DIR
+from dataclasses import asdict
+from strategy_rules import MomentumConfig
+from history_data import last_completed_trading_day
 from trade_calendar import is_trading_day
+from api_auth import install_auth
+from execution import _risk_and_limits
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -68,11 +76,110 @@ class ServerContext:
         self.strategy_active: bool = True
         self.running: bool = False
         self.worker_thread: Optional[threading.Thread] = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.last_quotes: Dict[str, Dict[str, Any]] = {}
         self.last_step_time: Optional[datetime.datetime] = None
+        self.worker_stop = threading.Event()
+        self.worker_started = False
+        self.worker_last_success: Optional[datetime.datetime] = None
+        self.worker_last_error: Optional[str] = None
+        self.worker_failures = 0
+        self.invalid_quote_count = 0
+        self.closing_report_pending = False
+        self.execution_participation_rate = .05
 
 ctx = ServerContext()
+
+
+def validated_interval(value):
+    if isinstance(value, bool):
+        raise ValueError("轮询间隔必须是1至60秒之间的有限数值")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("轮询间隔必须是1至60秒之间的有限数值") from None
+    if not math.isfinite(value) or not 1 <= value <= 60:
+        raise ValueError("轮询间隔必须是1至60秒之间的有限数值")
+    return value
+
+
+def normalized_watchlist(symbols):
+    if not isinstance(symbols, list) or any(not isinstance(s, str) or not StockUniverse.is_main_board(s) for s in symbols):
+        raise ValueError("监控池必须是沪深主板股票代码列表")
+    return list(dict.fromkeys(MarketFeed.normalize_symbol(s) for s in symbols))
+
+
+def sync_execution_settings(participation_rate=None):
+    if not ctx.account:
+        return
+    config = getattr(ctx.strategy, "config", None)
+    value = config.participation_rate if config else participation_rate if participation_rate is not None else ctx.execution_participation_rate
+    if not math.isfinite(float(value)) or not 0 < float(value) <= 1:
+        raise ValueError("成交参与率必须在(0,1]内")
+    ctx.account.participation_rate = float(value)
+    ctx.execution_participation_rate = float(value)
+    if ctx.engine:
+        ctx.engine.interval = validated_interval(ctx.interval)
+        ctx.engine.symbols = list(ctx.symbols)
+
+
+def configured_strategy(strategy_id, account, watchlist, parameters):
+    parameters = dict(parameters)
+    if not strategy_id.startswith("Momentum_Rotation"):
+        # Execution participation belongs to the broker for legacy strategies;
+        # constructors without **kwargs cannot accept unrelated risk settings.
+        parameters.pop("participation_rate", None)
+        signature = inspect.signature(STRATEGY_REGISTRY[strategy_id].__init__)
+        if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()):
+            parameters = {k: v for k, v in parameters.items() if k in signature.parameters}
+    return create_strategy(strategy_id, account=account, watchlist=watchlist, **parameters)
+
+
+def persisted_settings():
+    parameters = asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {
+        key: getattr(ctx.strategy, key) for key in ("max_stock_weight", "max_positions", "stop_loss_pct")
+        if hasattr(ctx.strategy, key)}
+    if not hasattr(ctx.strategy, "config") and ctx.account:
+        parameters["participation_rate"] = ctx.account.participation_rate
+    return dict(active_strategy=ctx.strategy.name, parameters=parameters,
+                strategy_active=ctx.strategy_active, symbols=list(ctx.symbols),
+                interval=validated_interval(ctx.interval), updated_at=datetime.datetime.now(BEIJING).isoformat())
+
+
+def persist_settings(data=None):
+    data = data if data is not None else persisted_settings()
+    STRATEGY_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = STRATEGY_CONFIG_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False))
+    temporary.replace(STRATEGY_CONFIG_PATH)
+    return data
+
+
+def validate_snapshot_settings(snapshot):
+    """Pure validation, registered before snapshot files are replaced."""
+    saved = snapshot.get("strategy_state", {})
+    if not isinstance(saved, dict):
+        raise ValueError("快照策略配置必须为对象")
+    strategy_id = saved.get("active_strategy", saved.get("current_strategy"))
+    if strategy_id is not None and strategy_id not in STRATEGY_REGISTRY:
+        raise ValueError("快照包含不支持的策略")
+    parameters = saved.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("快照策略参数必须为对象")
+    if strategy_id and strategy_id.startswith("Momentum_Rotation"):
+        MomentumConfig.from_dict(parameters)
+    else:
+        risk_fields = {k: v for k, v in parameters.items() if k in MomentumConfig.__dataclass_fields__}
+        if risk_fields:
+            MomentumConfig.from_dict(risk_fields)
+        if any(isinstance(v, (int, float)) and not math.isfinite(v) for v in parameters.values()):
+            raise ValueError("快照策略参数必须为有限数值")
+    if "interval" in saved:
+        validated_interval(saved["interval"])
+    if "symbols" in saved:
+        normalized_watchlist(saved["symbols"])
+    if "strategy_active" in saved and not isinstance(saved["strategy_active"], bool):
+        raise ValueError("快照策略启停标志必须为布尔值")
 
 
 def on_snapshot_restored(snapshot_data: Dict[str, Any]):
@@ -80,16 +187,33 @@ def on_snapshot_restored(snapshot_data: Dict[str, Any]):
     with ctx.lock:
         if ctx.account:
             ctx.account.load()
+            if ctx.strategy:
+                saved = snapshot_data.get("strategy_state", {})
+                if not saved and STRATEGY_CONFIG_PATH.exists():
+                    saved = json.loads(STRATEGY_CONFIG_PATH.read_text())
+                strategy_id = saved.get("active_strategy", saved.get("current_strategy", ctx.strategy.name))
+                params = saved.get("parameters", asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {})
+                ctx.symbols = normalized_watchlist(saved.get("symbols", ctx.symbols))
+                ctx.interval = validated_interval(saved.get("interval", ctx.interval))
+                ctx.strategy_active = saved.get("strategy_active", ctx.strategy_active)
+                ctx.strategy = configured_strategy(strategy_id, ctx.account, ctx.symbols, params)
+                sync_execution_settings(params.get("participation_rate"))
+                ctx.last_quotes = {}
+                ctx.radar_candidates = []
             if ctx.engine:
                 ctx.engine.account = ctx.account
+                ctx.engine.strategy = ctx.strategy
         logger.info("系统快照已热重载至内存交易引擎")
 
 SnapshotManager.register_on_restore_callback(on_snapshot_restored)
+SnapshotManager.register_restore_validator(validate_snapshot_settings)
 
 
 def setup_account_trade_notification(account: SimAccount):
     """为账户挂载微信交易成交通知回调"""
     """为账户挂载微信交易成交通知与实时快照更新回调"""
+    if getattr(account, "_server_trade_callback", None) is not None:
+        return
     def on_trade_callback(trade: Dict[str, Any], acc: SimAccount):
         try:
             summary = acc.get_summary() if acc else {}
@@ -109,118 +233,236 @@ def setup_account_trade_notification(account: SimAccount):
 
     if hasattr(account, "register_trade_callback"):
         account.register_trade_callback(on_trade_callback)
+        account._server_trade_callback = on_trade_callback
+
+
+def _quote_timestamp(quote):
+    value = quote.get("time")
+    try:
+        if isinstance(value, datetime.datetime):
+            result = value
+        elif isinstance(value, str) and len(value) == 14 and value.isdigit():
+            result = datetime.datetime.strptime(value, "%Y%m%d%H%M%S")
+        elif isinstance(value, str) and ("T" in value or " " in value):
+            result = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return None
+        return result.replace(tzinfo=BEIJING) if result.tzinfo is None else result.astimezone(BEIJING)
+    except (ValueError, TypeError):
+        return None
+
+
+def _finite_quote(quote):
+    if not isinstance(quote, dict):
+        return None
+    result = dict(quote)
+    for key in ("current", "pre_close", "open", "high", "low", "change", "change_pct", "amount_wanyuan", "volume_lots"):
+        if key not in result:
+            continue
+        try:
+            value = float(result[key])
+        except (ValueError, TypeError):
+            return None
+        if not math.isfinite(value) or (key == "current" and value <= 0):
+            return None
+        result[key] = value
+    if "current" not in result:
+        return None
+    timestamp = _quote_timestamp(result)
+    if timestamp is None or result.get("pre_close", 0) <= 0:
+        return None
+    try:
+        lower, upper = _risk_and_limits("SELL", result, Decimal(str(result["pre_close"])), timestamp.date())
+        if not lower <= Decimal(str(result["current"])) <= upper:
+            return None
+    except (ValueError, TypeError, InvalidOperation, OverflowError):
+        return None
+    # Invalid book values must not poison either JSON responses or valuation.
+    for side in ("asks", "bids"):
+        if side in result:
+            if not isinstance(result[side], list):
+                return None
+            for level in result[side]:
+                if not isinstance(level, dict):
+                    return None
+                for key in ("price", "volume"):
+                    try:
+                        if not math.isfinite(float(level[key])):
+                            return None
+                    except (KeyError, TypeError, ValueError):
+                        return None
+    return result
+
+
+def refresh_quote_freshness(now):
+    for quote in ctx.last_quotes.values():
+        timestamp = _quote_timestamp(quote)
+        age = (now - timestamp).total_seconds() if timestamp else -1
+        quote["fresh"] = timestamp is not None and timestamp.date() == now.date() and 0 <= age <= 120
+
+
+def _close_prices_ready(now, held_symbols, fetched):
+    close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    for symbol in held_symbols:
+        quote = _finite_quote(fetched.get(symbol))
+        timestamp = _quote_timestamp(quote) if quote else None
+        if timestamp is None or not close <= timestamp <= now:
+            return False
+    return True
+
+
+def worker_step(now=None):
+    """One poll, exposed for offline timing/failure tests; no sleeping here."""
+    supplied_clock = now is not None
+    now = now or datetime.datetime.now(BEIJING)
+    with ctx.lock:
+        ctx.last_step_time = now
+        held = list(ctx.account.positions) if ctx.account else []
+        symbols = list(ctx.symbols)
+        strategy = ctx.strategy
+    if strategy and hasattr(strategy, "prepare"):
+        strategy.prepare(now)
+        symbols = [candidate["symbol"] for candidate in strategy.latest_candidates]
+    is_trading = MarketFeed.is_trading_time(now)
+    closing = is_trading_day(now) and now.time() >= datetime.time(15)
+    reported = ctx.account.strategy_state.get("__server__", {}).get("closing_report_date") if ctx.account else None
+    closing_due = bool(closing and reported != now.date().isoformat() and ctx.account)
+    # The final closing fetch is never skipped just because old quotes exist.
+    fetch_needed = is_trading or ctx.ignore_market_hours or closing_due or not ctx.last_quotes
+    fetched = MarketFeed.fetch_quotes(sorted(set(symbols) | set(held))) if fetch_needed else {}
+    checked_at = now if supplied_clock else datetime.datetime.now(BEIJING)
+    with ctx.lock:
+        valid, invalid = {}, []
+        for symbol, quote in fetched.items():
+            cleaned = _finite_quote(quote)
+            if cleaned is None:
+                invalid.append(symbol)
+            else:
+                valid[symbol] = cleaned
+        # Also clean previously cached quotes: no persisted NaN/Inf reaches marks.
+        ctx.last_quotes = {symbol: cleaned for symbol, quote in ctx.last_quotes.items()
+                           if (cleaned := _finite_quote(quote)) is not None}
+        ctx.last_quotes.update(valid)
+        ctx.invalid_quote_count = len(invalid)
+        refresh_quote_freshness(checked_at)
+        for symbol in invalid:
+            if symbol in ctx.last_quotes:
+                ctx.last_quotes[symbol]["fresh"] = False
+        if ctx.account:
+            ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
+            sync_execution_settings()
+        storage_healthy = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
+        if storage_healthy and ctx.strategy_active and ctx.strategy and (MarketFeed.is_trading_time(checked_at) or ctx.ignore_market_hours):
+            if hasattr(ctx.strategy, "config"):
+                ctx.strategy.on_tick(ctx.last_quotes, now=checked_at)
+            else:
+                ctx.strategy.on_tick(ctx.last_quotes)
+            ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
+            ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
+        if ctx.account:
+            ctx.account.save()
+        current_held = list(ctx.account.positions) if ctx.account else []
+        ctx.closing_report_pending = closing_due and not _close_prices_ready(checked_at, current_held, valid)
+        if closing_due and not ctx.closing_report_pending:
+            day = checked_at.date().isoformat()
+            # Save final marks before archiving them. Mark reporting complete
+            # only after the final-price snapshot has been written successfully.
+            SnapshotManager().update_daily_snapshot(date_str=day)
+            ctx.account.strategy_state.setdefault("__server__", {})["closing_report_date"] = day
+            ctx.account.save()
+            try:
+                NotificationManager().notify_daily_summary(ctx.account.get_summary(), dict(ctx.account.positions))
+            except Exception:
+                logger.exception("最终收盘战报通知失败；收盘快照已保存")
+        ctx.worker_last_success = checked_at
+        ctx.worker_last_error = getattr(ctx.account, "_persistence_error", None) if ctx.account else None
+
+
+def worker_wait_seconds(now):
+    try:
+        interval = validated_interval(ctx.interval)
+    except ValueError:
+        # A damaged in-memory setting cannot kill the worker or cause a busy loop.
+        interval = 3.
+    delay = interval if MarketFeed.is_trading_time(now) or ctx.ignore_market_hours else 30.
+    if ctx.closing_report_pending:
+        delay = min(interval, 5.)
+    if is_trading_day(now):
+        for hour, minute, second in ((9, 30, 0), (11, 30, 1), (13, 0, 0), (14, 57, 0), (15, 0, 0), (15, 5, 0)):
+            boundary = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+            remaining = (boundary - now).total_seconds()
+            if remaining > 0:
+                delay = min(delay, remaining)
+    return max(.1, delay)
+
+
+def worker_is_healthy(now):
+    if not ctx.worker_thread or not ctx.worker_thread.is_alive() or not ctx.running or ctx.worker_last_error:
+        return False
+    if ctx.account and getattr(ctx.account, "_persistence_error", None):
+        return False
+    heartbeat = ctx.worker_last_success or ctx.last_step_time
+    if heartbeat is None:
+        return False
+    try:
+        interval = validated_interval(ctx.interval)
+    except ValueError:
+        interval = 3.
+    return 0 <= (now - heartbeat).total_seconds() <= max(90., interval * 3)
 
 
 def background_worker():
-    """后台定时执行交易策略的守护线程"""
-    logger.info("后台交易轮询线程已启动...")
-    last_daily_summary_date: Optional[str] = None
-
-    while ctx.running:
-        try:
-            now = datetime.datetime.now(BEIJING)
-            is_trading = MarketFeed.is_trading_time(now)
-
-            # 1. 快速读取当前账户持仓与监控标的代码 (持锁微秒级)
-            with ctx.lock:
-                ctx.last_step_time = now
-                held_symbols = list(ctx.account.positions.keys()) if ctx.account else []
-                symbols_to_monitor = list(ctx.symbols)
-                strategy_active = ctx.strategy_active
-
-            # 每日 15:00~15:10 收盘快报推送与每日快照归档 (仅在开盘交易日执行一次，跳过周末与法定节假日)
-            today_str = now.strftime("%Y-%m-%d")
-            is_closing_time = (datetime.time(15, 0) <= now.time() <= datetime.time(15, 10))
-            if is_closing_time and last_daily_summary_date != today_str and is_trading_day(now):
-                last_daily_summary_date = today_str
+    logger.info("后台交易轮询线程已启动")
+    try:
+        while ctx.running and not ctx.worker_stop.is_set():
+            try:
+                worker_step()
+            except Exception as exc:
                 with ctx.lock:
-                    if ctx.account:
-                        try:
-                            summary = ctx.account.get_summary()
-                            positions = dict(ctx.account.positions)
-                            NotificationManager().notify_daily_summary(summary, positions)
-                        except Exception as e:
-                            logger.error(f"每日收盘微信战报推送失败: {e}")
-
-                        try:
-                            SnapshotManager().update_daily_snapshot(date_str=today_str)
-                            logger.info(f"每日收盘系统快照 [daily_{today_str}] 已自动归档")
-                        except Exception as e:
-                            logger.error(f"每日收盘系统快照归档异常: {e}")
-
-            # 2. 休市降频保护：
-            # 若处于收盘/休市时段（且非忽略时段测试模式），且已有今日最新收盘行情，
-            # 无需每3秒全量抓取5000+标的，降频为30秒轮询，极大降低CPU与外部接口压力
-            if not is_trading and not ctx.ignore_market_hours and ctx.last_quotes:
-                for _ in range(30):
-                    if not ctx.running:
-                        break
-                    time.sleep(1.0)
-                continue
-
-            # 3. 在锁外执行全市场/自选池实时行情并发拉取 (避免网络IO阻塞Web接口)
-            all_symbols = sorted(list(set(symbols_to_monitor) | set(held_symbols)))
-            quotes = MarketFeed.fetch_quotes(all_symbols)
-
-            # 4. 拿到行情后，加锁更新内存数据、结算并触发策略
-            with ctx.lock:
-                if quotes:
-                    ctx.last_quotes.update(quotes)
-
-                # 价格更新与市值结算
-                if ctx.account:
-                    ctx.account.update_market_prices(ctx.last_quotes)
-
-                # 若开启自动策略且处于交易时间（或测试模式），触发策略信号
-                if strategy_active and (is_trading or ctx.ignore_market_hours) and ctx.strategy:
-                    ctx.strategy.on_tick(ctx.last_quotes)
-                    ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
-                    ctx.account.update_market_prices(ctx.last_quotes)
-
-                if ctx.account:
-                    ctx.account.save()
-
-        except Exception as e:
-            logger.error(f"后台轮询发生异常: {e}", exc_info=True)
-
-        time.sleep(ctx.interval)
-    logger.info("后台交易轮询线程已停止。")
+                    ctx.worker_last_error = str(exc)
+                    ctx.worker_failures += 1
+                logger.exception("后台轮询发生异常")
+            ctx.worker_stop.wait(worker_wait_seconds(datetime.datetime.now(BEIJING)))
+    finally:
+        ctx.running = False
+        logger.info("后台交易轮询线程已停止")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """服务启动与关闭生命周期管理"""
+    if auth_manager.enabled:
+        auth_manager.initialize()
+    ctx.worker_stop.clear()
     ctx.running = True
+    ctx.worker_started = True
     if ctx.account:
         setup_account_trade_notification(ctx.account)
     ctx.worker_thread = threading.Thread(target=background_worker, daemon=True)
     ctx.worker_thread.start()
     logger.info("HTTP API 服务启动完成。")
-    yield
-    logger.info("正在停止后台线程与服务...")
-    ctx.running = False
-    if ctx.worker_thread:
-        ctx.worker_thread.join(timeout=3.0)
-    with ctx.lock:
-        if ctx.account:
-            ctx.account.save()
-    logger.info("模拟交易服务已安全停止并持久化数据。")
+    try:
+        yield
+    finally:
+        logger.info("正在停止后台线程与服务")
+        ctx.running = False
+        ctx.worker_stop.set()
+        if ctx.worker_thread:
+            ctx.worker_thread.join(timeout=10.)
+        with ctx.lock:
+            if ctx.account:
+                ctx.account.save()
+        logger.info("模拟交易服务已停止并持久化数据")
 
 
 app = FastAPI(
     title="A-Share Paper Trading System",
     description="A股实时行情与拟真模拟交易系统 HTTP 接口",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+auth_manager = install_auth(app, data_dir=BASE_DIR / "data", enabled=True)
 
 
 # ==============================================================================
@@ -239,37 +481,57 @@ class StrategyToggleRequest(BaseModel):
     active: bool = Field(..., description="是否启用自动策略执行")
 
 
-class StrategyConfigRequest(BaseModel):
+class MomentumParameters(BaseModel):
+    max_stock_weight: Optional[float] = Field(None, gt=0, le=1)
+    max_positions: Optional[int] = Field(None, ge=1, le=50)
+    risk_per_trade: Optional[float] = Field(None, ge=0, le=.1)
+    max_sector_weight: Optional[float] = Field(None, gt=0, le=1)
+    volatility_target: Optional[float] = Field(None, ge=0)
+    rebalance_every: Optional[int] = Field(None, ge=1)
+    rank_buffer: Optional[int] = Field(None, ge=0)
+    min_holding_days: Optional[int] = Field(None, ge=0)
+    cooldown_days: Optional[int] = Field(None, ge=0)
+    participation_rate: Optional[float] = Field(None, gt=0, le=1)
+    use_ma120: Optional[bool] = None
+    use_high_filter: Optional[bool] = None
+    risk_adjusted: Optional[bool] = None
+    market_filter: Optional[bool] = None
+
+
+class StrategyConfigRequest(MomentumParameters):
     symbols: Optional[List[str]] = Field(None, description="更新监控标的池")
-    interval: Optional[float] = Field(None, description="轮询间隔秒数")
+    interval: Optional[float] = Field(None, ge=1, le=60, allow_inf_nan=False, description="轮询间隔秒数 (1至60秒)")
     min_change: Optional[float] = Field(None, description="突破买入最低涨幅%")
     max_change: Optional[float] = Field(None, description="突破买入最高涨幅%")
     take_profit: Optional[float] = Field(None, description="止盈百分比%")
     stop_loss: Optional[float] = Field(None, description="止损百分比%")
 
 
-class StrategySwitchRequest(BaseModel):
+class StrategySwitchRequest(MomentumParameters):
     strategy_id: str = Field(..., description="要切换的目标策略ID")
-    max_stock_weight: Optional[float] = Field(None, description="单票仓位上限 (例如 0.33)")
-    max_positions: Optional[int] = Field(None, description="最大持仓数量 (例如 3)")
     stop_loss: Optional[float] = Field(None, description="硬止损比例 (例如 -6.0)")
 
 
 class AccountResetRequest(BaseModel):
-    cash: Optional[float] = Field(1_000_000.0, description="重置初始资金")
+    cash: float = Field(1_000_000.0, gt=0, allow_inf_nan=False, description="重置初始资金")
 
 
 class BacktestRequest(BaseModel):
     start_date: str = Field("2024-01-01", description="回测起始日期 (YYYY-MM-DD)")
-    end_date: str = Field("2026-09-15", description="回测截止日期 (YYYY-MM-DD)")
+    end_date: Optional[str] = Field(None, description="默认上一完整交易日")
     initial_cash: float = Field(100000.0, description="初始本金")
-    strategy_name: str = Field("ShortTermResonance", description="回测策略名称")
+    strategy_name: str = Field("Momentum_Rotation_Pro", description="回测策略名称")
     pool_type: str = Field("core_active", description="预设股票池 (core_active / csi300_sample)")
     symbols: Optional[List[str]] = Field(None, description="自定义股票代码列表")
     take_profit: float = Field(3.5, description="动态追踪止盈点%")
-    stop_loss: float = Field(-2.5, description="硬止损线%")
+    stop_loss: float = Field(-6.0, description="硬止损线%")
     max_holding_days: int = Field(5, description="最大持仓轮动天数")
     max_positions: int = Field(3, description="最大持仓标的数")
+    max_stock_weight: float = Field(.20, gt=0, le=1)
+    risk_per_trade: float = Field(.01, ge=0, le=.1)
+    max_sector_weight: float = Field(.35, gt=0, le=1)
+    risk_adjusted: bool = False
+    market_filter: bool = False
 
 
 class NotificationConfigRequest(BaseModel):
@@ -334,6 +596,7 @@ def get_positions():
 def get_quotes():
     """获取自选股票池/全市场共振雷达标的与持仓标的的实时盘口"""
     with ctx.lock:
+        refresh_quote_freshness(datetime.datetime.now(BEIJING))
         if not ctx.last_quotes:
             # 若后台尚未拉取完全部行情，快速拉取持仓及前20只标的，避免锁内拉取数千只卡死
             quick_symbols = list(ctx.account.positions.keys()) if ctx.account else []
@@ -341,7 +604,9 @@ def get_quotes():
                 quick_symbols = ctx.symbols[:20]
             if quick_symbols:
                 quick_quotes = MarketFeed.fetch_quotes(quick_symbols)
-                ctx.last_quotes.update(quick_quotes)
+                ctx.last_quotes.update({s: cleaned for s, q in quick_quotes.items()
+                                        if (cleaned := _finite_quote(q)) is not None})
+                refresh_quote_freshness(datetime.datetime.now(BEIJING))
 
         # 优先展示：当前持仓标的 + 策略扫描出的全市场起爆共振雷达标的 (Top 35)
         res = {}
@@ -397,11 +662,22 @@ def get_status():
     """获取系统运行状态、时段与参数信息"""
     now = datetime.datetime.now(BEIJING)
     with ctx.lock:
+        thread_alive = bool(ctx.worker_thread and ctx.worker_thread.is_alive())
+        persistence_healthy = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
         strat_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         strat_display = getattr(ctx.strategy, "display_name", strat_id)
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
+            "worker_alive": thread_alive,
+            "worker_started": ctx.worker_started,
+            "worker_healthy": worker_is_healthy(now),
+            "worker_last_error": ctx.worker_last_error,
+            "worker_failures": ctx.worker_failures,
+            "worker_last_success": ctx.worker_last_success.isoformat() if ctx.worker_last_success else None,
+            "persistence_healthy": persistence_healthy,
+            "invalid_quote_count": ctx.invalid_quote_count,
+            "closing_report_pending": ctx.closing_report_pending,
             "strategy_id": strat_id,
             "strategy_name": strat_id,
             "strategy_display_name": strat_display,
@@ -417,7 +693,10 @@ def get_status():
             "only_main_board": True,
             "symbols_sample": ctx.symbols[:10],
             "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None
+            "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None,
+            "data_quality": getattr(ctx.strategy, "data_status", {}),
+            "strategy_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
+            "signal_schedule": "完整日线信号，下一交易日按实际有效盘口撮合" if hasattr(ctx.strategy, "config") else "旧版实验策略"
         }
 
 
@@ -467,85 +746,20 @@ def list_strategies():
     with ctx.lock:
         current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         current_display = getattr(ctx.strategy, "display_name", current_id)
-        strategies = [
-            {
-                "id": "Momentum_Rotation_Pro",
-                "name": "🚀 截面领头羊动量增强版 (Momentum Rotation Pro)",
-                "badge": "回撤更低+多因子增强",
-                "recommended": True,
-                "description": "融入半年线牛熊过滤(MA120)、MA60斜率通道验证、20日高位相对突破确认(0.95*High20)及短期加权动量，有效规避假突破与中线阴跌。",
-                "author": "吉姆·西蒙斯 & AQR 截面动量多因子增强模型",
-                "one_year_return": "+72.35%",
-                "win_loss_ratio": "4.21",
-                "max_drawdown": "16.80%"
-            },
-            {
-                "id": "Momentum_Rotation",
-                "name": "👑 截面领头羊动量轮动策略 (西蒙斯/AQR)",
-                "badge": "近一年 +77.5% 冠军",
-                "recommended": True,
-                "description": "多因子截面动量排序，重仓全市场最强势领头羊，以 MA20 生命线动态追踪，不设提前止盈顶，让大牛股吃满数周主升浪。",
-                "author": "吉姆·西蒙斯 (Jim Simons) & AQR 阿斯内斯",
-                "one_year_return": "+77.51%",
-                "win_loss_ratio": "4.94",
-                "max_drawdown": "19.95%"
-            },
-            {
-                "id": "Minervini_SEPA",
-                "name": "🏆 米奈尔维尼 SEPA/VCP 波动率收缩起爆策略",
-                "badge": "全美投资冠军",
-                "recommended": False,
-                "description": "严格趋势模板过滤，VCP 振幅收敛洗盘充分后放量起爆突破介入，跌破 MA20 趋势离场，大波段+30%止盈。",
-                "author": "马克·米奈尔维尼 (Mark Minervini)",
-                "one_year_return": "+1.16%",
-                "win_loss_ratio": "4.05",
-                "max_drawdown": "15.56%"
-            },
-            {
-                "id": "TurtleBreakout",
-                "name": "🐢 经典海龟交易法则 (唐奇安突破)",
-                "badge": "大牛股波段王",
-                "recommended": False,
-                "description": "突破 20 日唐奇安通道高点介入，跌破 10 日唐奇安低点平仓，截断亏损让利润奔跑。",
-                "author": "理查德·丹尼斯 (Richard Dennis)",
-                "one_year_return": "-8.64%",
-                "win_loss_ratio": "2.74",
-                "max_drawdown": "25.98%"
-            },
-            {
-                "id": "ONeil_CANSLIM",
-                "name": "🦅 欧奈尔 CAN SLIM 相对强度领头羊突破",
-                "badge": "回撤防守最佳",
-                "recommended": False,
-                "description": "60日相对强度大幅跑赢大盘超额，放量突破 20 日平台阻力位买入，严格控制回撤。",
-                "author": "威廉·欧奈尔 (William O'Neil)",
-                "one_year_return": "+0.52%",
-                "win_loss_ratio": "3.31",
-                "max_drawdown": "13.83%"
-            },
-            {
-                "id": "ShortTermResonance",
-                "name": "⚡ 超短线量价共振起爆策略 (日内高频)",
-                "badge": "超短日内",
-                "recommended": False,
-                "description": "分时突破结合买卖五档委比厚度共振，短线快速止盈止损。",
-                "author": "系统原创",
-                "one_year_return": "-23.46%",
-                "win_loss_ratio": "1.56",
-                "max_drawdown": "25.72%"
-            },
-            {
-                "id": "MomentumBreakout",
-                "name": "🚀 20日高点突破动量策略",
-                "badge": "基础动量",
-                "recommended": False,
-                "description": "突破近 20 日高点入场，硬止损止盈。",
-                "author": "传统动量",
-                "one_year_return": "-10.03%",
-                "win_loss_ratio": "1.81",
-                "max_drawdown": "14.30%"
-            }
+        catalog = [
+            ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；完整收盘信号在下一交易日执行。"),
+            ("Momentum_Rotation", "基础日线动量", "基础动量对照组；使用相同的数据、成交和风险框架。"),
+            ("Minervini_SEPA", "趋势收缩突破实验", "借鉴SEPA思路的简化技术规则，尚未统一为日线研究模型。"),
+            ("TurtleBreakout", "唐奇安通道突破实验", "20日高点突破、10日低点退出的技术规则。"),
+            ("ONeil_CANSLIM", "相对强度突破实验", "简化价格规则，未实现完整CANSLIM基本面筛选。"),
+            ("ShortTermResonance", "盘口量价共振实验", "旧版短线规则；不适合据日线回测推断盘口收益。"),
+            ("MomentumBreakout", "价格突破实验", "旧版价格突破规则。"),
         ]
+        strategies = [{"id": sid, "name": name, "description": desc,
+                       "badge": "日线研究模型" if sid.startswith("Momentum_Rotation") else "旧版实验规则",
+                       "recommended": False, "author": "项目规则实现",
+                       "one_year_return": "待验证", "win_loss_ratio": "待验证", "max_drawdown": "待验证",
+                       "performance_status": "unverified"} for sid, name, desc in catalog]
         return {
             "current_strategy": current_id,
             "active_strategy_id": current_id,
@@ -569,28 +783,30 @@ def switch_strategy(req: StrategySwitchRequest):
             kwargs["max_positions"] = req.max_positions
         if req.stop_loss is not None:
             kwargs["stop_loss_pct"] = req.stop_loss
+        for key in MomentumConfig.__dataclass_fields__:
+            value = getattr(req, key, None)
+            if value is not None:
+                kwargs[key] = value
 
-        new_strat = create_strategy(
-            req.strategy_id,
-            account=ctx.account,
-            watchlist=ctx.symbols,
-            **kwargs
-        )
-        ctx.strategy = new_strat
-        display_name = getattr(new_strat, "display_name", new_strat.name)
-        logger.info(f"[自动策略热切换] 成功切换至: {display_name}")
-
-        # 持久化策略配置
         try:
-            cfg_data = {
-                "active_strategy": req.strategy_id,
-                "parameters": kwargs,
-                "updated_at": datetime.datetime.now(BEIJING).isoformat()
-            }
-            STRATEGY_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            STRATEGY_CONFIG_PATH.write_text(json.dumps(cfg_data, ensure_ascii=False, indent=2))
-        except Exception as e:
-            logger.warning(f"持久化保存策略配置失败: {e}")
+            if req.stop_loss is not None and not -50 <= req.stop_loss < 0:
+                raise ValueError("止损必须在[-50,0)范围内")
+            new_strat = configured_strategy(req.strategy_id, ctx.account, ctx.symbols, kwargs)
+            proposed = persisted_settings()
+            proposed.update(active_strategy=req.strategy_id,
+                            parameters=asdict(new_strat.config) if hasattr(new_strat, "config") else kwargs)
+            if not hasattr(new_strat, "config"):
+                proposed["parameters"]["participation_rate"] = req.participation_rate if req.participation_rate is not None else .05
+            persist_settings(proposed)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        ctx.strategy = new_strat
+        sync_execution_settings(req.participation_rate if req.participation_rate is not None or hasattr(new_strat, "config") else .05)
+        if ctx.engine:
+            ctx.engine.strategy = new_strat
+        ctx.radar_candidates = []
+        display_name = getattr(new_strat, "display_name", new_strat.name)
+        logger.info("自动策略切换至: %s", display_name)
 
         return {
             "success": True,
@@ -604,9 +820,12 @@ def switch_strategy(req: StrategySwitchRequest):
 def toggle_strategy(req: StrategyToggleRequest):
     """开启或暂停自动策略"""
     with ctx.lock:
+        proposed = persisted_settings()
+        proposed["strategy_active"] = req.active
+        persist_settings(proposed)
         ctx.strategy_active = req.active
         status_str = "已启动" if ctx.strategy_active else "已暂停"
-        logger.info(f"策略执行状态更改: {status_str}")
+        logger.info("策略执行状态更改: %s", status_str)
         return {"success": True, "strategy_active": ctx.strategy_active, "message": f"自动策略{status_str}"}
 
 
@@ -614,20 +833,47 @@ def toggle_strategy(req: StrategyToggleRequest):
 def update_strategy_config(req: StrategyConfigRequest):
     """动态更新策略参数与自选股列表"""
     with ctx.lock:
+        try:
+            symbols = normalized_watchlist(req.symbols) if req.symbols is not None else list(ctx.symbols)
+            interval = validated_interval(req.interval) if req.interval is not None else validated_interval(ctx.interval)
+            for key in ("min_change", "max_change", "take_profit", "stop_loss"):
+                value = getattr(req, key)
+                if value is not None and not math.isfinite(value):
+                    raise ValueError("策略参数必须为有限数值")
+            if req.stop_loss is not None and not -50 <= req.stop_loss < 0:
+                raise ValueError("止损必须在[-50,0)范围内")
+            proposed = persisted_settings()
+            updates = {key: getattr(req, key) for key in MomentumConfig.__dataclass_fields__
+                       if getattr(req, key, None) is not None}
+            if req.stop_loss is not None:
+                updates["stop_loss_pct"] = req.stop_loss
+            if hasattr(ctx.strategy, "config"):
+                parameters = asdict(MomentumConfig.from_dict(asdict(ctx.strategy.config), **updates))
+            else:
+                parameters = dict(proposed["parameters"])
+                parameters.update({k: v for k, v in updates.items() if hasattr(ctx.strategy, k) or k == "participation_rate"})
+                for field, attr in (("min_change", "min_change_pct"), ("max_change", "max_change_pct"), ("take_profit", "take_profit_pct")):
+                    if getattr(req, field) is not None and hasattr(ctx.strategy, attr):
+                        parameters[attr] = getattr(req, field)
+            proposed.update(parameters=parameters, symbols=symbols, interval=interval)
+            persist_settings(proposed)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if hasattr(ctx.strategy, "set_config") and updates:
+            ctx.strategy.set_config(updates)
+        elif not hasattr(ctx.strategy, "config"):
+            for key, value in parameters.items():
+                if hasattr(ctx.strategy, key):
+                    setattr(ctx.strategy, key, value)
         if req.symbols is not None:
-            ctx.symbols = [MarketFeed.normalize_symbol(s) for s in req.symbols]
-            ctx.strategy.watchlist = ctx.symbols
-        if req.interval is not None:
-            ctx.interval = max(req.interval, 1.0)
-        if req.min_change is not None and hasattr(ctx.strategy, "min_change_pct"):
-            ctx.strategy.min_change_pct = req.min_change
-        if req.max_change is not None and hasattr(ctx.strategy, "max_change_pct"):
-            ctx.strategy.max_change_pct = req.max_change
-        if req.take_profit is not None and hasattr(ctx.strategy, "take_profit_pct"):
-            ctx.strategy.take_profit_pct = req.take_profit
-        if req.stop_loss is not None and hasattr(ctx.strategy, "stop_loss_pct"):
-            ctx.strategy.stop_loss_pct = req.stop_loss
-        return {"success": True, "message": "策略参数已更新"}
+            if hasattr(ctx.strategy, "set_watchlist"):
+                ctx.strategy.set_watchlist(symbols)
+            else:
+                ctx.strategy.watchlist = symbols
+        ctx.symbols, ctx.interval = symbols, interval
+        sync_execution_settings(req.participation_rate)
+        return {"success": True, "message": "策略参数已更新", "parameters": parameters,
+                "symbols": symbols, "interval": interval}
 
 
 # ==============================================================================
@@ -743,9 +989,15 @@ def place_order(req: OrderRequest):
         raise HTTPException(status_code=400, detail="交易方向必须为 BUY 或 SELL")
 
     with ctx.lock:
+        sync_execution_settings()
         # 获取实时行情用于市价撮合与验证
         quotes = MarketFeed.fetch_quotes([sym])
-        q = quotes.get(sym)
+        raw_quote = quotes.get(sym)
+        q = _finite_quote(raw_quote)
+        if raw_quote is not None and q is None:
+            return {"success": False, "status": "REJECTED", "reason": "行情包含无效或非有限价格，委托未成交"}
+        quotes = {sym: q} if q is not None else {}
+        ctx.account.bind_execution_quotes(quotes)
         name = q.get("name", sym) if q else sym
         price = req.price or 0.0
 
@@ -766,9 +1018,9 @@ def place_order(req: OrderRequest):
                     "success": False,
                     "reason": f"标的 {sym} 不属于沪深主板。当前交易系统仅允许交易沪深纯主板股票（严格排除创业板 300*/301*、科创板 688*、北交所）。"
                 }
-            res = ctx.account.execute_buy(sym, name, price, req.shares, reason=req.reason)
+            res = ctx.account.execute_buy(sym, name, price, req.shares, reason=req.reason, limit_price=req.price if req.price and req.price > 0 else None)
         else:
-            res = ctx.account.execute_sell(sym, price, req.shares, reason=req.reason)
+            res = ctx.account.execute_sell(sym, price, req.shares, reason=req.reason, limit_price=req.price if req.price and req.price > 0 else None)
 
         return res
 
@@ -778,14 +1030,30 @@ def reset_account(req: AccountResetRequest):
     """重置模拟账户资金与记录"""
     with ctx.lock:
         save_path = ctx.account.save_path
-        if save_path.exists():
-            save_path.unlink()
-        ctx.account = SimAccount(
-            initial_cash=req.cash,
-            strict_t1=ctx.account.strict_t1,
-            save_path=str(save_path)
-        )
-        ctx.strategy.account = ctx.account
+        staging = save_path.with_name(f".{save_path.name}.reset.{uuid.uuid4().hex}")
+        try:
+            replacement = SimAccount(initial_cash=req.cash, strict_t1=ctx.account.strict_t1,
+                                     participation_rate=ctx.account.participation_rate, save_path=str(staging))
+            if hasattr(ctx.strategy, "state"):
+                replacement.strategy_state[ctx.strategy.name] = {
+                    "cooldown": {}, "pending_exits": {}, "pending_entries": {}, "exit_signal_dates": {}}
+            replacement.save()
+            staging.replace(save_path)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="新账户无法保存，原账户已保留") from exc
+        finally:
+            for temporary in (staging, staging.with_suffix(staging.suffix + ".tmp")):
+                if temporary.exists():
+                    temporary.unlink()
+        replacement.save_path = save_path
+        ctx.account = replacement
+        ctx.strategy.account = replacement
+        if hasattr(ctx.strategy, "state"):
+            ctx.strategy.state = replacement.strategy_state[ctx.strategy.name]
+        sync_execution_settings()
+        setup_account_trade_notification(ctx.account)
+        if ctx.engine:
+            ctx.engine.account = ctx.account
         logger.info(f"模拟账户已重置，初始资金: ¥{req.cash:,.2f}")
         return {"success": True, "summary": ctx.account.get_summary()}
 
@@ -804,24 +1072,24 @@ def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
     return {
         "strategies": [
-            {"id": "Momentum_Rotation_Pro", "name": "🚀 截面领头羊动量增强版 (半年线/MA60斜率/高位突破/加权动量)"},
-            {"id": "Momentum_Rotation", "name": "👑 吉姆·西蒙斯 / AQR - 截面领头羊动量轮动策略 (+77.5% 近一年最高)"},
-            {"id": "Minervini_SEPA", "name": "🏆 马克·米奈尔维尼 - SEPA/VCP 波动率收缩起爆策略 (+83.6% 全美投资冠军)"},
-            {"id": "ONeil_CANSLIM", "name": "🦅 威廉·欧奈尔 - CAN SLIM 相对强度领头羊突破策略 (+62.5% 趋势宗师)"},
-            {"id": "TurtleBreakout", "name": "🐢 理查德·丹尼斯 - 经典海龟交易法则 (+98.4% 趋势突破)"},
-            {"id": "MATrendFollowing", "name": "📈 双均线多头趋势跟踪策略 (MA20/MA60多头生命线)"},
-            {"id": "ShortTermResonance", "name": "⚡ 超短线量价共振起爆策略 (实时同款高频)"},
-            {"id": "MomentumBreakout", "name": "🚀 20日高点放量突破策略 (动量突破)"}
+            {"id": "Momentum_Rotation_Pro", "name": "日线动量增强（次日成交）"},
+            {"id": "Momentum_Rotation", "name": "基础日线动量（次日成交）"},
+            {"id": "Minervini_SEPA", "name": "趋势收缩突破（旧版实验）"},
+            {"id": "ONeil_CANSLIM", "name": "相对强度突破（旧版实验）"},
+            {"id": "TurtleBreakout", "name": "通道突破（旧版实验）"},
+            {"id": "MATrendFollowing", "name": "双均线趋势（旧版实验）"},
+            {"id": "ShortTermResonance", "name": "量价共振（旧版日线近似）"},
+            {"id": "MomentumBreakout", "name": "价格突破（旧版实验）"}
         ],
         "pools": [
             {"id": "core_active", "name": "精选核心活跃标的池 (20只主流龙头与持仓股)"},
             {"id": "csi300_sample", "name": "沪深300指数样本池 (20只代表性蓝筹)"}
         ],
         "default_start": "2024-01-01",
-        "default_end": "2026-09-15",
+        "default_end": last_completed_trading_day(),
         "default_cash": 100000.0,
         "default_take_profit": 3.5,
-        "default_stop_loss": -2.5,
+        "default_stop_loss": -6.0,
         "default_max_holding_days": 5
     }
 
@@ -832,7 +1100,7 @@ def run_backtest_endpoint(req: BacktestRequest):
     try:
         res = run_backtest(
             start_date=req.start_date,
-            end_date=req.end_date,
+            end_date=req.end_date or last_completed_trading_day(),
             initial_cash=req.initial_cash,
             strategy_name=req.strategy_name,
             pool_type=req.pool_type,
@@ -840,7 +1108,10 @@ def run_backtest_endpoint(req: BacktestRequest):
             take_profit_trigger_pct=req.take_profit,
             stop_loss_pct=req.stop_loss,
             max_holding_days=req.max_holding_days,
-            max_positions=req.max_positions
+            max_positions=req.max_positions,
+            **({"max_stock_weight": req.max_stock_weight, "risk_per_trade": req.risk_per_trade,
+                "max_sector_weight": req.max_sector_weight, "risk_adjusted": req.risk_adjusted,
+                "market_filter": req.market_filter} if req.strategy_name.startswith("Momentum_Rotation") else {})
         )
         return {"success": True, "data": res}
     except Exception as e:
@@ -851,18 +1122,18 @@ def run_backtest_endpoint(req: BacktestRequest):
 @app.get("/api/backtest/run")
 def run_backtest_get(
     start: str = "2024-01-01",
-    end: str = "2026-09-15",
+    end: Optional[str] = None,
     cash: float = 100000.0,
-    strategy: str = "ShortTermResonance",
+    strategy: str = "Momentum_Rotation_Pro",
     pool: str = "core_active",
     take_profit: float = 3.5,
-    stop_loss: float = -2.5
+    stop_loss: float = -6.0
 ):
     """GET 方式调用回测接口，方便快速调试"""
     try:
         res = run_backtest(
             start_date=start,
-            end_date=end,
+            end_date=end or last_completed_trading_day(),
             initial_cash=cash,
             strategy_name=strategy,
             pool_type=pool,
@@ -877,7 +1148,12 @@ def run_backtest_get(
 @app.get("/health")
 def health_check():
     """服务健康检查接口"""
-    return {"status": "ok", "time": datetime.datetime.now(BEIJING).isoformat()}
+    alive = bool(ctx.worker_thread and ctx.worker_thread.is_alive())
+    storage = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
+    healthy = storage and (not ctx.worker_started or worker_is_healthy(datetime.datetime.now(BEIJING)))
+    return JSONResponse(status_code=200 if healthy else 503,
+                        content={"status": "ok" if healthy else "degraded", "worker_alive": alive,
+                                 "storage_healthy": storage, "time": datetime.datetime.now(BEIJING).isoformat()})
 
 
 # ==============================================================================
@@ -914,7 +1190,7 @@ def create_snapshot(req: SnapshotCreateRequest):
                 tag=req.tag or "manual",
                 description=req.description
             )
-        return {"success": True, "snapshot": snap}
+        return {"success": True, "snapshot": SnapshotManager.public_view(snap)}
     except Exception as e:
         logger.error(f"创建快照失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -942,7 +1218,8 @@ def download_snapshot(id: str = Query(..., description="快照ID")):
 def restore_snapshot(req: SnapshotRestoreRequest):
     """从快照库中恢复系统运行状态（含热重载）"""
     try:
-        res = SnapshotManager().restore_snapshot(req.snapshot_id, backup_current=req.backup_current)
+        with ctx.lock:
+            res = SnapshotManager().restore_snapshot(req.snapshot_id, backup_current=req.backup_current)
         return res
     except Exception as e:
         logger.error(f"恢复快照失败: {e}", exc_info=True)
@@ -977,7 +1254,8 @@ async def upload_snapshot(request: Request):
             f.write(body)
 
         try:
-            res = SnapshotManager().restore_snapshot(temp_upload, backup_current=True)
+            with ctx.lock:
+                res = SnapshotManager().restore_snapshot(temp_upload, backup_current=True)
             return res
         finally:
             if temp_upload.exists():
@@ -1009,7 +1287,7 @@ def main():
     parser.add_argument("--symbols", nargs="+", default=None, help="自定义监控股票池（默认不传则启用全A股监控）")
     parser.add_argument("--full-market", action="store_true", default=True, help="启用全A股市场监控（仅限沪深主板，默认开启）")
     parser.add_argument("--refresh-universe", action="store_true", help="强制重新探测并刷新 stock_universe.json")
-    parser.add_argument("--interval", type=float, default=3.0, help="策略轮询秒数 (默认 3.0)")
+    parser.add_argument("--interval", type=validated_interval, default=None, help="策略轮询秒数 (1至60秒，默认读取保存配置或3秒)")
     parser.add_argument("--cash", type=float, default=100_000.0, help="初始资金 (默认 10 万元)")
     parser.add_argument("--reset", action="store_true", help="清空历史持仓与交易记录，重新初始化账户")
     parser.add_argument("--test", action="store_true", help="测试模式: 忽略交易时段限制")
@@ -1018,6 +1296,11 @@ def main():
     parser.add_argument("--account-file", type=str, default="sim_account.json", help="账户存储路径")
 
     args = parser.parse_args()
+
+    saved_cfg = {}
+    if STRATEGY_CONFIG_PATH.exists():
+        saved_cfg = json.loads(STRATEGY_CONFIG_PATH.read_text())
+        validate_snapshot_settings({"strategy_state": saved_cfg})
 
     account_file_path = BASE_DIR / args.account_file
     if args.reset and account_file_path.exists():
@@ -1033,13 +1316,16 @@ def main():
     elif args.symbols:
         symbols = [MarketFeed.normalize_symbol(s) for s in args.symbols if StockUniverse.is_main_board(s)]
         logger.info(f"使用指定监控池 ({len(symbols)} 只沪深主板标的): {symbols}")
+    elif "symbols" in saved_cfg:
+        symbols = normalized_watchlist(saved_cfg["symbols"])
+        logger.info("读取保存的监控池，共%s只沪深主板标的", len(symbols))
     else:
         symbols = StockUniverse.load_universe(only_main_board=True)
         logger.info(f"已全量加载全A股监控池（严格仅限沪深主板），共监控 {len(symbols)} 只标的。")
 
     # 初始化上下文
     ctx.symbols = symbols
-    ctx.interval = args.interval
+    ctx.interval = validated_interval(args.interval if args.interval is not None else saved_cfg.get("interval", 3.))
     ctx.ignore_market_hours = args.test
 
     ctx.account = SimAccount(
@@ -1051,26 +1337,13 @@ def main():
         purge_res = ctx.account.purge_non_main_board()
         logger.info(f"已剥离历史非沪深主板资产与收益: {purge_res}")
 
-    setup_account_trade_notification(ctx.account)
-
-    active_strat_id = "Momentum_Rotation"
-    strat_kwargs = {}
-    if STRATEGY_CONFIG_PATH.exists():
-        try:
-            saved_cfg = json.loads(STRATEGY_CONFIG_PATH.read_text())
-            active_strat_id = saved_cfg.get("active_strategy", "Momentum_Rotation")
-            strat_kwargs = saved_cfg.get("parameters", {})
-            logger.info(f"读取到已保存的自动策略配置: {active_strat_id}")
-        except Exception as e:
-            logger.warning(f"读取策略配置文件失败: {e}")
-
-    ctx.strategy = create_strategy(
-        active_strat_id,
-        account=ctx.account,
-        watchlist=ctx.symbols,
-        **strat_kwargs
-    )
-    logger.info(f"当前生效自动实盘策略: {getattr(ctx.strategy, 'display_name', ctx.strategy.name)}")
+    active_strat_id = saved_cfg.get("active_strategy", saved_cfg.get("current_strategy", "Momentum_Rotation"))
+    strat_kwargs = saved_cfg.get("parameters", {})
+    ctx.strategy_active = saved_cfg.get("strategy_active", True)
+    ctx.strategy = configured_strategy(active_strat_id, ctx.account, ctx.symbols, strat_kwargs)
+    sync_execution_settings(strat_kwargs.get("participation_rate"))
+    persist_settings()
+    logger.info(f"当前生效模拟策略: {getattr(ctx.strategy, 'display_name', ctx.strategy.name)}")
 
     logger.info(f"启动 Web 模拟交易服务: http://{args.host}:{args.port}")
     logger.info(f"监控标的总数: {len(ctx.symbols)} 只 | 严格限制沪深主板: 是")

@@ -31,6 +31,11 @@ import datetime
 import json
 import math
 import uuid
+import threading
+import logging
+import copy
+from decimal import Decimal, ROUND_HALF_UP
+from dataclasses import asdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from zoneinfo import ZoneInfo
@@ -53,7 +58,24 @@ try:
 except ImportError:
     HAS_A_STOCK = False
 
-from history_data import HistoricalDataFeed
+from history_data import HistoricalDataFeed, previous_trading_day, last_completed_trading_day
+from execution import match_quote, quote_time_key
+from strategy_rules import (MomentumConfig, evaluate_momentum, holding_signal,
+                            exit_reason, target_weight, allowed_by_sector, sector_of)
+logger = logging.getLogger(__name__)
+
+
+def _cents(value):
+    number = Decimal(str(value))
+    if not number.is_finite():
+        raise ValueError("金额必须为有限数值")
+    return int((number * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+class AccountPersistenceError(OSError):
+    def __init__(self, message, committed=False):
+        super().__init__(message)
+        self.committed = committed
 
 # 终端富文本展示
 try:
@@ -422,7 +444,7 @@ class MarketFeed:
                     "volume_lots": volume_lots,
                     "amount_wanyuan": amount_wanyuan,
                     "time": time_str,
-                    "fresh": True,
+                    "fresh": 0 <= (now_dt - datetime.datetime.strptime(time_str, "%Y%m%d%H%M%S").replace(tzinfo=BEIJING)).total_seconds() <= 120,
                     "bids": bids,
                     "asks": asks
                 })
@@ -446,7 +468,9 @@ class SimAccount:
         stamp_tax_rate: float = 0.0005,     # 卖出印花税 万5
         transfer_fee_rate: float = 0.00001, # 过户费 十万分之1
         strict_t1: bool = True,             # 是否开启严格 T+1 交易制度
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        ledger_only: bool = False,
+        participation_rate: float = 0.05
     ):
         self.initial_cash = initial_cash
         self.cash = initial_cash
@@ -456,6 +480,19 @@ class SimAccount:
         self.stamp_tax_rate = stamp_tax_rate
         self.transfer_fee_rate = transfer_fee_rate
         self.strict_t1 = strict_t1
+        self.ledger_only = ledger_only  # Explicit offline bookkeeping mode, never set by the server.
+        self.participation_rate = participation_rate
+        self._execution_quotes = {}
+        self._execution_now = None
+        self._quote_consumption = {}
+        self._quote_capacity = {}
+        self._daily_consumption = {}
+        self._last_rejections = {}
+        self.strategy_state = {}
+        self.daily_equity_history = []
+        self.risk_history = {"history_complete": True}
+        self.accounting_history_complete = True
+        self._persistence_error = None
         self.save_path = Path(save_path) if save_path else (BASE_DIR / "sim_account.json")
 
         # 持仓结构: {symbol: {
@@ -487,7 +524,7 @@ class SimAccount:
     def update_t1_available_shares(self, today_str: Optional[str] = None):
         """T+1 规则：次日结算，将此前日期买入的股数转为可用股数"""
         if today_str is None:
-            today_str = datetime.datetime.now(BEIJING).strftime("%Y-%m-%d")
+            today_str = (self._execution_now or datetime.datetime.now(BEIJING)).strftime("%Y-%m-%d")
 
         for sym, pos in self.positions.items():
             if not self.strict_t1:
@@ -517,6 +554,8 @@ class SimAccount:
 
     def can_buy(self, symbol: str, price: float, shares: int) -> tuple[bool, str]:
         """买入条件校验"""
+        if not isinstance(shares, int) or not math.isfinite(price):
+            return False, "股数必须是整数，价格必须是有限数值"
         if shares <= 0:
             return False, "买入股数必须大于0"
         if shares % 100 != 0:
@@ -536,6 +575,8 @@ class SimAccount:
 
     def can_sell(self, symbol: str, price: float, shares: int) -> tuple[bool, str]:
         """卖出条件校验"""
+        if not isinstance(shares, int) or not math.isfinite(price):
+            return False, "股数必须是整数，价格必须是有限数值"
         if shares <= 0:
             return False, "卖出股数必须大于0"
         if price <= 0:
@@ -551,10 +592,214 @@ class SimAccount:
 
         return True, "OK"
 
-    def execute_buy(self, symbol: str, name: str, price: float, shares: int, reason: str = "") -> Dict[str, Any]:
+    def bind_execution_quotes(self, quotes, now=None):
+        self._execution_quotes = dict(quotes)
+        self._execution_now = now
+        today = (now or datetime.datetime.now(BEIJING)).strftime("%Y-%m-%d")
+        self._daily_consumption = {k: v for k, v in self._daily_consumption.items() if k[0] == today}
+        self._quote_consumption = {k: v for k, v in self._quote_consumption.items() if k[0] == today}
+        self._quote_capacity = {k: v for k, v in self._quote_capacity.items() if k[0] == today}
+
+    def _record_rejection(self, side, symbol, name, price, shares, reason):
+        now = self._execution_now or datetime.datetime.now(BEIJING)
+        key = (symbol, side, reason)
+        previous = self._last_rejections.get(key)
+        if previous and (now.timestamp() - previous[0]) < 60:
+            previous[1]["repeat_count"] += 1
+            return {"success": False, "reason": reason, "status": "REJECTED", "order": previous[1]}
+        order = dict(order_id=str(uuid.uuid4())[:8], time=now.strftime("%Y-%m-%d %H:%M:%S"),
+                     symbol=symbol, name=name, side=side, price=price if isinstance(price, (int, float)) and math.isfinite(price) else str(price),
+                     requested_shares=shares if isinstance(shares, (int, float)) and math.isfinite(shares) else str(shares),
+                     shares=0, status="REJECTED", reason=reason, repeat_count=1)
+        self.orders.append(order)
+        self._last_rejections[key] = (now.timestamp(), order)
+        return {"success": False, "reason": reason, "status": "REJECTED", "order": order}
+
+    _transaction_fields = (
+        "cash", "positions", "trades", "orders", "equity_history", "daily_equity_history",
+        "risk_history", "strategy_state", "_quote_consumption", "_quote_capacity",
+        "_daily_consumption", "_last_rejections", "_last_snapshot_time",
+    )
+
+    def _capture_transaction(self):
+        return copy.deepcopy({key: getattr(self, key) for key in self._transaction_fields})
+
+    def _rollback_transaction(self, before):
+        # Strategies hold references to their state dictionaries. Preserve those
+        # identities when rolling back an unsuccessful disk transaction.
+        current = self.strategy_state
+        previous = before["strategy_state"]
+        for key in list(current):
+            if key not in previous:
+                del current[key]
+        for key, value in previous.items():
+            if isinstance(current.get(key), dict) and isinstance(value, dict):
+                current[key].clear()
+                current[key].update(value)
+            else:
+                current[key] = value
+        for key, value in before.items():
+            if key != "strategy_state":
+                setattr(self, key, value)
+
+    def _buy_fits_budget(self, symbol, price, shares, max_position_weight, max_sector_weight, industry_map):
+        ok, _ = self.can_buy(symbol, price, shares)
+        if not ok:
+            return False
+        if max_position_weight is None and max_sector_weight is None:
+            return True
+        market = float(self._execution_quotes.get(symbol, {}).get("current", price))
+        if not math.isfinite(market) or market <= 0:
+            return False
+        amount = _cents(price * shares) / 100
+        cost = amount + self.calculate_fees("BUY", amount)["total_fees"]
+        values = {sym: float(pos.get("market_value", 0)) for sym, pos in self.positions.items()}
+        existing = self.positions.get(symbol, {}).get("total_shares", 0) * market
+        values[symbol] = existing
+        equity = self.cash + sum(values.values()) - cost + shares * market
+        committed = max(cost, shares * market)
+        if equity <= 0:
+            return False
+        if max_position_weight is not None and existing + committed > equity * max_position_weight + 1e-8:
+            return False
+        if max_sector_weight is not None:
+            industry_map = industry_map or {}
+            sector = sector_of(symbol, industry_map)
+            exposure = sum(value for sym, value in values.items() if sector_of(sym, industry_map) == sector)
+            if exposure + committed > equity * max_sector_weight + 1e-8:
+                return False
+        return True
+
+    def _match_order(self, side, symbol, name, price, shares, reason, limit_price,
+                     max_position_weight, max_sector_weight, industry_map):
+        q = self._execution_quotes.get(symbol)
+        if not q:
+            return self._record_rejection(side, symbol, name, price, shares, "缺少可验证行情，委托未成交")
+        snapshot = quote_time_key(q)
+        now = self._execution_now or datetime.datetime.now(BEIJING)
+        day = now.date().isoformat()
+        key = (day, snapshot, side)
+        used = self._quote_consumption.get(key, 0)
+        fill = match_quote(side, shares, q, now=now, participation_rate=self.participation_rate,
+                           consumed_shares=used, limit_price=limit_price)
+        if fill["quote_key"]:
+            # A vendor revision at the same timestamp cannot increase the first
+            # observed budget. Persist this even when an order cannot be filled.
+            self._quote_capacity.setdefault(key, fill["capacity_shares"])
+        if not fill["success"]:
+            return self._record_rejection(side, symbol, name, price, shares, fill["reason"])
+        daily_key = (day, symbol, side)
+        daily_used = self._daily_consumption.get(daily_key, 0)
+        daily_cap = int(float(q["volume_lots"]) * 100 * self.participation_rate)
+        permitted = min(fill["shares"], max(0, daily_cap - daily_used),
+                        max(0, self._quote_capacity[key] - used))
+        if side == "BUY":
+            permitted = permitted // 100 * 100
+        if permitted <= 0:
+            return self._record_rejection(side, symbol, name, price, shares, "盘口或当日成交参与率容量已用尽")
+        if permitted != fill["shares"]:
+            fill = match_quote(side, permitted, q, now=now, participation_rate=self.participation_rate,
+                               consumed_shares=used, limit_price=limit_price)
+        if side == "BUY":
+            # Sorted asks make the cash/capital budget monotonic in lot count.
+            low, high, affordable = 1, fill["shares"] // 100, None
+            while low <= high:
+                middle = (low + high) // 2
+                preview = match_quote(side, middle * 100, q, now=now,
+                                      participation_rate=self.participation_rate,
+                                      consumed_shares=used, limit_price=limit_price)
+                if preview["success"] and self._buy_fits_budget(
+                        symbol, preview["price"], preview["shares"], max_position_weight,
+                        max_sector_weight, industry_map):
+                    affordable = preview
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            if affordable is None:
+                return self._record_rejection(side, symbol, name, price, shares, "实际成交价及费用超出现金、仓位或行业预算")
+            fill = affordable
+        result = self._fill_buy(symbol, name, fill["price"], fill["shares"], reason) if side == "BUY" else self._fill_sell(symbol, fill["price"], fill["shares"], reason)
+        if result.get("success"):
+            self._quote_consumption[key] = used + fill["shares"]
+            self._daily_consumption[daily_key] = daily_used + fill["shares"]
+            result["order"]["requested_shares"] = shares
+            result["order"]["status"] = "FILLED" if fill["shares"] == shares else "PARTIALLY_FILLED"
+            result["status"] = result["order"]["status"]
+            result["trade"]["execution_model"] = fill["model"]
+            # Value at the same snapshot used to evaluate the capital budget.
+            self._mark_position(self.positions.get(symbol), q["current"])
+            self.record_equity_snapshot(reason=f"{side} {name} {fill['shares']}股", force=True)
+        return result
+
+    def _submit_order(self, side, symbol, name, price, shares, reason, limit_price=None,
+                      state_update=None, max_position_weight=None, max_sector_weight=None, industry_map=None):
+        if self._persistence_error:
+            return {"success": False, "status": "ERROR", "reason": "账户写盘故障，交易已停止；请修复存储并重启服务"}
+        if not self.ledger_only:
+            self.update_t1_available_shares()
+        before = self._capture_transaction()
+        try:
+            if self.ledger_only:
+                result = self._fill_buy(symbol, name, price, shares, reason) if side == "BUY" else self._fill_sell(symbol, price, shares, reason)
+                if result.get("success"):
+                    result["status"] = result["order"]["status"]
+                    result["order"]["requested_shares"] = shares
+                    self.record_equity_snapshot(reason=f"{side} {name} {shares}股", force=True)
+            else:
+                try:
+                    result = self._match_order(side, symbol, name, price, shares, reason, limit_price,
+                                               max_position_weight, max_sector_weight, industry_map)
+                except (ValueError, TypeError, KeyError, OverflowError) as exc:
+                    result = self._record_rejection(side, symbol, name, price, shares, str(exc))
+            if result.get("success") and state_update is not None:
+                state_update(result["trade"], self)
+            # One commit includes ledger, capacities, final order status and
+            # strategy fill intent. Callbacks can only observe a committed fill.
+            self.save()
+        except Exception as exc:
+            if not getattr(exc, "committed", False):
+                self._rollback_transaction(before)
+            if isinstance(exc, OSError):
+                self._persistence_error = str(exc)
+                logger.error("账户写盘失败，已停止交易: %s", exc)
+                return {"success": False, "status": "ERROR", "reason": "账户状态无法持久化，交易已停止"}
+            raise
+        if result.get("success"):
+            for cb in self.trade_callbacks:
+                try:
+                    cb(result["trade"], self)
+                except Exception:
+                    logger.exception("成交事件回调执行异常")
+        return result
+
+    def execute_buy(self, symbol, name, price, shares, reason="", limit_price=None, *,
+                    state_update=None, max_position_weight=None, max_sector_weight=None, industry_map=None):
+        return self._submit_order("BUY", symbol, name, price, shares, reason, limit_price,
+                                  state_update, max_position_weight, max_sector_weight, industry_map)
+
+    def execute_sell(self, symbol, price, shares, reason="", limit_price=None, *, state_update=None):
+        return self._submit_order("SELL", symbol, self.positions.get(symbol, {}).get("name", symbol),
+                                  price, shares, reason, limit_price, state_update)
+
+    @staticmethod
+    def _mark_position(pos, price):
+        if pos is None:
+            return
+        price = float(price)
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError("标记价格必须是有限正数")
+        market_value = _cents(pos["total_shares"] * price) / 100
+        basis = pos.get("cost_basis_cents", _cents(pos["cost_price"] * pos["total_shares"])) / 100
+        pnl = round(market_value - basis, 2)
+        pnl_pct = round(pnl / basis * 100, 2) if basis else 0.0
+        if not all(math.isfinite(value) for value in (market_value, basis, pnl, pnl_pct)):
+            raise ValueError("标记估值超出有限金额范围")
+        pos.update(last_price=price, market_value=market_value, unrealized_pnl=pnl, pnl_pct=pnl_pct)
+
+    def _fill_buy(self, symbol: str, name: str, price: float, shares: int, reason: str = "") -> Dict[str, Any]:
         """执行买入撮合"""
         ok, msg = self.can_buy(symbol, price, shares)
-        now_dt = datetime.datetime.now(BEIJING)
+        now_dt = self._execution_now or datetime.datetime.now(BEIJING)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         today_str = now_dt.strftime("%Y-%m-%d")
         order_id = str(uuid.uuid4())[:8]
@@ -565,7 +810,6 @@ class SimAccount:
                 "side": "BUY", "price": price, "shares": shares, "status": "REJECTED", "reason": msg
             }
             self.orders.append(order)
-            self.save()
             return {"success": False, "reason": msg, "order": order}
 
         amount = round(price * shares, 2)
@@ -592,16 +836,14 @@ class SimAccount:
 
         pos = self.positions[symbol]
         prev_shares = pos["total_shares"]
-        prev_cost = pos["cost_price"] * prev_shares
+        prev_cost_cents = pos.get("cost_basis_cents", _cents(pos["cost_price"] * prev_shares))
         new_shares = prev_shares + shares
-        new_avg_cost = round((prev_cost + total_cost) / new_shares, 4)
+        pos["cost_basis_cents"] = prev_cost_cents + _cents(total_cost)
+        new_avg_cost = round(pos["cost_basis_cents"] / 100 / new_shares, 4)
 
         pos["total_shares"] = new_shares
         pos["cost_price"] = new_avg_cost
-        pos["last_price"] = price
-        pos["market_value"] = round(new_shares * price, 2)
-        pos["unrealized_pnl"] = round((price - new_avg_cost) * new_shares, 2)
-        pos["pnl_pct"] = round(((price / new_avg_cost) - 1) * 100, 2) if new_avg_cost > 0 else 0.0
+        self._mark_position(pos, price)
 
         pos["buy_lots"].append({
             "date": today_str,
@@ -629,26 +871,19 @@ class SimAccount:
         }
         self.trades.append(trade)
 
-        for cb in getattr(self, "trade_callbacks", []):
-            try:
-                cb(trade, self)
-            except Exception as e:
-                logger.error(f"成交事件回调执行异常: {e}")
-
         order = {
             "order_id": order_id, "time": now_str, "symbol": symbol, "name": name,
             "side": "BUY", "price": price, "shares": shares, "status": "FILLED", "reason": reason
         }
         self.orders.append(order)
-        self.record_equity_snapshot(reason=f"买入 {name} {shares}股", force=True)
-        self.save()
         return {"success": True, "trade": trade, "order": order}
 
-    def execute_sell(self, symbol: str, price: float, shares: int, reason: str = "") -> Dict[str, Any]:
+    def _fill_sell(self, symbol: str, price: float, shares: int, reason: str = "") -> Dict[str, Any]:
         """执行卖出撮合"""
         ok, msg = self.can_sell(symbol, price, shares)
-        now_dt = datetime.datetime.now(BEIJING)
+        now_dt = self._execution_now or datetime.datetime.now(BEIJING)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        today_str = now_dt.strftime("%Y-%m-%d")
         order_id = str(uuid.uuid4())[:8]
 
         pos = self.positions.get(symbol, {})
@@ -660,7 +895,6 @@ class SimAccount:
                 "side": "SELL", "price": price, "shares": shares, "status": "REJECTED", "reason": msg
             }
             self.orders.append(order)
-            self.save()
             return {"success": False, "reason": msg, "order": order}
 
         amount = round(price * shares, 2)
@@ -668,7 +902,9 @@ class SimAccount:
         net_revenue = amount - fee_info["total_fees"]
 
         # 实现盈亏计算
-        cost_of_sold = round(pos["cost_price"] * shares, 2)
+        previous_basis = pos.get("cost_basis_cents", _cents(pos["cost_price"] * pos["total_shares"]))
+        sold_basis = int((Decimal(previous_basis) * shares / pos["total_shares"]).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+        cost_of_sold = sold_basis / 100
         realized_pnl = round(net_revenue - cost_of_sold, 2)
 
         # 增加可用现金
@@ -677,32 +913,29 @@ class SimAccount:
         # 更新持仓
         rem_shares = pos["total_shares"] - shares
         pos["total_shares"] = rem_shares
+        pos["cost_basis_cents"] = previous_basis - sold_basis
         if self.strict_t1:
             pos["available_shares"] = max(0, pos["available_shares"] - shares)
-            # 扣减 buy_lots
-            to_deduct = shares
-            new_lots = []
-            for lot in pos.get("buy_lots", []):
-                if to_deduct <= 0:
-                    new_lots.append(lot)
-                    continue
-                if lot["shares"] <= to_deduct:
-                    to_deduct -= lot["shares"]
-                else:
-                    lot["shares"] -= to_deduct
-                    to_deduct = 0
-                    new_lots.append(lot)
-            pos["buy_lots"] = new_lots
         else:
             pos["available_shares"] = rem_shares
+
+        # Lots track actual shares in both modes; re-enabling T+1 must not
+        # resurrect a sold historical lot and unlock today's replacement buy.
+        to_deduct, new_lots = shares, []
+        for lot in pos.get("buy_lots", []):
+            if self.strict_t1 and lot.get("date", "") >= today_str:
+                new_lots.append(lot)
+                continue
+            removed = min(to_deduct, lot["shares"])
+            to_deduct -= removed
+            if lot["shares"] > removed:
+                new_lots.append({**lot, "shares": lot["shares"] - removed})
+        pos["buy_lots"] = new_lots
 
         if rem_shares <= 0:
             del self.positions[symbol]
         else:
-            pos["last_price"] = price
-            pos["market_value"] = round(rem_shares * price, 2)
-            pos["unrealized_pnl"] = round((price - pos["cost_price"]) * rem_shares, 2)
-            pos["pnl_pct"] = round(((price / pos["cost_price"]) - 1) * 100, 2)
+            self._mark_position(pos, price)
 
         # 记录成交
         trade = {
@@ -722,33 +955,25 @@ class SimAccount:
         }
         self.trades.append(trade)
 
-        for cb in getattr(self, "trade_callbacks", []):
-            try:
-                cb(trade, self)
-            except Exception as e:
-                logger.error(f"成交事件回调执行异常: {e}")
-
         order = {
             "order_id": order_id, "time": now_str, "symbol": symbol, "name": name,
             "side": "SELL", "price": price, "shares": shares, "status": "FILLED", "reason": reason
         }
         self.orders.append(order)
-        self.record_equity_snapshot(reason=f"卖出 {name} {shares}股", force=True)
-        self.save()
         return {"success": True, "trade": trade, "order": order}
 
-    def update_market_prices(self, quotes: Dict[str, Dict[str, Any]]):
+    def update_market_prices(self, quotes: Dict[str, Dict[str, Any]], now=None):
         """根据最新盘口行情更新所有持仓市值与浮盈"""
+        self.bind_execution_quotes(quotes, now=now)
         self.update_t1_available_shares()
 
         for sym, pos in self.positions.items():
             q = quotes.get(sym)
-            if q and q.get("current", 0) > 0:
-                cur = q["current"]
-                pos["last_price"] = cur
-                pos["market_value"] = round(pos["total_shares"] * cur, 2)
-                pos["unrealized_pnl"] = round((cur - pos["cost_price"]) * pos["total_shares"], 2)
-                pos["pnl_pct"] = round(((cur / pos["cost_price"]) - 1) * 100, 2) if pos["cost_price"] > 0 else 0.0
+            try:
+                if q:
+                    self._mark_position(pos, q.get("current", 0))
+            except (ValueError, TypeError, OverflowError):
+                logger.warning("忽略无效标记行情 %s", sym)
 
         self.record_equity_snapshot(reason="盘口更新")
 
@@ -759,10 +984,12 @@ class SimAccount:
         if not force and (now - self._last_snapshot_time < 30.0):
             return
 
-        now_dt = datetime.datetime.now(BEIJING)
+        now_dt = self._execution_now or datetime.datetime.now(BEIJING)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         market_val = round(sum(p.get("market_value", 0.0) for p in self.positions.values()), 2)
         total_equity = round(self.cash + market_val, 2)
+        if not all(math.isfinite(value) for value in (self.cash, market_val, total_equity)):
+            raise ValueError("账户净值包含非法数值，拒绝记录风险历史")
         total_pnl = round(total_equity - self.initial_cash, 2)
         total_pnl_pct = round((total_pnl / self.initial_cash) * 100, 2) if self.initial_cash > 0 else 0.0
 
@@ -785,85 +1012,25 @@ class SimAccount:
         if len(self.equity_history) > 1000:
             self.equity_history = self.equity_history[-1000:]
 
+        # Daily archive and persistent risk maxima survive minute-curve truncation.
+        if self.daily_equity_history and self.daily_equity_history[-1]["time"][:10] == now_str[:10]:
+            self.daily_equity_history[-1] = dict(snapshot)
+        else:
+            self.daily_equity_history.append(dict(snapshot))
+        peak = max(self.risk_history.get("peak_equity", self.initial_cash), total_equity)
+        self.risk_history["peak_equity"] = peak
+        self.risk_history["max_drawdown"] = max(self.risk_history.get("max_drawdown", 0), peak - total_equity)
+        dd_pct = (peak - total_equity) / peak * 100 if peak else 0
+        self.risk_history["max_drawdown_pct"] = max(self.risk_history.get("max_drawdown_pct", 0), dd_pct)
+
         self._last_snapshot_time = now
 
     def _backfill_equity_history(self):
-        """若历史净值采样为空，从历史交易与账户初始状态回填基准点"""
-        if self.equity_history:
-            return
-
-        now_dt = datetime.datetime.now(BEIJING)
-        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-        market_val = round(sum(p.get("market_value", 0.0) for p in self.positions.values()), 2)
-        total_equity = round(self.cash + market_val, 2)
-
-        # 1. 初始基准点
-        start_time = self.trades[0]["time"] if self.trades else now_str
-        self.equity_history.append({
-            "time": start_time,
-            "equity": self.initial_cash,
-            "cash": self.initial_cash,
-            "market_value": 0.0,
-            "pnl": 0.0,
-            "pnl_pct": 0.0,
-            "reason": "账户初始启动"
-        })
-
-        # 2. 从成交流水推导关键时点
-        running_cash = self.initial_cash
-        has_fri = False
-        for t in self.trades:
-            t_time = t.get("time", now_str)
-            side = t.get("side", "BUY")
-            amt = t.get("amount", 0.0)
-            fees = t.get("fees", 0.0)
-            realized = t.get("realized_pnl", 0.0)
-
-            if t_time.startswith("2026-09-11"):
-                has_fri = True
-
-            if side == "BUY":
-                running_cash = round(running_cash - amt - fees, 2)
-                eq = round(self.initial_cash, 2)
-            else:
-                running_cash = round(running_cash + amt - fees, 2)
-                eq = round(self.initial_cash + realized, 2)
-
-            self.equity_history.append({
-                "time": t_time,
-                "equity": eq,
-                "cash": running_cash,
-                "market_value": 0.0,
-                "pnl": round(eq - self.initial_cash, 2),
-                "pnl_pct": round((eq - self.initial_cash) / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0,
-                "reason": f"{'买入' if side=='BUY' else '卖出'} {t.get('name', t.get('symbol'))}"
-            })
-
-        if has_fri:
-            self.equity_history.append({
-                "time": "2026-09-11 15:00:00",
-                "equity": 103000.29,
-                "cash": 12628.29,
-                "market_value": 90372.0,
-                "pnl": 3000.29,
-                "pnl_pct": 3.0,
-                "reason": "周五收盘结算"
-            })
-
-        # 3. 当前最新盘口点
-        tot_pnl = round(total_equity - self.initial_cash, 2)
-        tot_pct = round(tot_pnl / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0
-        self.equity_history.append({
-            "time": now_str,
-            "equity": total_equity,
-            "cash": round(self.cash, 2),
-            "market_value": market_val,
-            "pnl": tot_pnl,
-            "pnl_pct": tot_pct,
-            "reason": "最新盘口结算"
-        })
-
-        self.equity_history.sort(key=lambda x: x["time"])
+        """Record known current equity; trades do not reveal historic marks."""
+        if not self.equity_history:
+            if self.trades:
+                self.risk_history["history_complete"] = False
+            self.record_equity_snapshot(reason="可验证当前账户净值", force=True)
 
     def purge_non_main_board(self) -> Dict[str, Any]:
         """清除所有非沪深纯主板（如创业板、科创板、北交所）的持仓、成交与订单记录，并依据保留的主板交易精确重算可用现金与净值历史"""
@@ -914,66 +1081,11 @@ class SimAccount:
         }
 
     def rebuild_equity_history_for_main_board(self):
-        """根据纯主板历史成交流水与当前盘口重构净值曲线"""
+        """A filtered ledger has no evidence of counterfactual historic marks."""
         self.equity_history = []
-        now_dt = datetime.datetime.now(BEIJING)
-        now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-        # 1. 初始基准点
-        start_time = self.trades[0].get("time", now_str) if self.trades else now_str
-        self.equity_history.append({
-            "time": start_time,
-            "equity": self.initial_cash,
-            "cash": self.initial_cash,
-            "market_value": 0.0,
-            "pnl": 0.0,
-            "pnl_pct": 0.0,
-            "reason": "账户初始启动 (沪深纯主板)"
-        })
-
-        # 2. 从纯主板交易时序记录净值变化
-        running_cash = self.initial_cash
-        cumulative_realized = 0.0
-        for t in self.trades:
-            t_time = t.get("time", now_str)
-            side = t.get("side", "BUY")
-            amt = float(t.get("amount", 0.0))
-            fees = float(t.get("fees", 0.0))
-            realized = float(t.get("realized_pnl") or 0.0)
-
-            if side == "BUY":
-                running_cash = round(running_cash - amt - fees, 2)
-            else:
-                running_cash = round(running_cash + amt - fees, 2)
-                cumulative_realized = round(cumulative_realized + realized, 2)
-
-            eq = round(self.initial_cash + cumulative_realized, 2)
-            self.equity_history.append({
-                "time": t_time,
-                "equity": eq,
-                "cash": running_cash,
-                "market_value": round(eq - running_cash, 2),
-                "pnl": round(eq - self.initial_cash, 2),
-                "pnl_pct": round((eq - self.initial_cash) / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0,
-                "reason": f"{'买入' if side=='BUY' else '卖出'} {t.get('name', t.get('symbol'))}"
-            })
-
-        # 3. 最新盘口点
-        market_val = round(sum(p.get("market_value", 0.0) for p in self.positions.values()), 2)
-        total_equity = round(self.cash + market_val, 2)
-        tot_pnl = round(total_equity - self.initial_cash, 2)
-        tot_pct = round(tot_pnl / self.initial_cash * 100, 2) if self.initial_cash > 0 else 0.0
-
-        self.equity_history.append({
-            "time": now_str,
-            "equity": total_equity,
-            "cash": round(self.cash, 2),
-            "market_value": market_val,
-            "pnl": tot_pnl,
-            "pnl_pct": tot_pct,
-            "reason": "最新盘口结算 (沪深纯主板)"
-        })
-        self.equity_history.sort(key=lambda x: x["time"])
+        self.daily_equity_history = []
+        self.risk_history = {"history_complete": False}
+        self.record_equity_snapshot(reason="过滤账户后的可验证当前净值", force=True)
 
     def get_performance_metrics(self) -> Dict[str, Any]:
         """计算全面的账户收益、量化绩效与风险分析指标"""
@@ -982,7 +1094,7 @@ class SimAccount:
         total_pnl = round(total_equity - self.initial_cash, 2)
         total_pnl_pct = round((total_pnl / self.initial_cash) * 100, 2) if self.initial_cash > 0 else 0.0
 
-        now_dt = datetime.datetime.now(BEIJING)
+        now_dt = self._execution_now or datetime.datetime.now(BEIJING)
         today_str = now_dt.strftime("%Y-%m-%d")
 
         # 1. 规费汇总与已实现盈亏汇总
@@ -1017,11 +1129,13 @@ class SimAccount:
 
         # 若未找到前一日采样点，尝试从首笔非今日成交推断或使用 initial_cash
         if prev_close_equity is None:
-            prev_trades = [t for t in self.trades if not t.get("time", "").startswith(today_str)]
-            if prev_trades:
-                prev_close_equity = 103000.29
-            else:
-                prev_close_equity = self.initial_cash
+            for pt in reversed(self.daily_equity_history):
+                if pt.get("time", "")[:10] < today_str:
+                    prev_close_equity = pt["equity"]
+                    break
+        daily_pnl_available = prev_close_equity is not None or not self.trades
+        if prev_close_equity is None:
+            prev_close_equity = self.initial_cash
 
         today_pnl = round(total_equity - prev_close_equity, 2)
         today_pnl_pct = round((today_pnl / prev_close_equity * 100), 2) if prev_close_equity > 0 else 0.0
@@ -1041,6 +1155,9 @@ class SimAccount:
                 max_drawdown_pct = round((dd / curr_peak * 100), 2) if curr_peak > 0 else 0.0
 
         max_drawdown = round(max_drawdown, 2)
+        peak_equity = max(peak_equity, self.risk_history.get("peak_equity", self.initial_cash))
+        max_drawdown = round(max(max_drawdown, self.risk_history.get("max_drawdown", 0)), 2)
+        max_drawdown_pct = round(max(max_drawdown_pct, self.risk_history.get("max_drawdown_pct", 0)), 2)
 
         # 5. 标的维度收益归因 (Symbol PnL Attribution)
         symbol_map: Dict[str, Dict[str, Any]] = {}
@@ -1163,6 +1280,10 @@ class SimAccount:
             "total_pnl_pct": total_pnl_pct,
             "today_pnl": today_pnl,
             "today_pnl_pct": today_pnl_pct,
+            "today_pnl_available": daily_pnl_available,
+            "risk_history_complete": self.risk_history.get("history_complete", not self.trades),
+            "accounting_history_complete": self.accounting_history_complete,
+            "persistence_healthy": self._persistence_error is None,
             "realized_pnl": realized_pnl,
             "unrealized_pnl": unrealized_pnl,
             "total_fees": total_fees,
@@ -1192,22 +1313,137 @@ class SimAccount:
         """获取账户整体资产与收益概况（包含多维收益率）"""
         return self.get_performance_metrics()["summary"]
 
+    def _migrate_cost_basis(self):
+        """Reconstruct cents from a complete ledger; never change account cash."""
+        quantities, bases, corrected, replay_lots = {}, {}, [], {}
+        replay_cash = _cents(self.initial_cash)
+        complete = True
+        try:
+            for trade in self.trades:
+                symbol, side, shares = trade["symbol"], trade["side"], int(trade["shares"])
+                amount, fees = _cents(trade["amount"]), _cents(trade["fees"])
+                if shares <= 0 or amount <= 0 or fees < 0:
+                    raise ValueError("非法历史成交")
+                old_qty, old_basis = quantities.get(symbol, 0), bases.get(symbol, 0)
+                if side == "BUY":
+                    quantities[symbol] = old_qty + shares
+                    bases[symbol] = old_basis + amount + fees
+                    replay_lots.setdefault(symbol, []).append(dict(
+                        date=str(trade.get("time", ""))[:10], shares=shares, price=trade.get("price")))
+                    replay_cash -= amount + fees
+                elif side == "SELL" and shares <= old_qty:
+                    cost = int((Decimal(old_basis) * shares / old_qty).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+                    quantities[symbol] = old_qty - shares
+                    bases[symbol] = old_basis - cost
+                    replay_cash += amount - fees
+                    corrected.append((trade, (amount - fees - cost) / 100))
+                    remaining = shares
+                    for lot in replay_lots.get(symbol, []):
+                        removed = min(remaining, lot["shares"])
+                        lot["shares"] -= removed
+                        remaining -= removed
+                else:
+                    raise ValueError("历史持仓不守恒")
+            complete = replay_cash == _cents(self.cash) and {
+                sym: qty for sym, qty in quantities.items() if qty
+            } == {sym: pos["total_shares"] for sym, pos in self.positions.items()}
+        except (ValueError, TypeError, KeyError, ArithmeticError):
+            complete = False
+        self.accounting_history_complete = complete
+        for symbol, pos in self.positions.items():
+            if "cost_basis_cents" not in pos:
+                pos["cost_basis_cents"] = bases[symbol] if complete else _cents(pos["cost_price"] * pos["total_shares"])
+                pos["cost_basis_estimated"] = not complete
+            self._mark_position(pos, pos.get("last_price", pos["cost_price"]))
+            lots = pos.get("buy_lots", [])
+            if (not isinstance(lots, list) or any(not isinstance(lot, dict) or
+                    not isinstance(lot.get("shares"), int) or lot["shares"] <= 0 or
+                    not isinstance(lot.get("date"), str) for lot in lots)
+                    or sum(lot["shares"] for lot in lots) != pos["total_shares"]):
+                rebuilt = [lot for lot in replay_lots.get(symbol, []) if lot["shares"] > 0]
+                if complete and all(len(lot["date"]) == 10 for lot in rebuilt):
+                    pos["buy_lots"] = rebuilt
+                    pos["lot_history_repaired"] = True
+                else:
+                    # No dated evidence: conservatively lock unverifiable lots.
+                    pos["buy_lots"] = [dict(date=datetime.datetime.now(BEIJING).date().isoformat(),
+                                            shares=pos["total_shares"], price=pos["cost_price"])]
+                    pos["lot_history_estimated"] = True
+        if complete:
+            for trade, pnl in corrected:
+                if trade.get("realized_pnl") != pnl:
+                    trade.setdefault("legacy_realized_pnl", trade.get("realized_pnl"))
+                    trade["realized_pnl"] = pnl
+
+    def _validate_loaded_finances(self):
+        # Invalid cash is a corrupt ledger, not authorization to create a new
+        # account. Invalid old valuations can be rebuilt from finite evidence.
+        if not all(math.isfinite(float(value)) for value in (self.initial_cash, self.cash)):
+            raise ValueError("账户现金数据损坏")
+        repaired = False
+        for symbol, pos in self.positions.items():
+            price = pos.get("last_price", 0)
+            if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+                candidates = [t.get("price") for t in reversed(self.trades) if t.get("symbol") == symbol]
+                candidates.append(pos.get("cost_price"))
+                price = next((p for p in candidates if isinstance(p, (int, float)) and math.isfinite(p) and p > 0), None)
+                if price is None:
+                    raise ValueError(f"持仓 {symbol} 缺少可恢复价格")
+                pos["last_price"] = price
+                repaired = True
+            self._mark_position(pos, price)
+        for field in ("equity_history", "daily_equity_history"):
+            points = getattr(self, field)
+            usable = [p for p in points if isinstance(p.get("equity"), (int, float)) and
+                      all(isinstance(p[key], (int, float)) and math.isfinite(p[key])
+                          for key in ("equity", "cash", "market_value", "pnl", "pnl_pct") if key in p)]
+            repaired |= len(usable) != len(points)
+            setattr(self, field, usable)
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v)
+               for key, v in self.risk_history.items() if key != "history_complete"):
+            self.risk_history = {"history_complete": False}
+            repaired = True
+        if repaired:
+            self.risk_history["history_complete"] = False
+            self.risk_history["valuation_repaired"] = True
+            logger.warning("已隔离损坏的历史估值；现金与成交保持原值")
+
     def save(self):
-        """持久化保存账户状态到 JSON 文件"""
-        summary = self.get_summary()
+        """Durably commit a complete account snapshot; errors are never hidden."""
         data = {
-            "updated_at": datetime.datetime.now(BEIJING).isoformat(),
-            "summary": summary,
-            "positions": self.positions,
-            "trades": self.trades[-200:],  # 保存最近200笔成交
-            "orders": self.orders[-200:],
-            "equity_history": self.equity_history[-1000:]
+            "schema_version": 3,
+            "updated_at": (self._execution_now or datetime.datetime.now(BEIJING)).isoformat(),
+            "summary": self.get_summary(),
+            "positions": self.positions, "trades": self.trades, "orders": self.orders,
+            "equity_history": self.equity_history[-1000:],
+            "daily_equity_history": self.daily_equity_history,
+            "risk_history": self.risk_history, "strategy_state": self.strategy_state,
+            "quote_consumption": [[*key, value] for key, value in self._quote_consumption.items()],
+            "quote_capacity": [[*key, value] for key, value in self._quote_capacity.items()],
+            "daily_consumption": [[*key, value] for key, value in self._daily_consumption.items()]
         }
+        payload = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)
+        temporary = self.save_path.with_name(self.save_path.name + "." + uuid.uuid4().hex + ".tmp")
+        committed = False
         try:
             self.save_path.parent.mkdir(parents=True, exist_ok=True)
-            self.save_path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        except Exception as e:
-            print(f"[警告] 账户持久化保存失败: {e}", file=sys.stderr)
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.save_path)
+            committed = True
+            descriptor = os.open(str(self.save_path.parent), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            self._persistence_error = str(exc)
+            raise AccountPersistenceError(str(exc), committed=committed) from exc
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def load(self):
         """从 JSON 文件恢复账户状态"""
@@ -1223,10 +1459,30 @@ class SimAccount:
             self.trades = data.get("trades", [])
             self.orders = data.get("orders", [])
             self.equity_history = data.get("equity_history", [])
+            self.daily_equity_history = data.get("daily_equity_history", [])
+            if not self.daily_equity_history:
+                daily = {point["time"][:10]: dict(point) for point in self.equity_history if point.get("time")}
+                self.daily_equity_history = [daily[date] for date in sorted(daily)]
+            self.risk_history = data.get("risk_history") or {
+                "history_complete": False,
+                "peak_equity": max(self.initial_cash, sum_data.get("peak_equity", self.initial_cash)),
+                "max_drawdown": sum_data.get("max_drawdown", 0),
+                "max_drawdown_pct": sum_data.get("max_drawdown_pct", 0)
+            }
+            self._last_rejections = {}
+            self.strategy_state = data.get("strategy_state", {})
+            self._quote_consumption = {tuple(row[:3]): row[3] for row in data.get("quote_consumption", [])}
+            self._daily_consumption = {tuple(row[:3]): row[3] for row in data.get("daily_consumption", [])}
+            self._quote_capacity = {tuple(row[:3]): row[3] for row in data.get("quote_capacity", [])}
+            # Legacy consumption is a safe lower bound for already-used books.
+            for key, used in self._quote_consumption.items():
+                self._quote_capacity.setdefault(key, used)
+            self._validate_loaded_finances()
+            self._migrate_cost_basis()
             self.update_t1_available_shares()
             self._backfill_equity_history()
-        except Exception as e:
-            print(f"[警告] 读取历史账户文件失败，使用初始配置: {e}", file=sys.stderr)
+        except Exception as exc:
+            raise ValueError(f"账户文件无法安全加载: {self.save_path}: {exc}") from exc
 
 
 # ==============================================================================
@@ -1587,381 +1843,6 @@ class ShortTermResonanceStrategy(BaseStrategy):
 
 
 
-class MomentumRotationStrategy(BaseStrategy):
-    """
-    吉姆·西蒙斯 / AQR 截面领头羊动量轮动策略 (Cross-Sectional Momentum Rotation)
-    近一年实盘回测最高收益策略 (+77.51%)
-    """
-
-    def __init__(
-        self,
-        account: SimAccount,
-        watchlist: List[str],
-        max_stock_weight: float = 0.33,
-        max_positions: int = 3,
-        stop_loss_pct: float = -6.0,
-        **kwargs
-    ):
-        super().__init__(account, name="Momentum_Rotation")
-        self.display_name = "截面领头羊动量轮动策略 (西蒙斯/AQR 近一年+77.5%)"
-        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
-        self.max_stock_weight = max_stock_weight
-        self.max_positions = max_positions
-        self.stop_loss_pct = stop_loss_pct
-        self.latest_candidates: List[Dict[str, Any]] = []
-        self.feed = HistoricalDataFeed()
-        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
-        self._last_history_update = 0.0
-
-    def _ensure_history_data(self):
-        """确保标的历史K线数据已加载（优先使用本地磁盘缓存）"""
-        now_ts = time.time()
-        if now_ts - self._last_history_update < 1800 and self.history_cache:
-            return
-
-        needed = list(self.watchlist[:100])
-        for sym in self.account.positions.keys():
-            if sym not in needed:
-                needed.append(sym)
-
-        try:
-            data = self.feed.fetch_universe_klines(needed, use_cache=True)
-            for sym, item in data.items():
-                if item and item.get("bars"):
-                    self.history_cache[sym] = item["bars"]
-            self._last_history_update = now_ts
-        except Exception as e:
-            print(f"[警告] 加载动量历史K线失败: {e}", file=sys.stderr)
-
-    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
-        self._ensure_history_data()
-        summary = self.account.get_summary()
-        total_equity = summary["total_equity"]
-        just_sold = set()
-
-        # 1. 检查现有持仓的出场与风控
-        for sym, pos in list(self.account.positions.items()):
-            q = quotes.get(sym)
-            if not q or q.get("current", 0) <= 0:
-                continue
-
-            current_price = q["current"]
-            cost_price = pos.get("cost_price", current_price)
-            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
-            if avail <= 0:
-                continue
-
-            pnl_pct = pos.get("pnl_pct", 0.0)
-            bars = self.history_cache.get(sym, [])
-            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else cost_price
-
-            bids = q.get("bids", [])
-            exec_price = bids[0]["price"] if bids else current_price
-
-            # 规则 A: 严格防守硬止损 (-6.0%)
-            if pnl_pct <= self.stop_loss_pct:
-                reason = f"动量轮动硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-
-            # 规则 B: 跌破 MA20 生命线离场
-            if current_price < ma20 and pnl_pct < -2.0:
-                reason = f"动量轮动破位止损 (现价 ¥{current_price:.2f} < MA20 ¥{ma20:.2f})"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-            elif current_price < ma20 and pnl_pct > 3.0:
-                reason = f"动量轮动均线止盈 (回落破位 MA20 ¥{ma20:.2f}，锁定浮盈 {pnl_pct:+.2f}%)"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-
-        # 2. 扫描截面领头羊
-        candidates = []
-        for sym in self.watchlist:
-            if sym in self.account.positions or sym in just_sold:
-                continue
-            # 严格仅交易沪深纯主板标的 (排除创业板/科创板/北交所)
-            if not StockUniverse.is_main_board(sym):
-                continue
-            q = quotes.get(sym)
-            if not q or not q.get("fresh", True):
-                continue
-
-            name = q.get("name", "")
-            if "ST" in name.upper() or "退" in name:
-                continue
-
-            current_price = q.get("current", 0.0)
-            open_p = q.get("open", 0.0)
-            change_pct = q.get("change_pct", 0.0)
-            if current_price <= 0 or (open_p > 0 and current_price < open_p):
-                continue
-
-            bars = self.history_cache.get(sym, [])
-            if len(bars) < 60:
-                continue
-
-            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0
-            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
-            if not (current_price > ma20 and ma20 > ma60):
-                continue
-
-            ret_20 = (current_price / bars[-20]["close"] - 1.0) * 100.0
-            ret_60 = (current_price / bars[-60]["close"] - 1.0) * 100.0
-            if ret_20 <= 0 or ret_60 <= 0:
-                continue
-
-            score = round(ret_20 * 1.5 + ret_60 * 1.0, 2)
-            asks = q.get("asks", [])
-            exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
-
-            candidates.append({
-                "symbol": sym,
-                "code": q.get("code", sym),
-                "name": name,
-                "current": current_price,
-                "change_pct": change_pct,
-                "open": open_p,
-                "score": score,
-                "ret_20": round(ret_20, 2),
-                "ret_60": round(ret_60, 2),
-                "exec_price": exec_p,
-                "fresh": True
-            })
-
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        self.latest_candidates = candidates[:50]
-
-        # 择优买入动量最高的领头羊
-        current_holding_count = len(self.account.positions)
-        if current_holding_count < self.max_positions:
-            for cand in candidates:
-                if current_holding_count >= self.max_positions:
-                    break
-                sym = cand["symbol"]
-                exec_price = cand["exec_price"]
-                name = cand["name"]
-                target_amount = total_equity * self.max_stock_weight
-                max_shares = int(target_amount / (exec_price * 100)) * 100
-                if max_shares < 100:
-                    continue
-
-                cost_estimate = max_shares * exec_price * 1.001
-                if self.account.cash >= cost_estimate:
-                    reason = f"截面动量领头羊买入 (动量分 {cand['score']:.1f}, 20日 {cand['ret_20']:+.1f}%, 60日 {cand['ret_60']:+.1f}%)"
-                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
-                    if res.get("success"):
-                        current_holding_count += 1
-
-
-class MomentumRotationProStrategy(BaseStrategy):
-    """
-    截面领头羊动量轮动增强版 (Momentum Rotation Pro)
-    基于西蒙斯大奖章 & AQR 截面动量多因子增强模型：
-    1. 半年线牛熊过滤 (Close > MA120)：彻底剔除处于中长期空头阴跌周期的假突破个股；
-    2. MA60 均线斜率上行验证 (MA60 > MA60[t-5])：只在个股处于中期加速上行通道时建仓；
-    3. 20日相对高位突破确认 (Close >= 0.95 * High20)：筛选临近创近期新高的真正强势爆发龙头；
-    4. 短期爆发动量加权提升：Score = ret_20 * 2.0 + ret_60 * 1.0；
-    5. 出场与风控：-6%严格硬止损，破位MA20止损，MA20生命线趋势追踪止盈。
-    """
-
-    def __init__(
-        self,
-        account: SimAccount,
-        watchlist: List[str],
-        max_stock_weight: float = 0.33,
-        max_positions: int = 3,
-        stop_loss_pct: float = -6.0,
-        momentum_w20: float = 2.0,
-        momentum_w60: float = 1.0,
-        alpha_high: float = 0.95,
-        **kwargs
-    ):
-        super().__init__(account, name="Momentum_Rotation_Pro")
-        self.display_name = "截面领头羊动量增强版 (半年线/MA60斜率/高位突破/加权动量)"
-        self.watchlist = [MarketFeed.normalize_symbol(s) for s in watchlist]
-        self.max_stock_weight = max_stock_weight
-        self.max_positions = max_positions
-        self.stop_loss_pct = stop_loss_pct
-        self.momentum_w20 = momentum_w20
-        self.momentum_w60 = momentum_w60
-        self.alpha_high = alpha_high
-        self.latest_candidates: List[Dict[str, Any]] = []
-        self.feed = HistoricalDataFeed()
-        self.history_cache: Dict[str, List[Dict[str, Any]]] = {}
-        self._last_history_update = 0.0
-
-    def _ensure_history_data(self):
-        """确保标的历史K线数据已加载（优先使用本地磁盘缓存）"""
-        now_ts = time.time()
-        if now_ts - self._last_history_update < 1800 and self.history_cache:
-            return
-
-        needed = list(self.watchlist[:100])
-        for sym in self.account.positions.keys():
-            if sym not in needed:
-                needed.append(sym)
-
-        try:
-            data = self.feed.fetch_universe_klines(needed, use_cache=True)
-            for sym, item in data.items():
-                if item and item.get("bars"):
-                    self.history_cache[sym] = item["bars"]
-            self._last_history_update = now_ts
-        except Exception as e:
-            print(f"[警告] 加载动量增强历史K线失败: {e}", file=sys.stderr)
-
-    def on_tick(self, quotes: Dict[str, Dict[str, Any]]):
-        self._ensure_history_data()
-        summary = self.account.get_summary()
-        total_equity = summary["total_equity"]
-        just_sold = set()
-
-        # 1. 检查现有持仓的出场与风控
-        for sym, pos in list(self.account.positions.items()):
-            q = quotes.get(sym)
-            if not q or q.get("current", 0) <= 0:
-                continue
-
-            current_price = q["current"]
-            cost_price = pos.get("cost_price", current_price)
-            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
-            if avail <= 0:
-                continue
-
-            pnl_pct = pos.get("pnl_pct", 0.0)
-            bars = self.history_cache.get(sym, [])
-            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0 if len(bars) >= 19 else cost_price
-
-            bids = q.get("bids", [])
-            exec_price = bids[0]["price"] if bids else current_price
-
-            # 规则 A: 严格防守硬止损 (-6.0%)
-            if pnl_pct <= self.stop_loss_pct:
-                reason = f"动量增强硬止损 (浮亏 {pnl_pct:+.2f}% <= {self.stop_loss_pct}%)"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-
-            # 规则 B: 跌破 MA20 破位止损 (微亏防假突破)
-            if current_price < ma20 and pnl_pct <= -2.0:
-                reason = f"动量增强破位止损 (现价 ¥{current_price:.2f} < MA20 ¥{ma20:.2f})"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-
-            # 规则 C: 均线动态追踪止盈 (主升浪结束回落跌破 MA20 锁盈)
-            elif current_price < ma20 and pnl_pct >= 3.0:
-                reason = f"动量增强均线止盈 (回落跌破 MA20 ¥{ma20:.2f}，锁定浮盈 {pnl_pct:+.2f}%)"
-                res = self.account.execute_sell(sym, exec_price, avail, reason=reason)
-                if res.get("success"):
-                    just_sold.add(sym)
-                continue
-
-        # 2. 扫描多因子精选标的
-        candidates = []
-        for sym in self.watchlist:
-            if sym in self.account.positions or sym in just_sold:
-                continue
-            # 严格仅交易沪深纯主板标的
-            if not StockUniverse.is_main_board(sym):
-                continue
-            q = quotes.get(sym)
-            if not q or not q.get("fresh", True):
-                continue
-
-            name = q.get("name", "")
-            if "ST" in name.upper() or "退" in name:
-                continue
-
-            current_price = q.get("current", 0.0)
-            open_p = q.get("open", 0.0)
-            change_pct = q.get("change_pct", 0.0)
-            if current_price <= 0 or (open_p > 0 and current_price < open_p):
-                continue
-
-            bars = self.history_cache.get(sym, [])
-            if len(bars) < 120:
-                continue
-
-            # 均线多头形态 (Close > MA20 > MA60)
-            ma20 = (sum(b["close"] for b in bars[-19:]) + current_price) / 20.0
-            ma60 = (sum(b["close"] for b in bars[-59:]) + current_price) / 60.0
-            ma120 = (sum(b["close"] for b in bars[-119:]) + current_price) / 120.0
-            ma60_prev5 = sum(b["close"] for b in bars[-64:-4]) / 60.0
-            high20 = max(max(b["high"] for b in bars[-19:]), current_price)
-
-            # 核心增强过滤条件:
-            # 1. 均线多头：Price > MA20 > MA60
-            if not (current_price > ma20 and ma20 > ma60):
-                continue
-            # 2. 半年线牛熊过滤：Price > MA120 (彻底剔除中长期空头阴跌股)
-            if current_price < ma120:
-                continue
-            # 3. MA60上行通道斜率验证：MA60 > MA60[t-5]
-            if ma60 <= ma60_prev5:
-                continue
-            # 4. 20日高位突破确认：Close >= 0.95 * High20
-            if current_price < self.alpha_high * high20:
-                continue
-
-            # 双周期动量为正
-            ret_20 = (current_price / bars[-20]["close"] - 1.0) * 100.0
-            ret_60 = (current_price / bars[-60]["close"] - 1.0) * 100.0
-            if ret_20 <= 0 or ret_60 <= 0:
-                continue
-
-            # 强化短期爆发力加权打分：Score = ret_20 * 2.0 + ret_60 * 1.0
-            score = round(ret_20 * self.momentum_w20 + ret_60 * self.momentum_w60, 2)
-            asks = q.get("asks", [])
-            exec_p = asks[0]["price"] if asks and asks[0]["price"] > 0 else current_price
-
-            candidates.append({
-                "symbol": sym,
-                "code": q.get("code", sym),
-                "name": name,
-                "current": current_price,
-                "change_pct": change_pct,
-                "open": open_p,
-                "score": score,
-                "ret_20": round(ret_20, 2),
-                "ret_60": round(ret_60, 2),
-                "exec_price": exec_p,
-                "fresh": True
-            })
-
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        self.latest_candidates = candidates[:50]
-
-        # 择优买入动量最高的领头羊
-        current_holding_count = len(self.account.positions)
-        if current_holding_count < self.max_positions:
-            for cand in candidates:
-                if current_holding_count >= self.max_positions:
-                    break
-                sym = cand["symbol"]
-                exec_price = cand["exec_price"]
-                name = cand["name"]
-                target_amount = total_equity * self.max_stock_weight
-                max_shares = int(target_amount / (exec_price * 100)) * 100
-                if max_shares < 100:
-                    continue
-
-                cost_estimate = max_shares * exec_price * 1.001
-                if self.account.cash >= cost_estimate:
-                    reason = f"动量增强买入 (动量分 {cand['score']:.1f}, 20日 {cand['ret_20']:+.1f}%, 60日 {cand['ret_60']:+.1f}%)"
-                    res = self.account.execute_buy(sym, name, exec_price, max_shares, reason=reason)
-                    if res.get("success"):
-                        current_holding_count += 1
-
-
 class MinerviniSEPAStrategy(BaseStrategy):
     """
     马克·米奈尔维尼 SEPA + VCP 波动率收缩起爆策略
@@ -1991,7 +1872,7 @@ class MinerviniSEPAStrategy(BaseStrategy):
         now_ts = time.time()
         if now_ts - self._last_history_update < 1800 and self.history_cache:
             return
-        needed = list(self.watchlist[:100])
+        needed = list(self.watchlist)
         for sym in self.account.positions.keys():
             if sym not in needed:
                 needed.append(sym)
@@ -2144,7 +2025,7 @@ class TurtleBreakoutStrategy(BaseStrategy):
         now_ts = time.time()
         if now_ts - self._last_history_update < 1800 and self.history_cache:
             return
-        needed = list(self.watchlist[:100])
+        needed = list(self.watchlist)
         for sym in self.account.positions.keys():
             if sym not in needed:
                 needed.append(sym)
@@ -2282,7 +2163,7 @@ class ONeilCANSLIMStrategy(BaseStrategy):
         now_ts = time.time()
         if now_ts - self._last_history_update < 1800 and self.history_cache:
             return
-        needed = list(self.watchlist[:100])
+        needed = list(self.watchlist)
         for sym in self.account.positions.keys():
             if sym not in needed:
                 needed.append(sym)
@@ -2397,6 +2278,8 @@ class ONeilCANSLIMStrategy(BaseStrategy):
                     if res.get("success"):
                         current_holding_count += 1
 
+
+from daily_momentum import MomentumRotationStrategy, MomentumRotationProStrategy
 
 STRATEGY_REGISTRY = {
     "Momentum_Rotation_Pro": MomentumRotationProStrategy,

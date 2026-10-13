@@ -10,8 +10,10 @@ import datetime
 from pathlib import Path
 import tempfile
 import json
+import os
+from unittest.mock import patch
 
-from sim_trader import SimAccount, MarketFeed, StockUniverse, MomentumBreakoutStrategy, ShortTermResonanceStrategy, PaperTradingEngine
+from sim_trader import SimAccount, MarketFeed, StockUniverse, MomentumBreakoutStrategy, ShortTermResonanceStrategy, PaperTradingEngine, BEIJING
 
 class TestSimTrader(unittest.TestCase):
 
@@ -21,7 +23,8 @@ class TestSimTrader(unittest.TestCase):
         self.account = SimAccount(
             initial_cash=100_000.0,
             strict_t1=True,
-            save_path=str(self.account_file)
+            save_path=str(self.account_file),
+            ledger_only=True  # These older unit tests exercise bookkeeping; enforced execution has separate offline tests.
         )
 
     def tearDown(self):
@@ -88,18 +91,20 @@ class TestSimTrader(unittest.TestCase):
         self.assertIn("T+1今日锁仓", res_sell["reason"])
 
         # 模拟进入下一个交易日
-        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        tomorrow = (datetime.datetime.now(BEIJING) + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         self.account.update_t1_available_shares(today_str=tomorrow)
 
         # 检查是否解冻为可用
         pos = self.account.positions["sz002594"]
         self.assertEqual(pos["available_shares"], 200)
 
-        # 次日卖出成功
+        # 次日卖出成功，按明确输入价格验证账务守恒。
+        cost_of_sold = round(pos["cost_price"] * 200, 2)
         res_sell2 = self.account.execute_sell("sz002594", 110.0, 200, reason="次日止盈卖出")
         self.assertTrue(res_sell2["success"])
         self.assertNotIn("sz002594", self.account.positions) # 仓位已清空
-        self.assertGreater(res_sell2["trade"]["realized_pnl"], 1800.0) # 盈利 2000 扣除双边税费
+        self.assertEqual(res_sell2["trade"]["realized_pnl"],
+                         round(22000.0 - res_sell2["trade"]["fees"] - cost_of_sold, 2))
 
     def test_persistence_save_load(self):
         """测试 JSON 持久化与断点加载"""
@@ -113,6 +118,7 @@ class TestSimTrader(unittest.TestCase):
         self.assertEqual(new_acc.positions["sz002594"]["total_shares"], 100)
         self.assertEqual(len(new_acc.trades), 1)
 
+    @unittest.skipUnless(os.environ.get("RUN_MARKET_INTEGRATION") == "1", "market API tests require RUN_MARKET_INTEGRATION=1")
     def test_market_feed_live_quotes(self):
         """测试腾讯实时行情接口连通性与解析字段"""
         test_symbols = ["sh600519", "sz002594"]
@@ -141,7 +147,16 @@ class TestSimTrader(unittest.TestCase):
             ignore_market_hours=True # 强制测试模式
         )
         # 单步执行
-        engine.step()
+        # Verify orchestration without a live market connection. Order-book
+        # execution boundaries are covered by test_account_execution.py.
+        fake_quotes = {
+            "sh600519": dict(symbol="sh600519", name="测试", current=10., open=10.,
+                             pre_close=10., change=0., change_pct=0., amount_wanyuan=10000.,
+                             fresh=True, bids=[], asks=[])
+        }
+        with patch.object(MarketFeed, "fetch_quotes", return_value=fake_quotes) as fetch:
+            engine.step()
+        fetch.assert_called_once()
         summary = self.account.get_summary()
         self.assertGreater(summary["total_equity"], 0)
 

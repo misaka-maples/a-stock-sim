@@ -49,15 +49,15 @@ class BacktestEngine:
     def __init__(
         self,
         start_date: str = "2024-01-01",
-        end_date: str = "2026-09-15",
+        end_date: Optional[str] = None,
         initial_cash: float = 100000.0,
         strategy_name: str = "ShortTermResonance",
         symbols: Optional[List[str]] = None,
         pool_type: str = "core_active",
         benchmark_code: str = "000300",
         # 资金与仓位
-        max_positions: int = 3,
-        max_stock_weight: float = 0.30,
+        max_positions: Optional[int] = None,
+        max_stock_weight: Optional[float] = None,
         # 费率设置
         commission_rate: float = 0.00025,
         min_commission: float = 5.0,
@@ -72,21 +72,34 @@ class BacktestEngine:
         min_turnover_rate: float = 1.5,
         take_profit_trigger_pct: float = 3.5,
         trailing_callback_pct: float = 1.5,
-        stop_loss_pct: float = -2.5,
+        stop_loss_pct: Optional[float] = None,
         max_take_profit_pct: float = 7.0,
         max_holding_days: int = 5,
+        **momentum_kwargs,
     ):
+        if end_date is None:
+            from history_data import last_completed_trading_day
+            end_date = last_completed_trading_day()
+        is_momentum = strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro")
+        if momentum_kwargs and not is_momentum:
+            raise TypeError("额外研究参数仅支持 Momentum 策略")
+        self._momentum_kwargs = dict(momentum_kwargs)
+        self._explicit_stop_arg = stop_loss_pct
+        self._explicit_position_args = {k: v for k, v in dict(max_positions=max_positions,
+                                      max_stock_weight=max_stock_weight,
+                                      stop_loss_pct=stop_loss_pct).items() if v is not None}
         self.start_date = start_date
         self.end_date = end_date
         self.initial_cash = float(initial_cash)
         self.strategy_name = strategy_name
         self.pool_type = pool_type
-        self.symbols = symbols or HistoricalDataFeed.get_preset_symbols(pool_type)
+        preset_feed = self._momentum_kwargs.get("feed") or HistoricalDataFeed
+        self.symbols = symbols or preset_feed.get_preset_symbols(pool_type)
         self.benchmark_code = benchmark_code
 
         # 仓位与风控
-        self.max_positions = max_positions
-        self.max_stock_weight = max_stock_weight
+        self.max_positions = max_positions if max_positions is not None else (6 if is_momentum else 3)
+        self.max_stock_weight = max_stock_weight if max_stock_weight is not None else (.20 if is_momentum else .30)
         self.commission_rate = commission_rate
         self.min_commission = min_commission
         self.stamp_tax_rate = stamp_tax_rate
@@ -101,11 +114,12 @@ class BacktestEngine:
         self.min_turnover_rate = min_turnover_rate
         self.take_profit_trigger_pct = take_profit_trigger_pct
         self.trailing_callback_pct = trailing_callback_pct
-        self.stop_loss_pct = stop_loss_pct
+        self.stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else (-6.0 if is_momentum else -2.5)
         self.max_take_profit_pct = max_take_profit_pct
         self.max_holding_days = max_holding_days
 
-        self.feed = HistoricalDataFeed()
+        supplied_feed = self._momentum_kwargs.pop("feed", None)
+        self.feed = supplied_feed if supplied_feed is not None else HistoricalDataFeed()
 
     def _calculate_buy_fees(self, gross_amount: float) -> float:
         comm = max(self.min_commission, gross_amount * self.commission_rate)
@@ -120,6 +134,20 @@ class BacktestEngine:
 
     def run(self) -> Dict[str, Any]:
         """运行历史回测，返回全套量化绩效指标与逐笔记录"""
+        if self.strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro"):
+            from momentum_backtest import MomentumBacktestEngine
+            return MomentumBacktestEngine(
+                start_date=self.start_date, end_date=self.end_date,
+                initial_cash=self.initial_cash, strategy_name=self.strategy_name,
+                symbols=self.symbols, pool_type=self.pool_type,
+                benchmark_code=self.benchmark_code, feed=self.feed,
+                commission_rate=self.commission_rate, min_commission=self.min_commission,
+                stamp_tax_rate=self.stamp_tax_rate, transfer_fee_rate=self.transfer_fee_rate,
+                slippage_rate=self.slippage_rate, strict_t1=self.strict_t1,
+                **self._momentum_kwargs, **self._explicit_position_args
+            ).run()
+        # Legacy strategies below retain their old daily model. Momentum's old
+        # branches are unreachable through this public class or run_backtest.
         # 1. 抓取基准与股票历史行情
         benchmark_bars = self.feed.fetch_benchmark_kline(
             index_code=self.benchmark_code,
@@ -756,7 +784,7 @@ class BacktestEngine:
 
 def run_backtest(
     start_date: str = "2024-01-01",
-    end_date: str = "2026-09-15",
+    end_date: Optional[str] = None,
     initial_cash: float = 100000.0,
     strategy_name: str = "ShortTermResonance",
     pool_type: str = "core_active",
@@ -764,6 +792,16 @@ def run_backtest(
     **kwargs
 ) -> Dict[str, Any]:
     """统一回测调用入口函数（供 API 与脚本调用）"""
+    if strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro"):
+        from momentum_backtest import MomentumBacktestEngine
+        return MomentumBacktestEngine(
+            start_date=start_date, end_date=end_date, initial_cash=initial_cash,
+            strategy_name=strategy_name, pool_type=pool_type, symbols=symbols,
+            **kwargs
+        ).run()
+    if end_date is None:
+        from history_data import last_completed_trading_day
+        end_date = last_completed_trading_day()
     engine = BacktestEngine(
         start_date=start_date,
         end_date=end_date,
@@ -855,7 +893,7 @@ def print_backtest_report(res: Dict[str, Any]):
 def main():
     parser = argparse.ArgumentParser(description="A股量化策略历史回测与收益率测试系统")
     parser.add_argument("--start", default="2024-01-01", help="回测起始日期 (YYYY-MM-DD)")
-    parser.add_argument("--end", default="2026-09-15", help="回测截止日期 (YYYY-MM-DD)")
+    parser.add_argument("--end", default=None, help="回测截止日期 (YYYY-MM-DD，默认上一完整交易日)")
     parser.add_argument("--cash", type=float, default=100000.0, help="初始资金 (默认 100000)")
     parser.add_argument(
         "--strategy",
@@ -865,11 +903,12 @@ def main():
     )
     parser.add_argument("--pool", default="core_active", choices=["core_active", "csi300_sample"], help="回测标的池")
     parser.add_argument("--take-profit", type=float, default=3.5, help="动态追踪止盈触发点 (%)")
-    parser.add_argument("--stop-loss", type=float, default=-2.5, help="硬止损线 (%)")
+    parser.add_argument("--stop-loss", type=float, default=None, help="硬止损线 (%)，默认使用所选策略参数")
     parser.add_argument("--json", action="store_true", help="以 JSON 格式输出结果")
 
     args = parser.parse_args()
 
+    stop_kwargs = {} if args.stop_loss is None else {"stop_loss_pct": args.stop_loss}
     res = run_backtest(
         start_date=args.start,
         end_date=args.end,
@@ -877,7 +916,7 @@ def main():
         strategy_name=args.strategy,
         pool_type=args.pool,
         take_profit_trigger_pct=args.take_profit,
-        stop_loss_pct=args.stop_loss
+        **stop_kwargs
     )
 
     if args.json:

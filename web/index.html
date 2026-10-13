@@ -497,6 +497,7 @@
     <div class="header-left">
       <h1>📈 A股量化模拟交易控制台</h1>
       <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
+      <span id="workerBadge" class="badge badge-market">交易服务: 待确认</span>
       <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
       <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
       <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
@@ -510,6 +511,7 @@
       <button id="toggleStrategyBtn" class="btn btn-primary" onclick="toggleStrategy()">暂停自动策略</button>
       <button class="btn" onclick="fetchData()">立即刷新</button>
       <button class="btn btn-danger" onclick="resetAccount()">重置账户</button>
+      <button id="logoutBtn" class="btn" onclick="logoutSession()" style="display:none;">退出登录</button>
       <a href="/docs" target="_blank" class="btn" style="text-decoration:none; color:inherit;">API接口文档</a>
     </div>
   </header>
@@ -659,7 +661,7 @@
       </div>
       <div class="bt-field">
         <label for="btEnd">截止日期</label>
-        <input type="date" id="btEnd" class="form-control" value="2026-09-15">
+        <input type="date" id="btEnd" class="form-control" value="">
       </div>
       <div class="bt-field">
         <label for="btCash">初始本金 (元)</label>
@@ -668,12 +670,12 @@
       <div class="bt-field">
         <label for="btStrategy">测试策略</label>
         <select id="btStrategy" class="form-control">
-          <option value="Momentum_Rotation_Pro" selected>🚀 截面领头羊动量增强版 (+72.4% / 半年线+MA60斜率+高位突破)</option>
-          <option value="Momentum_Rotation">👑 截面动量轮动策略 (+77.5% 近一年最高 / 西蒙斯)</option>
-          <option value="Minervini_SEPA">🏆 米奈尔维尼 SEPA/VCP 波动率收缩起爆 (+83.6% 全美冠军)</option>
-          <option value="ONeil_CANSLIM">🦅 欧奈尔 CAN SLIM 相对强度领头羊突破 (+62.5% 趋势宗师)</option>
-          <option value="TurtleBreakout">🐢 经典海龟法则 / 20日通道突破 (+98.4% 趋势突破)</option>
-          <option value="MATrendFollowing">📈 双均线多头趋势跟踪策略 (+17.2% 稳健防守)</option>
+          <option value="Momentum_Rotation_Pro" selected>日线动量增强（次日执行）</option>
+          <option value="Momentum_Rotation">基础日线动量（次日执行）</option>
+          <option value="Minervini_SEPA">趋势收缩突破（旧版实验）</option>
+          <option value="ONeil_CANSLIM">相对强度突破（旧版实验）</option>
+          <option value="TurtleBreakout">唐奇安通道突破（旧版实验）</option>
+          <option value="MATrendFollowing">双均线趋势（旧版实验）</option>
           <option value="ShortTermResonance">⚡ 超短线量价共振起爆 (日内高频)</option>
           <option value="MomentumBreakout">🚀 20日高点突破动量策略</option>
         </select>
@@ -691,7 +693,7 @@
       </div>
       <div class="bt-field" style="max-width: 110px;">
         <label for="btStopLoss">硬止损线 (%)</label>
-        <input type="number" id="btStopLoss" class="form-control" value="-2.5" step="0.5">
+        <input type="number" id="btStopLoss" class="form-control" value="-6.0" step="0.5">
       </div>
       <div>
         <button id="btRunBtn" class="btn btn-primary" style="width: 100%; padding: 8px 16px; font-weight: 600;" onclick="runBacktestUI()">
@@ -910,6 +912,17 @@
   </div>
 
   <div id="toast"></div>
+  <div id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authTitle"
+       style="position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.98);padding:24px;">
+    <form onsubmit="submitLogin(event)" style="width:100%;max-width:380px;padding:28px;background:var(--card-bg);border:1px solid var(--border-color);border-radius:12px;">
+      <h2 id="authTitle" style="font-size:20px;margin-bottom:12px;">登录交易控制台</h2>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:20px;">使用管理员提供的访问口令。</p>
+      <label for="authPassword" style="display:block;font-size:13px;margin-bottom:8px;">访问口令</label>
+      <input id="authPassword" type="password" autocomplete="current-password" required class="form-control" style="width:100%;margin-bottom:12px;">
+      <div id="authMessage" role="status" style="min-height:32px;color:var(--red-up);font-size:13px;"></div>
+      <button id="authSubmit" type="submit" class="btn btn-primary" style="width:100%;">登录</button>
+    </form>
+  </div>
 
   <script>
     let currentSide = 'BUY';
@@ -917,6 +930,97 @@
     let strategyActive = true;
     let refreshInterval = 3000;
     let timerId = null;
+    const nativeFetch = window.fetch.bind(window);
+    let authorized = false;
+    let dashboardInitialized = false;
+
+    function requireLogin(message = '') {
+      authorized = false;
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      if (typeof wxScanTimer !== 'undefined' && wxScanTimer) {
+        clearInterval(wxScanTimer);
+        wxScanTimer = null;
+      }
+      document.getElementById('authOverlay').style.display = 'flex';
+      document.getElementById('authMessage').textContent = message;
+      document.getElementById('logoutBtn').style.display = 'none';
+    }
+
+    async function apiFetch(url, options = {}) {
+      if (!authorized) {
+        requireLogin();
+        throw new Error('请先登录');
+      }
+      const response = await nativeFetch(url, {...options, credentials:'same-origin'});
+      if (response.status === 401) {
+        requireLogin('登录已失效，请重新登录。');
+        throw new Error('登录已失效');
+      }
+      return response;
+    }
+
+    function startDashboard(authRequired = true) {
+      authorized = true;
+      document.getElementById('authOverlay').style.display = 'none';
+      document.getElementById('authPassword').value = '';
+      document.getElementById('logoutBtn').style.display = authRequired ? '' : 'none';
+      if (!dashboardInitialized) {
+        initChartInteractions();
+        initBacktestChartInteractions();
+        dashboardInitialized = true;
+      }
+      apiFetch('/api/backtest/config').then(r => r.json()).then(config => {
+        const endInput = document.getElementById('btEnd');
+        if (endInput && !endInput.value) endInput.value = config.default_end || '';
+      }).catch(() => {});
+      fetchData();
+      fetchNotifyStatus();
+      if (timerId) clearInterval(timerId);
+      timerId = setInterval(fetchData, refreshInterval);
+    }
+
+    async function initializeAuth() {
+      try {
+        const response = await nativeFetch('/api/auth/status', {credentials:'same-origin'});
+        if (!response.ok) throw new Error('无法连接认证服务');
+        const status = await response.json();
+        if (status.authenticated || !status.auth_required) startDashboard(status.auth_required);
+        else requireLogin();
+      } catch (error) {
+        requireLogin(error.message);
+      }
+    }
+
+    async function submitLogin(event) {
+      event.preventDefault();
+      const button = document.getElementById('authSubmit');
+      button.disabled = true;
+      document.getElementById('authMessage').textContent = '';
+      try {
+        const response = await nativeFetch('/api/auth/login', {
+          method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({password:document.getElementById('authPassword').value})
+        });
+        const result = await response.json();
+        if (!response.ok || result.success === false) throw new Error(result.detail || result.message || '访问口令无效');
+        startDashboard();
+      } catch (error) {
+        document.getElementById('authMessage').textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function logoutSession() {
+      try {
+        await nativeFetch('/api/auth/logout', {method:'POST', credentials:'same-origin'});
+      } finally {
+        currentQuotes = {};
+        requireLogin('已退出登录。');
+      }
+    }
+
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
@@ -983,12 +1087,12 @@
     async function fetchData() {
       try {
         const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = await Promise.all([
-          fetch('/api/summary').then(r => r.json()),
-          fetch('/api/positions').then(r => r.json()),
-          fetch('/api/quotes').then(r => r.json()),
-          fetch('/api/trades').then(r => r.json()),
-          fetch('/api/status').then(r => r.json()),
-          fetch('/api/performance').then(r => r.json()).catch(() => null)
+          apiFetch('/api/summary').then(r => r.json()),
+          apiFetch('/api/positions').then(r => r.json()),
+          apiFetch('/api/quotes').then(r => r.json()),
+          apiFetch('/api/trades').then(r => r.json()),
+          apiFetch('/api/status').then(r => r.json()),
+          apiFetch('/api/performance').then(r => r.json()).catch(() => null)
         ]);
 
         const summaryData = (perfRes && perfRes.summary) ? perfRes.summary : sumRes;
@@ -1016,9 +1120,9 @@
       const tPnl = s.today_pnl !== undefined ? s.today_pnl : (s.total_pnl || 0);
       const tPct = s.today_pnl_pct !== undefined ? s.today_pnl_pct : (s.total_pnl_pct || 0);
       const tUp = tPnl >= 0;
-      todayPnlEl.innerText = `${tUp ? '+' : ''}¥${tPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      todayPnlEl.innerText = s.today_pnl_available === false ? '缺少昨收记录' : `${tUp ? '+' : ''}¥${tPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       todayPnlEl.className = `value ${tUp ? 'up' : 'down'}`;
-      todayPctEl.innerText = `对比昨收: ${tUp ? '+' : ''}${tPct.toFixed(2)}%`;
+      todayPctEl.innerText = s.today_pnl_available === false ? '需要可靠日结记录' : `对比昨收: ${tUp ? '+' : ''}${tPct.toFixed(2)}%`;
       todayPctEl.className = `sub ${tUp ? 'up' : 'down'}`;
 
       // 累计总收益
@@ -1368,7 +1472,7 @@
         return;
       }
       try {
-        const res = await fetch(`/api/stock/search?q=${encodeURIComponent(q)}`);
+        const res = await apiFetch(`/api/stock/search?q=${encodeURIComponent(q)}`);
         if (!res.ok) {
           showToast('未检索到该股票');
           return;
@@ -1454,6 +1558,11 @@
 
     function renderStatus(st) {
       document.getElementById('marketStatusBadge').innerText = st.market_status;
+      const service = document.getElementById('workerBadge');
+      const failed = st.persistence_healthy === false || (st.worker_started && st.worker_healthy === false);
+      service.textContent = st.closing_report_pending ? '收盘行情: 待确认' : failed ? '交易服务: 异常' : st.worker_healthy ? '交易服务: 正常' : '交易服务: 待启动';
+      service.className = 'badge ' + (failed ? 'badge-strategy-off' : 'badge-market');
+      service.title = st.persistence_healthy === false ? '账户保存异常，自动交易已被阻止。' : st.worker_last_error ? '后台处理异常，请检查服务。' : '';
       strategyActive = st.strategy_active;
       const stratBadge = document.getElementById('strategyBadge');
       const toggleBtn = document.getElementById('toggleStrategyBtn');
@@ -1476,7 +1585,9 @@
         document.getElementById('universeBadge').innerText = `全A股监控: 沪深主板 ${st.universe_count.toLocaleString()}只 (严控10%主板)`;
       }
       if (st.radar_count !== undefined) {
-        document.getElementById('radarCountBadge').innerText = `全市场共振起爆: ${st.radar_count} 只`;
+        const quality = st.data_quality || {};
+        const phases = {loading:'日线准备中', ready:'日线就绪', partial:'部分日线可用', failed:'日线不可用', not_loaded:'等待日线'};
+        document.getElementById('radarCountBadge').innerText = `${phases[quality.status] || '策略候选'}: ${st.radar_count} 只${quality.requested ? ` · 历史覆盖 ${quality.loaded || 0}/${quality.requested} · 截止 ${quality.as_of || '待获取'}` : ''}`;
       }
     }
 
@@ -1513,7 +1624,7 @@
       if (!shares || shares <= 0) { showToast('请输入有效的交易股数', true); return; }
 
       try {
-        const res = await fetch('/api/trade/order', {
+        const res = await apiFetch('/api/trade/order', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -1539,7 +1650,7 @@
     async function toggleStrategy() {
       const newState = !strategyActive;
       try {
-        const res = await fetch('/api/strategy/toggle', {
+        const res = await apiFetch('/api/strategy/toggle', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({active: newState})
@@ -1554,7 +1665,7 @@
     async function resetAccount() {
       if (!confirm('确定要重置模拟账户吗？所有持仓与成交记录将被清空，资金重置为 100 万元。')) return;
       try {
-        const res = await fetch('/api/account/reset', {
+        const res = await apiFetch('/api/account/reset', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({cash: 1000000.0})
@@ -1581,18 +1692,18 @@
       const strategy = document.getElementById('btStrategy').value;
       const pool = document.getElementById('btPool').value;
       const tp = parseFloat(document.getElementById('btTakeProfit').value) || 3.5;
-      const sl = parseFloat(document.getElementById('btStopLoss').value) || -2.5;
+      const sl = parseFloat(document.getElementById('btStopLoss').value) || -6;
 
       btn.disabled = true;
       btn.innerText = '⏳ 正在拉取数据与回测撮合...';
 
       try {
-        const res = await fetch('/api/backtest/run', {
+        const res = await apiFetch('/api/backtest/run', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             start_date: start,
-            end_date: end,
+            end_date: end || null,
             initial_cash: cash,
             strategy_name: strategy,
             pool_type: pool,
@@ -1623,6 +1734,16 @@
       const trades = data.trades || [];
       currentBtCurve = curve;
       currentBtInitialCash = s.initial_cash || 100000;
+      let qualityNote = document.getElementById('btQualityNote');
+      if (!qualityNote) {
+        qualityNote = document.createElement('p');
+        qualityNote.id = 'btQualityNote';
+        qualityNote.style.cssText = 'color:var(--text-muted);padding:10px 0;line-height:1.6';
+        document.getElementById('btResultContainer').prepend(qualityNote);
+      }
+      qualityNote.textContent = s.universe_mode === 'fixed_pool_research_only'
+        ? '固定股票池研究结果：未验证历史股票池资格，未计分红送股；次日开盘与日成交量容量为近似。'
+        : (data.warnings || []).length ? '研究结果存在数据或成交模型限制，请同时查看回测接口的质量记录。' : '';
 
       // 1. 核心指标卡
       const isUp = s.total_return_pct >= 0;
@@ -1893,7 +2014,7 @@
       container.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-muted);">正在拉取最新量化策略列表...</div>';
 
       try {
-        const res = await fetch('/api/strategy/list');
+        const res = await apiFetch('/api/strategy/list');
         const data = await res.json();
         availableStrategies = data.strategies || [];
         selectedStrategyId = data.current_strategy || 'Momentum_Rotation';
@@ -1932,7 +2053,7 @@
                 ${isCurrent ? '<span class="badge" style="background:rgba(16,185,129,0.25); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-size:10px;">● 当前运行中</span>' : ''}
               </div>
               <div style="font-size:11px; color:#94a3b8; display:flex; gap:12px;">
-                <span>近1年收益: <strong class="up" style="font-size:13px;">${item.one_year_return}</strong></span>
+                <span>研究收益: <strong class="up" style="font-size:13px;">${item.one_year_return}</strong></span>
                 <span>盈亏比: <strong>${item.win_loss_ratio}</strong></span>
                 <span>回撤: <strong class="down">${item.max_drawdown}</strong></span>
               </div>
@@ -1955,7 +2076,7 @@
       const stopLoss = parseFloat(document.getElementById('modalStopLoss').value) || -6.0;
 
       try {
-        const res = await fetch('/api/strategy/switch', {
+        const res = await apiFetch('/api/strategy/switch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1989,7 +2110,7 @@
 
     async function fetchNotifyStatus() {
       try {
-        const res = await fetch('/api/notification/config');
+        const res = await apiFetch('/api/notification/config');
         if (!res.ok) return;
         const cfg = await res.json();
         const badge = document.getElementById('notifyStatusBadge');
@@ -2016,17 +2137,23 @@
       modal.style.display = 'flex';
       
       try {
-        const res = await fetch('/api/notification/config');
+        const res = await apiFetch('/api/notification/config');
         if (res.ok) {
           const cfg = await res.json();
           document.getElementById('notifyEnabled').checked = !!cfg.enabled;
           currentNotifyProvider = cfg.provider || 'wxpusher';
           switchNotifyTab(currentNotifyProvider);
 
-          document.getElementById('wxAppToken').value = cfg.wxpusher_app_token_masked || cfg.wxpusher_app_token || '';
+          document.getElementById('wxAppToken').value = '';
+          document.getElementById('wxAppToken').placeholder = cfg.wxpusher_app_token_masked ? '已保存，留空保持原配置' : '尚未配置';
+          document.getElementById('wxAppToken').dataset.saved = cfg.wxpusher_app_token_masked ? 'true' : 'false';
           document.getElementById('wxUids').value = (cfg.wxpusher_uids || []).join(', ');
-          document.getElementById('wxSpt').value = cfg.wxpusher_spt_masked || cfg.wxpusher_spt || '';
-          document.getElementById('serverchanSendkey').value = cfg.serverchan_sendkey_masked || cfg.serverchan_sendkey || '';
+          document.getElementById('wxSpt').value = '';
+          document.getElementById('wxSpt').placeholder = cfg.wxpusher_spt_masked ? '已保存，留空保持原配置' : '尚未配置';
+          document.getElementById('wxSpt').dataset.saved = cfg.wxpusher_spt_masked ? 'true' : 'false';
+          document.getElementById('serverchanSendkey').value = '';
+          document.getElementById('serverchanSendkey').placeholder = cfg.serverchan_sendkey_masked ? '已保存，留空保持原配置' : '尚未配置';
+          document.getElementById('serverchanSendkey').dataset.saved = cfg.serverchan_sendkey_masked ? 'true' : 'false';
 
           document.getElementById('notifyOnBuy').checked = cfg.notify_on_buy !== false;
           document.getElementById('notifyOnSell').checked = cfg.notify_on_sell !== false;
@@ -2080,7 +2207,7 @@
     async function generateWxPusherQrcode() {
       const tokenInput = document.getElementById('wxAppToken');
       const token = tokenInput.value.trim();
-      if (!token) {
+      if (!token && tokenInput.dataset.saved !== 'true') {
         showToast('请先输入 WxPusher AppToken', true);
         tokenInput.focus();
         return;
@@ -2096,10 +2223,10 @@
       qtxt.innerHTML = '⏳ 正在向微信请求生成专属关注二维码...';
 
       try {
-        const res = await fetch('/api/notification/wxpusher/qrcode', {
+        const res = await apiFetch('/api/notification/wxpusher/qrcode', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ app_token: token })
+          body: JSON.stringify(token ? { app_token: token } : {})
         });
         const result = await res.json();
         if (!res.ok || !result.success) {
@@ -2122,7 +2249,7 @@
             return;
           }
           try {
-            const pollRes = await fetch(`/api/notification/wxpusher/scan_status?code=${encodeURIComponent(code)}`);
+            const pollRes = await apiFetch(`/api/notification/wxpusher/scan_status?code=${encodeURIComponent(code)}`);
             if (pollRes.ok) {
               const pollData = await pollRes.json();
               if (pollData.scanned && pollData.uid) {
@@ -2164,18 +2291,19 @@
       const payload = {
         enabled: enabled,
         provider: currentNotifyProvider,
-        wxpusher_app_token: appToken,
         wxpusher_uids: uids,
-        wxpusher_spt: spt,
-        serverchan_sendkey: sendkey,
         notify_on_buy: document.getElementById('notifyOnBuy').checked,
         notify_on_sell: document.getElementById('notifyOnSell').checked,
         notify_on_daily_summary: document.getElementById('notifyOnDaily').checked,
         notify_on_risk_alert: document.getElementById('notifyOnRisk').checked
       };
 
+      if (appToken) payload.wxpusher_app_token = appToken;
+      if (spt) payload.wxpusher_spt = spt;
+      if (sendkey) payload.serverchan_sendkey = sendkey;
+
       try {
-        const res = await fetch('/api/notification/config', {
+        const res = await apiFetch('/api/notification/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -2195,7 +2323,7 @@
     async function sendTestNotification() {
       showToast('正在发送微信测试消息...');
       try {
-        const res = await fetch('/api/notification/test', { method: 'POST' });
+        const res = await apiFetch('/api/notification/test', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           showToast('🎉 测试消息已成功发送至您的微信，请打开手机查收！');
@@ -2235,7 +2363,7 @@
       const tbody = document.getElementById('snapshotsTbody');
       tbody.innerHTML = '<tr><td colspan="9" class="text-center" style="padding:20px; color:var(--text-muted)">正在加载历史快照库...</td></tr>';
       try {
-        const res = await fetch('/api/snapshot/list');
+        const res = await apiFetch('/api/snapshot/list');
         const data = await res.json();
         if (data.success) {
           cachedSnapshots = data.snapshots || [];
@@ -2292,7 +2420,7 @@
       if (desc === null) return;
       showToast('正在创建系统快照...');
       try {
-        const res = await fetch('/api/snapshot/create', {
+        const res = await apiFetch('/api/snapshot/create', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ tag: 'manual', description: desc || '' })
@@ -2311,7 +2439,18 @@
 
     function downloadSnapshot(id) {
       showToast(`正在导出并下载快照 [${id}]...`);
-      window.location.href = `/api/snapshot/download?id=${encodeURIComponent(id)}`;
+      apiFetch(`/api/snapshot/download?id=${encodeURIComponent(id)}`).then(async response => {
+        if (!response.ok) throw new Error('快照下载失败');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${id}.tar.gz`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }).catch(error => showToast(error.message, true));
     }
 
     async function restoreSnapshot(id) {
@@ -2320,7 +2459,7 @@
       }
       showToast('正在恢复系统快照并热重载交易引擎...');
       try {
-        const res = await fetch('/api/snapshot/restore', {
+        const res = await apiFetch('/api/snapshot/restore', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({ snapshot_id: id, backup_current: true })
@@ -2353,7 +2492,7 @@
 
       showToast(`正在上传并解包离线快照 [${file.name}]...`);
       try {
-        const res = await fetch('/api/snapshot/upload', {
+        const res = await apiFetch('/api/snapshot/upload', {
           method: 'POST',
           headers: {
             'x-filename': file.name,
@@ -2379,7 +2518,7 @@
     async function deleteSnapshot(id) {
       if (!confirm(`确定要删除快照【${id}】吗？删除后将无法恢复该历史记录。`)) return;
       try {
-        const res = await fetch(`/api/snapshot/delete?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).then(r => r.json());
+        const res = await apiFetch(`/api/snapshot/delete?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).then(r => r.json());
         if (res.success) {
           showToast(res.message);
           fetchSnapshots();
@@ -2417,12 +2556,8 @@
       box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
-    // 初始化走势图与数据轮询
-    initChartInteractions();
-    initBacktestChartInteractions();
-    fetchData();
-    fetchNotifyStatus();
-    timerId = setInterval(fetchData, refreshInterval);
+    // Data access begins only after the server has verified the session.
+    initializeAuth();
   </script>
 
   <!-- 自动交易策略管理与切换弹窗 -->

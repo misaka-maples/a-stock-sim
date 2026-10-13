@@ -29,24 +29,32 @@ fi
 
 echo ""
 echo "--- [系统核心信息] ---"
-python3 -c "
-import requests, json
+QUANT_TASK_DIR="$DIR" python3 - <<'STATUS_PY'
+import json, os
+from pathlib import Path
+import requests
 try:
-    s = requests.get('http://127.0.0.1:8000/api/summary', timeout=2).json()
-    st = requests.get('http://127.0.0.1:8000/api/status', timeout=2).json()
-    print(f'服务器时间:     {st.get(\"server_time\")}')
-    print(f'市场交易状态:   {st.get(\"market_status\")}')
-    print(f'全市场监控池:   {st.get(\"universe_count\", 0)} 只标的 (严格排除科创板)')
-    print(f'共振起爆捕获:   {st.get(\"radar_count\", 0)} 只焦点标的')
-    print(f'自动策略状态:   {\"已启用\" if st.get(\"strategy_active\") else \"已暂停\"}')
-    print(f'总资产 (权益):  ¥{s.get(\"total_equity\", 0):,.2f}')
-    print(f'可用现金:       ¥{s.get(\"cash\", 0):,.2f}')
-    print(f'持仓总市值:     ¥{s.get(\"market_value\", 0):,.2f}')
-    print(f'累计浮盈:       ¥{s.get(\"total_pnl\", 0):+,.2f} ({s.get(\"total_pnl_pct\", 0):+.2f}%)')
-    print(f'当前持仓标的:   {s.get(\"position_count\", 0)} 只 | 成交总计: {s.get(\"trade_count\", 0)} 笔')
-except Exception as e:
-    print(f'无法获取接口数据: {e}')
-" 2>/dev/null
+    private = Path(os.environ["QUANT_TASK_DIR"]) / "data/private/api_credentials.json"
+    token = json.loads(private.read_text())["api_token"]
+    headers = {"Authorization": "Bearer " + token}
+    def get(path):
+        response = requests.get("http://127.0.0.1:8000" + path, headers=headers, timeout=5)
+        response.raise_for_status()
+        return response.json()
+    s, st = get("/api/summary"), get("/api/status")
+    print(f"服务器时间:     {st['server_time']}")
+    print(f"市场交易状态:   {st['market_status']}")
+    print(f"全市场监控池:   {st['universe_count']} 只标的")
+    print(f"自动策略状态:   {'已启用' if st['strategy_active'] else '已暂停'}")
+    print(f"后台健康状态:   {'正常' if st.get('worker_healthy') else '异常'}")
+    print(f"总资产 (权益):  ¥{s['total_equity']:,.2f}")
+    print(f"可用现金:       ¥{s['cash']:,.2f}")
+    print(f"持仓总市值:     ¥{s['market_value']:,.2f}")
+    print(f"累计收益:       ¥{s['total_pnl']:+,.2f} ({s['total_pnl_pct']:+.2f}%)")
+    print(f"当前持仓标的:   {s['position_count']} 只 | 成交总计: {s['trade_count']} 笔")
+except Exception as exc:
+    print(f"无法获取接口数据（检查私有凭据及服务状态）: {type(exc).__name__}")
+STATUS_PY
 
 echo ""
 echo "--- [最新服务日志 (最后 10 行)] ---"

@@ -19,6 +19,10 @@ import logging
 import platform
 import datetime
 import argparse
+import copy
+import re
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Callable
 
@@ -40,11 +44,45 @@ def get_now() -> datetime.datetime:
     return datetime.datetime.now(BEIJING)
 
 
+def _identifier(value, label="快照ID", max_length=128):
+    if (not isinstance(value, str) or not value or len(value) > max_length
+            or not re.fullmatch(r"[\w-]+", value) or value.lower() == "index"):
+        raise ValueError(f"{label}只能包含字母、数字、下划线或连字符，且不可使用保留名称")
+    return value
+
+
+def _snapshot_path(snapshot_id, suffix=".json"):
+    _identifier(snapshot_id)
+    path = SNAPSHOTS_DIR / (snapshot_id + suffix)
+    if path.is_symlink() or not path.resolve().is_relative_to(SNAPSHOTS_DIR.resolve()):
+        raise ValueError("快照路径不安全")
+    return path
+
+
+def _atomic_bytes(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temporary).replace(path)
+    finally:
+        if Path(temporary).exists():
+            Path(temporary).unlink()
+
+
+def _atomic_json(path, value):
+    _atomic_bytes(path, (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8"))
+
+
 class SnapshotManager:
     """系统快照与整机离线迁移管理单例"""
 
     _instance: Optional["SnapshotManager"] = None
     _restore_callbacks: List[Callable[[Dict[str, Any]], None]] = []
+    _restore_validators: List[Callable[[Dict[str, Any]], None]] = []
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -53,7 +91,8 @@ class SnapshotManager:
         return cls._instance
 
     def _init_paths(self):
-        SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        SNAPSHOTS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(SNAPSHOTS_DIR, 0o700)
         if not INDEX_FILE.exists():
             self._save_index([])
 
@@ -62,6 +101,18 @@ class SnapshotManager:
         """注册快照恢复后的内存热重载回调"""
         if callback not in cls._restore_callbacks:
             cls._restore_callbacks.append(callback)
+
+    @classmethod
+    def register_restore_validator(cls, validator):
+        """Register a pure preflight check, run before backups or any writes."""
+        if validator not in cls._restore_validators:
+            cls._restore_validators.append(validator)
+
+    @staticmethod
+    def public_view(snapshot):
+        """API creation response; secrets remain only in private migration files."""
+        return {key: copy.deepcopy(snapshot[key]) for key in
+                ("meta", "summary", "daily_detail", "strategy_state") if key in snapshot}
 
     def _load_index(self) -> List[Dict[str, Any]]:
         try:
@@ -73,10 +124,7 @@ class SnapshotManager:
         return []
 
     def _save_index(self, index: List[Dict[str, Any]]):
-        temp_file = INDEX_FILE.with_suffix(".tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-        temp_file.replace(INDEX_FILE)
+        _atomic_json(INDEX_FILE, index)
 
     def _read_json_safe(self, path: Path) -> Dict[str, Any]:
         if path.exists():
@@ -113,14 +161,16 @@ class SnapshotManager:
         :return: 生成的快照完整字典
         """
         now = get_now()
+        _identifier(tag, "快照标签", max_length=64)
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%Y%m%d_%H%M%S")
 
-        if not snapshot_id:
+        if snapshot_id is None:
             if tag == "daily":
                 snapshot_id = f"daily_{date_str}"
             else:
-                snapshot_id = f"{tag}_{time_str}"
+                snapshot_id = f"{tag}_{time_str}_{uuid.uuid4().hex[:8]}"
+        _identifier(snapshot_id)
 
         # 1. 抓取账户全量数据
         if account_data is None:
@@ -155,7 +205,7 @@ class SnapshotManager:
                 "created_at": now.isoformat(),
                 "tag": tag,
                 "description": description,
-                "version": "1.0",
+                "version": "2.0",
                 "system_info": {
                     "hostname": platform.node(),
                     "platform": platform.platform(),
@@ -178,6 +228,7 @@ class SnapshotManager:
                 "profit_loss_ratio": summary.get("profit_loss_ratio", 0.0)
             },
             "account_state": {
+                **account_data,
                 "updated_at": account_data.get("updated_at", now.isoformat()),
                 "summary": summary,
                 "positions": positions,
@@ -208,11 +259,8 @@ class SnapshotManager:
         }
 
         # 5. 持久化存储到磁盘
-        snapshot_file = SNAPSHOTS_DIR / f"{snapshot_id}.json"
-        temp_file = snapshot_file.with_suffix(".tmp")
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False, indent=2)
-        temp_file.replace(snapshot_file)
+        snapshot_file = _snapshot_path(snapshot_id)
+        _atomic_json(snapshot_file, snapshot)
 
         # 6. 更新并排序快照索引
         item_meta = {
@@ -273,7 +321,11 @@ class SnapshotManager:
         modified = False
         for item in index:
             sid = item.get("snapshot_id")
-            fpath = SNAPSHOTS_DIR / f"{sid}.json"
+            try:
+                fpath = _snapshot_path(sid)
+            except ValueError:
+                modified = True
+                continue
             if fpath.exists():
                 item["file_size"] = fpath.stat().st_size
                 valid_index.append(item)
@@ -286,15 +338,15 @@ class SnapshotManager:
 
     def get_snapshot(self, snapshot_id: str) -> Optional[Dict[str, Any]]:
         """读取指定快照数据"""
-        fpath = SNAPSHOTS_DIR / f"{snapshot_id}.json"
+        fpath = _snapshot_path(snapshot_id)
         if not fpath.exists():
             return None
         return self._read_json_safe(fpath)
 
     def delete_snapshot(self, snapshot_id: str) -> bool:
         """删除指定快照及其归档文件"""
-        json_file = SNAPSHOTS_DIR / f"{snapshot_id}.json"
-        tar_file = SNAPSHOTS_DIR / f"{snapshot_id}.tar.gz"
+        json_file = _snapshot_path(snapshot_id)
+        tar_file = _snapshot_path(snapshot_id, ".tar.gz")
 
         deleted = False
         if json_file.exists():
@@ -323,11 +375,15 @@ class SnapshotManager:
             raise FileNotFoundError(f"未找到快照: {snapshot_id}")
 
         if output_path is None:
-            output_path = SNAPSHOTS_DIR / f"{snapshot_id}.tar.gz"
+            output_path = _snapshot_path(snapshot_id, ".tar.gz")
+        else:
+            output_path = Path(output_path)
+            if output_path.is_symlink():
+                raise ValueError("归档输出不能为符号链接")
 
         # 创建临时打包目录
-        temp_pack_dir = SNAPSHOTS_DIR / f"temp_pack_{snapshot_id}"
-        temp_pack_dir.mkdir(parents=True, exist_ok=True)
+        temporary_pack = tempfile.TemporaryDirectory(prefix="snapshot_pack_", dir=SNAPSHOTS_DIR)
+        temp_pack_dir = Path(temporary_pack.name)
 
         try:
             # 1. snapshot.json
@@ -374,15 +430,17 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
                 f.write(readme_text)
 
             # 6. 压制为 .tar.gz
-            with tarfile.open(output_path, "w:gz") as tar:
-                for item in temp_pack_dir.iterdir():
-                    tar.add(item, arcname=item.name)
+            descriptor = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as archive_stream:
+                with tarfile.open(fileobj=archive_stream, mode="w:gz") as tar:
+                    for item in temp_pack_dir.iterdir():
+                        tar.add(item, arcname=item.name)
 
             logger.info(f"离线快照迁移包已生成: {output_path}")
             return output_path
         finally:
-            if temp_pack_dir.exists():
-                shutil.rmtree(temp_pack_dir, ignore_errors=True)
+            temporary_pack.cleanup()
 
     def restore_snapshot(
         self,
@@ -400,64 +458,71 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
 
         if isinstance(snapshot_input, dict):
             snapshot_data = snapshot_input
-        elif isinstance(snapshot_input, (str, Path)):
-            path_or_id = Path(snapshot_input)
-            if path_or_id.exists():
-                # 判断是 .tar.gz 还是 .json
-                if path_or_id.name.endswith(".tar.gz") or path_or_id.name.endswith(".tgz"):
-                    return self.import_archive_and_restore(path_or_id, backup_current=backup_current)
-                else:
-                    snapshot_data = self._read_json_safe(path_or_id)
-            else:
-                # 尝试当作已存在的快照 ID 读取
-                snapshot_data = self.get_snapshot(str(snapshot_input))
+        elif isinstance(snapshot_input, Path):
+            if snapshot_input.name.endswith((".tar.gz", ".tgz")):
+                return self.import_archive_and_restore(snapshot_input, backup_current=backup_current)
+            if snapshot_input.suffix != ".json":
+                raise ValueError("快照文件必须是JSON或tar.gz")
+            snapshot_data = json.loads(snapshot_input.read_text(encoding="utf-8"))
+        elif isinstance(snapshot_input, str):
+            # HTTP passes an ID; only explicit Path inputs can read local files.
+            snapshot_data = self.get_snapshot(snapshot_input)
 
-        if not snapshot_data:
-            raise ValueError(f"无法识别或加载指定的快照: {snapshot_input}")
+        if not isinstance(snapshot_data, dict) or not snapshot_data:
+            raise ValueError("无法识别或加载指定快照")
 
         account_state = snapshot_data.get("account_state")
-        if not account_state:
+        if not isinstance(account_state, dict) or not account_state:
             raise ValueError("快照数据不合法，缺少 account_state 字段")
+        meta = snapshot_data.get("meta", {})
+        if not isinstance(meta, dict):
+            raise ValueError("快照meta必须是对象")
+        sid = meta.get("snapshot_id")
+        if sid is not None:
+            _identifier(sid)
+            _identifier(meta.get("tag", "imported"), "快照标签", max_length=64)
+        strategy_state = snapshot_data.get("strategy_state", {})
+        notification_state = snapshot_data.get("notification_state", {})
+        if not isinstance(strategy_state, dict) or not isinstance(notification_state, dict):
+            raise ValueError("策略与通知配置必须是对象")
+        if (not isinstance(account_state.get("summary", {}), dict)
+                or not isinstance(account_state.get("positions", {}), dict)
+                or not isinstance(account_state.get("trades", []), list)
+                or not isinstance(account_state.get("orders", []), list)):
+            raise ValueError("账户快照结构无效")
+        # Reject malformed numeric/JSON values before touching any persistent file.
+        json.dumps(snapshot_data, allow_nan=False)
+        strategy_id = strategy_state.get("active_strategy", strategy_state.get("current_strategy"))
+        if strategy_id in ("Momentum_Rotation", "Momentum_Rotation_Pro"):
+            # This guard also protects standalone CLI restores without a server.
+            from strategy_rules import MomentumConfig
+            params = strategy_state.get("parameters")
+            if params is None:
+                params = {k: v for k, v in strategy_state.items() if k in MomentumConfig.__dataclass_fields__}
+                for legacy, current in (("max_weight", "max_stock_weight"), ("stop_loss", "stop_loss_pct")):
+                    if legacy in strategy_state:
+                        params.setdefault(current, strategy_state[legacy])
+            if not isinstance(params, dict):
+                raise ValueError("策略parameters必须是对象")
+            MomentumConfig.from_dict(params)
+        for validator in self._restore_validators:
+            validator(snapshot_data)
 
         # 2. 安全保障：恢复前自动备份当前运行状态
         if backup_current and SIM_ACCOUNT_PATH.exists():
-            try:
-                self.create_snapshot(
-                    tag="pre_restore",
-                    description=f"恢复快照 [{snapshot_data.get('meta', {}).get('snapshot_id', 'unknown')}] 前的自动安全备份"
-                )
-            except Exception as e:
-                logger.warning(f"创建 pre_restore 安全备份失败: {e}")
+            self.create_snapshot(
+                tag="pre_restore",
+                description=f"恢复快照 [{sid or 'unknown'}] 前的自动安全备份")
 
-        # 3. 恢复 sim_account.json
-        temp_account = SIM_ACCOUNT_PATH.with_suffix(".tmp")
-        with open(temp_account, "w", encoding="utf-8") as f:
-            json.dump(account_state, f, ensure_ascii=False, indent=2)
-        temp_account.replace(SIM_ACCOUNT_PATH)
-
-        # 4. 恢复 strategy_config.json
-        strategy_state = snapshot_data.get("strategy_state")
+        updates = {SIM_ACCOUNT_PATH: account_state}
         if strategy_state:
-            STRATEGY_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            temp_strat = STRATEGY_CONFIG_PATH.with_suffix(".tmp")
-            with open(temp_strat, "w", encoding="utf-8") as f:
-                json.dump(strategy_state, f, ensure_ascii=False, indent=2)
-            temp_strat.replace(STRATEGY_CONFIG_PATH)
-
-        # 5. 恢复 notification_config.json
-        notification_state = snapshot_data.get("notification_state")
+            updates[STRATEGY_CONFIG_PATH] = strategy_state
         if notification_state:
-            NOTIFICATION_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            temp_notif = NOTIFICATION_CONFIG_PATH.with_suffix(".tmp")
-            with open(temp_notif, "w", encoding="utf-8") as f:
-                json.dump(notification_state, f, ensure_ascii=False, indent=2)
-            temp_notif.replace(NOTIFICATION_CONFIG_PATH)
+            updates[NOTIFICATION_CONFIG_PATH] = notification_state
 
         # 6. 如果当前快照不在快照库中，则存入库并更新索引
-        sid = snapshot_data.get("meta", {}).get("snapshot_id")
-        if sid and not (SNAPSHOTS_DIR / f"{sid}.json").exists():
-            with open(SNAPSHOTS_DIR / f"{sid}.json", "w", encoding="utf-8") as f:
-                json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
+        if sid and not _snapshot_path(sid).exists():
+            updates[_snapshot_path(sid)] = snapshot_data
             # 更新索引
             summary = account_state.get("summary", {})
             positions = account_data = account_state.get("positions", {})
@@ -477,19 +542,53 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
                 "position_count": len(positions),
                 "today_trades": len(snapshot_data.get("daily_detail", {}).get("today_trades", [])),
                 "total_trades": len(trades),
-                "file_size": (SNAPSHOTS_DIR / f"{sid}.json").stat().st_size
+                "file_size": len(json.dumps(snapshot_data, ensure_ascii=False, indent=2).encode("utf-8"))
             }
             index = self._load_index()
             index = [i for i in index if i.get("snapshot_id") != sid]
             index.insert(0, item_meta)
-            self._save_index(index)
+            updates[INDEX_FILE] = index
 
-        # 7. 触发内存热重载回调 (让 server.py 正在运行的进程无感接管)
-        for cb in self._restore_callbacks:
-            try:
-                cb(snapshot_data)
-            except Exception as e:
-                logger.error(f"执行快照热恢复回调异常: {e}")
+        # Write + reload form one transaction while the server holds its RLock.
+        # A rejected callback must never leave invalid configuration on disk.
+        originals = {}
+        for path in updates:
+            if path.is_symlink():
+                raise ValueError("恢复目标不能是符号链接")
+            originals[path] = path.read_bytes() if path.exists() else None
+        old_account = SIM_ACCOUNT_PATH.read_bytes() if SIM_ACCOUNT_PATH.exists() else None
+        old_strategy = STRATEGY_CONFIG_PATH.read_bytes() if STRATEGY_CONFIG_PATH.exists() else None
+        old_notification = NOTIFICATION_CONFIG_PATH.read_bytes() if NOTIFICATION_CONFIG_PATH.exists() else None
+        callbacks_started = False
+        try:
+            for path, value in updates.items():
+                _atomic_json(path, value)
+            callbacks_started = True
+            for callback in self._restore_callbacks:
+                callback(snapshot_data)
+        except Exception as failure:
+            rollback_errors = []
+            for path, payload in originals.items():
+                try:
+                    if payload is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _atomic_bytes(path, payload)
+                except Exception as rollback_error:
+                    rollback_errors.append(type(rollback_error).__name__)
+            if callbacks_started and not rollback_errors:
+                try:
+                    rollback_snapshot = dict(
+                        account_state=json.loads(old_account) if old_account else {},
+                        strategy_state=json.loads(old_strategy) if old_strategy else {},
+                        notification_state=json.loads(old_notification) if old_notification else {})
+                    for callback in self._restore_callbacks:
+                        callback(rollback_snapshot)
+                except Exception as rollback_error:
+                    rollback_errors.append(type(rollback_error).__name__)
+            if rollback_errors:
+                raise RuntimeError("恢复失败且回滚未完全成功，需要人工检查账户状态") from failure
+            raise
 
         summary = account_state.get("summary", {})
         pos_cnt = len(account_state.get("positions", {}))
@@ -507,48 +606,39 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
         }
 
     def import_archive_and_restore(self, archive_path: Path, backup_current: bool = True) -> Dict[str, Any]:
-        """从 .tar.gz 压缩包解包并恢复"""
+        """Read flat regular-file exports without extracting any archive paths."""
         if not archive_path.exists():
             raise FileNotFoundError(f"归档包不存在: {archive_path}")
 
-        temp_extract_dir = SNAPSHOTS_DIR / f"temp_extract_{archive_path.stem}"
-        temp_extract_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            with tarfile.open(archive_path, "r:gz") as tar:
-                if hasattr(tarfile, "data_filter"):
-                    tar.extractall(temp_extract_dir, filter="data")
-                else:
-                    tar.extractall(temp_extract_dir)
-
-            snapshot_file = temp_extract_dir / "snapshot.json"
-            if snapshot_file.exists():
-                snapshot_data = self._read_json_safe(snapshot_file)
-                return self.restore_snapshot(snapshot_data, backup_current=backup_current)
-            else:
-                # 兼容直接解压出来的单独文件
-                account_file = temp_extract_dir / "sim_account.json"
-                if account_file.exists():
-                    account_state = self._read_json_safe(account_file)
-                    strat_state = self._read_json_safe(temp_extract_dir / "strategy_config.json")
-                    notif_state = self._read_json_safe(temp_extract_dir / "notification_config.json")
-                    synthetic_snapshot = {
-                        "meta": {
-                            "snapshot_id": f"imported_{get_now().strftime('%Y%m%d_%H%M%S')}",
-                            "created_at": get_now().isoformat(),
-                            "tag": "imported",
-                            "description": f"从归档文件 {archive_path.name} 导入恢复"
-                        },
-                        "account_state": account_state,
-                        "strategy_state": strat_state,
-                        "notification_state": notif_state,
-                        "summary": account_state.get("summary", {})
-                    }
-                    return self.restore_snapshot(synthetic_snapshot, backup_current=backup_current)
-                raise ValueError("压缩包内缺少有效的快照数据 (未找到 snapshot.json 或 sim_account.json)")
-        finally:
-            if temp_extract_dir.exists():
-                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+        allowed = {"snapshot.json", "sim_account.json", "strategy_config.json", "notification_config.json", "README.txt"}
+        members, total = {}, 0
+        with tarfile.open(archive_path, "r|gz") as archive:
+            for member in archive:
+                if member.name not in allowed or not member.isfile() or member.name in members:
+                    raise ValueError("归档包含不安全或重复路径、链接或不支持的成员")
+                total += member.size
+                if member.size > 50*1024*1024 or total > 150*1024*1024:
+                    raise ValueError("归档内容超过大小上限")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("归档文件不可读取")
+                payload = stream.read(member.size+1)
+                if len(payload) != member.size:
+                    raise ValueError("归档内容长度无效")
+                members[member.name] = payload
+        if "snapshot.json" in members:
+            return self.restore_snapshot(json.loads(members["snapshot.json"]), backup_current=backup_current)
+        if "sim_account.json" in members:
+            account_state = json.loads(members["sim_account.json"])
+            snapshot = dict(meta=dict(snapshot_id=f"imported_{get_now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
+                                      created_at=get_now().isoformat(), tag="imported",
+                                      description=f"从归档文件 {archive_path.name} 导入恢复"),
+                            account_state=account_state,
+                            strategy_state=json.loads(members.get("strategy_config.json", b"{}")),
+                            notification_state=json.loads(members.get("notification_config.json", b"{}")),
+                            summary=account_state.get("summary", {}))
+            return self.restore_snapshot(snapshot, backup_current=backup_current)
+        raise ValueError("压缩包内缺少 snapshot.json 或 sim_account.json")
 
 
 # =============================================================================
@@ -600,7 +690,8 @@ def main():
         print(f"📦 离线快照迁移包导出成功: {res_path}")
 
     elif args.command == "restore":
-        res = mgr.restore_snapshot(args.target, backup_current=not args.no_backup)
+        target = Path(args.target) if Path(args.target).exists() else args.target
+        res = mgr.restore_snapshot(target, backup_current=not args.no_backup)
         print(f"🔄 {res['message']}")
 
     else:

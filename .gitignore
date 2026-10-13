@@ -12,6 +12,7 @@ sim_account.json
 sim_account.json*
 sim_test.json
 data/
+research_smoke_*.json
 *.cache
 index.html
 

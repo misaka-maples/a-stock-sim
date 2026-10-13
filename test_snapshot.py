@@ -102,7 +102,9 @@ def temp_snapshot_env(monkeypatch, tmp_path):
         json.dump(notif_data, f)
 
     # 重新初始化单例
-    SnapshotManager._instance = None
+    monkeypatch.setattr(SnapshotManager, "_instance", None)
+    monkeypatch.setattr(SnapshotManager, "_restore_callbacks", [])
+    monkeypatch.setattr(SnapshotManager, "_restore_validators", [])
     mgr = SnapshotManager()
     mgr._init_paths()
 

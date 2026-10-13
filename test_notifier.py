@@ -43,6 +43,8 @@ class TestNotifier(unittest.TestCase):
         self.assertTrue(safe_cfg["enabled"])
         self.assertIn("****", safe_cfg["wxpusher_app_token_masked"])
         self.assertIn("****", safe_cfg["serverchan_sendkey_masked"])
+        for key in ("wxpusher_app_token", "wxpusher_spt", "serverchan_sendkey"):
+            self.assertNotIn(key, safe_cfg)
         self.assertEqual(safe_cfg["wxpusher_uids"], ["UID_test12345"])
 
     @patch("requests.post")

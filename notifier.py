@@ -272,6 +272,8 @@ class NotificationManager:
         safe["wxpusher_app_token_masked"] = mask_token(safe.get("wxpusher_app_token", ""))
         safe["wxpusher_spt_masked"] = mask_token(safe.get("wxpusher_spt", ""))
         safe["serverchan_sendkey_masked"] = mask_token(safe.get("serverchan_sendkey", ""))
+        for key in ("wxpusher_app_token", "wxpusher_spt", "serverchan_sendkey"):
+            safe.pop(key, None)
         return safe
 
     def dispatch_message(self, title: str, content: str, summary: str = "") -> List[Dict[str, Any]]:
