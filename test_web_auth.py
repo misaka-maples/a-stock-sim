@@ -25,7 +25,7 @@ let authenticated = false, failNext = false, timerCounter = 0;
 function element(id) {
   if (!elements.has(id)) elements.set(id, {style:{}, value:'', dataset:{}, disabled:false,
     textContent:'', innerText:'', innerHTML:'', classList:{add(){},remove(){}},
-    addEventListener(){}, focus(){}, appendChild(){}, remove(){}});
+    addEventListener(){}, focus(){}, appendChild(){}, remove(){}, replaceChildren(){}});
   return elements.get(id);
 }
 const response = (status, value) => ({status, ok:status===200, json:async()=>value});
@@ -61,7 +61,7 @@ vm.runInContext('initChartInteractions=()=>{};initBacktestChartInteractions=()=>
   await sandbox.submitLogin({preventDefault(){}});
   assert.equal(element('authOverlay').style.display,'none');
   assert.equal(element('authPassword').value,'');
-  assert.equal(timers.size,1);
+  assert.equal(timers.size,2);
   await sandbox.apiFetch('/api/summary');
   for (const id of ['notifyEnabled','notifyOnBuy','notifyOnSell','notifyOnDaily','notifyOnRisk']) element(id).checked=true;
   element('wxAppToken').dataset.saved='true';

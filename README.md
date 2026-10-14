@@ -45,6 +45,8 @@
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
+网页右侧“股票搜索与实时五档报价”支持股票名称、完整代码或部分代码，最多列出10个主板结果；选择股票后每3秒单独刷新报价，显示行情时间、过期状态、五档买卖盘（数量单位为手）及T+1可卖股数。查询只读，不添加自动策略监控标的。无报价、过期、停牌或非连续交易时段关闭预填按钮；买卖按钮只填入手动模拟委托，仍需点击交易台确认提交。留空价格按提交时的新盘口撮合，实际成交可以部分完成，页面显示实际成交和未成交股数；账户与撮合规则最终校验资金、主板资格、T+1及流动性。
+
 网页首次访问需要登录。服务默认保护所有 `/api` 管理、账户及导出接口；仅登录、认证状态和 `/health` 可匿名访问。同源浏览器使用 HttpOnly、SameSite=Strict 会话，8小时或重启后重新登录；删除开放CORS，写请求检查来源。首次启动生成独立密码及API令牌，保存在 `data/private/api_credentials.json`（目录700、文件600），不复用SSH密码。可通过SSH在服务器读取此文件；程序接入使用 `Authorization: Bearer <api_token>`。凭据文件不进入Git或快照导出。通知配置和快照创建响应只展示脱敏配置；认证后下载的整机迁移包仍含通知凭据，请作为私有备份保存。
 
 快照ID和标签只接受字母、数字、下划线与短横线；不允许路径或符号链接。归档恢复只读取白名单的普通文件，不解压任意路径。恢复先验证策略参数，再写盘和重载；出错会回滚。配置刷新间隔限定1至60秒，持久化股票池和间隔，参与率立即同步账户执行器。后台健康检查包含线程和存储状态，收盘归档在取得有效最终行情后执行。
@@ -89,6 +91,7 @@ python3 entry_guard_research.py --fixture data/research/market_fixture.json \
 
 优化前备份：`~/quant_backups/before_opt_20261013_151210/project.tgz`。
 本次缺陷修复前备份：`~/quant_backups/before_bugfix_20261013_165657/project.tgz`。
+股票搜索与实时报价修复前备份：`~/quant_backups/before_stock_search_20261014/project.tgz`。
 次日开仓保护修复前备份：`~/quant_backups/before_entry_guard_20261014/project.tgz`。
 候选刷新与网页回测口径修复前备份：`~/quant_backups/before_data_refresh_20261014_0915/project.tgz`。
 回退代码时先停止服务，只恢复源码与web文件，不用旧账户覆盖最新账户；保留模拟资金和已有持仓。重启不使用`--reset`。

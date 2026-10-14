@@ -873,6 +873,25 @@
 
     <!-- 右侧：手动交易台与成交流水 -->
     <div class="right-col">
+      <!-- 独立搜索不改变策略股票池，选中后只预填模拟委托 -->
+      <div class="panel" id="stockSearchPanel">
+        <div class="panel-header"><div class="panel-title">🔎 股票搜索 · 实时报价</div></div>
+        <div class="trade-form">
+          <div style="display:flex;gap:8px">
+            <input id="stockSearchInput" class="form-control" style="flex:1;min-width:0" placeholder="输入代码、部分代码或名称" aria-label="搜索主板股票" oninput="scheduleStockSearch()" onkeydown="if(event.key==='Enter'){event.preventDefault();searchStocks();}">
+            <button class="btn" onclick="searchStocks()">搜索</button>
+          </div>
+          <div id="stockSearchMessage" role="status" style="font-size:12px;color:var(--text-muted);margin:8px 0">仅沪深主板。请从结果中选择股票，查询不会自动下单。</div>
+          <div id="stockSearchResults" style="display:grid;gap:6px;max-height:250px;overflow:auto"></div>
+          <div id="stockQuoteDetails" style="margin-top:12px"></div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button id="stockQuoteBuy" class="btn btn-buy" disabled onclick="fillStockQuoteOrder('BUY')">预填买入</button>
+            <button id="stockQuoteSell" class="btn btn-sell" disabled onclick="fillStockQuoteOrder('SELL')">预填卖出</button>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:8px">模拟交易：买入100股整手，T+1可卖；预填后需在下方确认委托。报价约每3秒更新，盘口数量单位为手。</div>
+        </div>
+      </div>
+
       <!-- 手动下单控制台 -->
       <div class="panel">
         <div class="panel-header">
@@ -949,6 +968,7 @@
 
     function requireLogin(message = '') {
       authorized = false;
+      stopStockQuoteRefresh();
       if (timerId) clearInterval(timerId);
       timerId = null;
       if (typeof wxScanTimer !== 'undefined' && wxScanTimer) {
@@ -983,6 +1003,7 @@
         initBacktestChartInteractions();
         dashboardInitialized = true;
       }
+      startStockQuoteRefresh();
       loadBacktestConfiguration().catch(() => {});
       fetchData();
       fetchNotifyStatus();
@@ -1075,8 +1096,10 @@
       const sym = document.getElementById('orderSymbol').value.trim();
       const shares = parseInt(document.getElementById('orderShares').value) || 0;
       let price = parseFloat(document.getElementById('orderPrice').value) || 0;
-      if (price <= 0 && currentQuotes[sym]) {
-        price = currentQuotes[sym].current;
+      const previewQuote = currentQuotes[sym] || (selectedStockQuote && selectedStockQuote.symbol === sym ? selectedStockQuote.quote : null);
+      if (price <= 0 && previewQuote) {
+        const book = currentSide === 'BUY' ? previewQuote.asks : previewQuote.bids;
+        price = book && book[0] ? book[0].price : previewQuote.current;
       }
       const amount = price * shares;
       let fee = Math.max(amount * 0.00025, 5.0) + (amount * 0.00001);
@@ -1475,29 +1498,175 @@
       tbody.innerHTML = html;
     }
 
-    async function searchAndFillStock() {
-      const q = document.getElementById('orderSymbol').value.trim();
-      if (!q) {
-        showToast('请输入股票代码或名称');
-        return;
-      }
+    // Dedicated stock search uses text nodes for every provider-controlled value.
+    let stockSearchGeneration = 0;
+    let stockSearchAbort = null;
+    let stockSearchDebounce = null;
+    let stockQuoteGeneration = 0;
+    let stockQuoteAbort = null;
+    let stockQuoteTimer = null;
+    let selectedStockSymbol = null;
+    let selectedStockQuote = null;
+    let selectedStockQuoteReceivedAt = 0;
+
+    function stockQuoteIsFresh(data) {
+      return !!(data && data.fresh && selectedStockQuoteReceivedAt > 0
+        && (Number(data.quote_age_seconds) || 0) + Math.max(0, Date.now() - selectedStockQuoteReceivedAt) / 1000 <= 120);
+    }
+
+    function stockText(tag, value, parent) {
+      const el = document.createElement(tag);
+      el.textContent = String(value == null ? '' : value);
+      if (parent) parent.appendChild(el);
+      return el;
+    }
+
+    function stockNumber(value, digits = 2) {
+      return Number.isFinite(Number(value)) && value != null ? Number(value).toFixed(digits) : '--';
+    }
+
+    function clearStockSelection() {
+      stockQuoteGeneration++;
+      if (stockQuoteAbort) stockQuoteAbort.abort();
+      stockQuoteAbort = null;
+      selectedStockSymbol = null;
+      selectedStockQuote = null;
+      document.getElementById('stockQuoteDetails').replaceChildren();
+      document.getElementById('stockQuoteBuy').disabled = true;
+      document.getElementById('stockQuoteSell').disabled = true;
+    }
+
+    function scheduleStockSearch() {
+      // Invalidate immediately; a slow old response cannot overwrite a new query.
+      stockSearchGeneration++;
+      if (stockSearchAbort) stockSearchAbort.abort();
+      clearTimeout(stockSearchDebounce);
+      clearStockSelection();
+      document.getElementById('stockSearchResults').replaceChildren();
+      stockSearchDebounce = setTimeout(searchStocks, 300);
+    }
+
+    async function searchStocks() {
+      clearTimeout(stockSearchDebounce);
+      const generation = ++stockSearchGeneration;
+      if (stockSearchAbort) stockSearchAbort.abort();
+      stockSearchAbort = new AbortController();
+      clearStockSelection();
+      const query = document.getElementById('stockSearchInput').value.trim();
+      const results = document.getElementById('stockSearchResults');
+      const message = document.getElementById('stockSearchMessage');
+      results.replaceChildren();
+      if (!query) { message.textContent = '请输入股票代码或名称。'; return; }
+      message.textContent = '正在搜索…';
       try {
-        const res = await apiFetch(`/api/stock/search?q=${encodeURIComponent(q)}`);
-        if (!res.ok) {
-          showToast('未检索到该股票');
-          return;
-        }
-        const data = await res.json();
-        const stock = Array.isArray(data) ? data[0] : data;
-        if (stock) {
-          document.getElementById('orderSymbol').value = stock.symbol;
-          document.getElementById('orderPrice').value = stock.current;
-          showToast(`已载入: ${stock.name} (${stock.symbol}) 现价 ¥${stock.current}`);
-          updateCostPreview();
-        }
-      } catch (e) {
-        showToast('查询失败: ' + e.message);
+        const response = await apiFetch('/api/stock/search?q=' + encodeURIComponent(query), {signal:stockSearchAbort.signal});
+        const data = await response.json();
+        if (generation !== stockSearchGeneration || !authorized) return;
+        if (!response.ok) throw new Error(data.detail || '搜索失败');
+        if (!Array.isArray(data)) throw new Error('搜索结果格式错误');
+        message.textContent = data.length ? '请选择股票查看五档报价（最多10条结果）。' : '未找到匹配的沪深主板股票。';
+        data.forEach(stock => {
+          const button = stockText('button', stock.code + ' · ' + stock.name + (stock.quote_available ? '  ¥' + stockNumber(stock.current) + (stock.fresh ? '' : '（报价过期）') : '（暂无报价）'), results);
+          button.type = 'button'; button.className = 'btn'; button.style.textAlign = 'left';
+          button.addEventListener('click', () => selectStockQuote(stock.symbol));
+        });
+      } catch (error) {
+        if (generation === stockSearchGeneration && error.name !== 'AbortError') message.textContent = '查询失败：' + error.message;
       }
+    }
+
+    async function selectStockQuote(symbol) {
+      clearStockSelection();
+      selectedStockSymbol = symbol;
+      document.getElementById('stockQuoteDetails').textContent = '正在读取报价…';
+      await refreshStockQuote();
+    }
+
+    async function refreshStockQuote() {
+      if (selectedStockQuote && !stockQuoteIsFresh(selectedStockQuote)) renderStockQuote(selectedStockQuote);
+      if (!selectedStockSymbol || !authorized || document.hidden || stockQuoteAbort) return;
+      const symbol = selectedStockSymbol;
+      const generation = stockQuoteGeneration;
+      const controller = new AbortController();
+      stockQuoteAbort = controller;
+      try {
+        const response = await apiFetch('/api/stock/quote?symbol=' + encodeURIComponent(symbol), {signal:controller.signal});
+        const data = await response.json();
+        if (generation !== stockQuoteGeneration || symbol !== selectedStockSymbol || !authorized) return;
+        if (!response.ok) throw new Error(data.detail || '报价获取失败');
+        selectedStockQuote = data;
+        selectedStockQuoteReceivedAt = Date.now();
+        renderStockQuote(data);
+      } catch (error) {
+        if (generation === stockQuoteGeneration && error.name !== 'AbortError') {
+          selectedStockQuote = null;
+          document.getElementById('stockQuoteDetails').textContent = '报价获取失败：' + error.message;
+          document.getElementById('stockQuoteBuy').disabled = true;
+          document.getElementById('stockQuoteSell').disabled = true;
+        }
+      } finally {
+        if (stockQuoteAbort === controller) stockQuoteAbort = null;
+      }
+    }
+
+    function renderStockQuote(data) {
+      const box = document.getElementById('stockQuoteDetails');
+      box.replaceChildren();
+      stockText('div', data.name + ' · ' + data.code, box).style.fontWeight = '600';
+      const q = data.quote;
+      const fresh = stockQuoteIsFresh(data);
+      const status = data.quote_available ? (fresh ? '最新报价' : '报价过期，禁止预填交易') : '暂无有效报价';
+      stockText('div', status + ' · 行情时间 ' + (data.quote_time || '--') + ' · 最近查询 ' + new Date().toLocaleTimeString('zh-CN'), box).style.fontSize = '12px';
+      if (q && data.quote_available) {
+        stockText('div', '现价 ¥' + stockNumber(q.current) + ' · 涨跌 ' + stockNumber(q.change_pct) + '%', box);
+        stockText('div', '今开 ' + stockNumber(q.open) + ' · 昨收 ' + stockNumber(q.pre_close) + ' · 成交量 ' + stockNumber(q.volume_lots, 0) + ' 手', box).style.fontSize = '12px';
+        const table = document.createElement('table'); box.appendChild(table);
+        const header = document.createElement('tr'); table.appendChild(header);
+        ['档位','买价 / 手','卖价 / 手'].forEach(label => stockText('th', label, header));
+        for (let i = 0; i < 5; i++) {
+          const row = document.createElement('tr'); table.appendChild(row);
+          const bid = (q.bids || []).find(item => Number(item.level) === i + 1) || (!((q.bids || []).some(item => item.level != null)) ? (q.bids || [])[i] : null);
+          const ask = (q.asks || []).find(item => Number(item.level) === i + 1) || (!((q.asks || []).some(item => item.level != null)) ? (q.asks || [])[i] : null);
+          stockText('td', String(i + 1), row);
+          stockText('td', bid ? stockNumber(bid.price) + ' / ' + stockNumber(bid.volume, 0) : '--', row);
+          stockText('td', ask ? stockNumber(ask.price) + ' / ' + stockNumber(ask.volume, 0) : '--', row);
+        }
+      }
+      const total = data.position ? data.position.total_shares : 0;
+      stockText('div', '持仓 ' + (total || 0) + ' 股 · T+1可卖 ' + (data.available_shares || 0) + ' 股' + (data.is_trading_time ? '' : ' · 当前非交易时段'), box).style.fontSize = '12px';
+      document.getElementById('stockQuoteBuy').disabled = !(data.can_buy && fresh && data.quote_available);
+      document.getElementById('stockQuoteSell').disabled = !(data.can_sell && fresh && data.quote_available);
+    }
+
+    function fillStockQuoteOrder(side) {
+      const data = selectedStockQuote;
+      if (!authorized || !data || !stockQuoteIsFresh(data) || !data.quote_available || (side === 'BUY' ? !data.can_buy : !data.can_sell)) return;
+      document.getElementById('orderSymbol').value = data.symbol;
+      document.getElementById('orderPrice').value = ''; // Use fresh matching, not a frozen limit price.
+      document.getElementById('orderShares').value = side === 'BUY' ? 100 : data.available_shares;
+      if (data.quote) currentQuotes[data.symbol] = data.quote;
+      setSide(side);
+      showToast('已预填' + (side === 'BUY' ? '买入' : '卖出') + '委托，请核对后在交易台确认。');
+      document.getElementById('orderSymbol').scrollIntoView({behavior:'smooth',block:'center'});
+    }
+
+    function stopStockQuoteRefresh() {
+      clearInterval(stockQuoteTimer); stockQuoteTimer = null;
+      clearTimeout(stockSearchDebounce);
+      stockSearchGeneration++;
+      if (stockSearchAbort) stockSearchAbort.abort();
+      clearStockSelection();
+    }
+
+    function startStockQuoteRefresh() {
+      if (stockQuoteTimer) clearInterval(stockQuoteTimer);
+      stockQuoteTimer = setInterval(refreshStockQuote, 3000);
+    }
+
+    async function searchAndFillStock() {
+      document.getElementById('stockSearchInput').value = document.getElementById('orderSymbol').value.trim();
+      document.getElementById('stockSearchPanel').scrollIntoView({behavior:'smooth',block:'center'});
+      await searchStocks();
     }
 
     function renderQuotes(quotes) {
@@ -1646,7 +1815,9 @@
       window.scrollTo({top: 0, behavior: 'smooth'});
     }
 
+    let orderSubmitting = false;
     async function submitOrder() {
+      if (orderSubmitting) return;
       const sym = document.getElementById('orderSymbol').value.trim();
       const shares = parseInt(document.getElementById('orderShares').value);
       const price = parseFloat(document.getElementById('orderPrice').value) || 0.0;
@@ -1654,13 +1825,18 @@
       if (!sym) { showToast('请输入股票代码', true); return; }
       if (!shares || shares <= 0) { showToast('请输入有效的交易股数', true); return; }
 
+      const submittedSide = currentSide;
+      orderSubmitting = true;
+      const button = document.getElementById('submitOrderBtn');
+      button.disabled = true;
+      button.innerText = '正在提交…';
       try {
         const res = await apiFetch('/api/trade/order', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             symbol: sym,
-            side: currentSide,
+            side: submittedSide,
             shares: shares,
             price: price,
             reason: 'Web控制台手动委托'
@@ -1668,13 +1844,20 @@
         }).then(r => r.json());
 
         if (res.success) {
-          showToast(`委托成交成功！${currentSide==='BUY'?'买入':'卖出'} ${sym} ${shares}股`);
+          const filled = Number(res.shares != null ? res.shares : (res.trade || {}).shares) || 0;
+          const remainder = Math.max(0, shares - filled);
+          showToast(`${submittedSide==='BUY'?'买入':'卖出'} ${sym} 实际成交 ${filled}股${remainder ? `，剩余 ${remainder}股未成交` : ''}`);
           fetchData();
         } else {
           showToast(`委托拒绝: ${res.reason}`, true);
         }
       } catch (e) {
         showToast(`请求失败: ${e}`, true);
+      } finally {
+        orderSubmitting = false;
+        button.disabled = false;
+        button.innerText = currentSide === 'BUY' ? '确认买入委托' : '确认卖出委托';
+        refreshStockQuote();
       }
     }
 

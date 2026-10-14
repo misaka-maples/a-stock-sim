@@ -80,6 +80,16 @@ class TestServerAPI(unittest.TestCase):
             side_effect=AssertionError("API unit tests must not use the network")))
         self.ctx.account = SimAccount(initial_cash=500000., strict_t1=False, save_path=str(paths["SIM_ACCOUNT_PATH"]))
         self.ctx.symbols = ["sh600519", "sz002594", "sz000001"]
+        self.catalog_path = self.root / "stock_universe.json"
+        self.catalog_path.write_text(json.dumps({"stocks": [
+            {"symbol": "sh600519", "name": "贵州茅台"},
+            {"symbol": "sz002594", "name": "比亚迪"},
+            {"symbol": "sz000001", "name": "平安银行"},
+            {"symbol": "sh600036", "name": "招商银行"},
+            {"symbol": "sz300001", "name": "创业测试银行"},
+            {"symbol": "sz600036", "name": "错误交易所"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        self.stack.enter_context(patch.object(sim_trader.StockUniverse, "UNIVERSE_FILE", self.catalog_path))
         self.ctx.strategy = MomentumRotationProStrategy(self.ctx.account, self.ctx.symbols, feed=StubFeed(), industry_map={})
         self.quotes = {s: dict(symbol=s, code=s[-6:], name="测试股票", current=10., pre_close=10.,
                                open=10., change=0., change_pct=0., time=NOW.strftime("%Y%m%d%H%M%S"),
@@ -165,6 +175,116 @@ class TestServerAPI(unittest.TestCase):
         found = self.client.get("/api/stock/search?q=000001")
         self.assertEqual(found.status_code, 200)
         self.assertEqual(found.json()[0]["code"], "000001")
+
+    def test_search_catalog_names_partial_and_unquoted_metadata(self):
+        # Provider names in the running quote cache can override the directory.
+        self.ctx.last_quotes = {}
+        result = self.client.get("/api/stock/search", params={"q": "银行"})
+        self.assertEqual(result.status_code, 200)
+        records = {row["symbol"]: row for row in result.json()}
+        self.assertEqual(set(records), {"sz000001", "sh600036"})
+        self.assertFalse(records["sh600036"]["quote_available"])
+        self.assertFalse(records["sh600036"]["fresh"])
+        self.assertEqual(self.client.get("/api/stock/search", params={"q": "60003"}).json()[0]["symbol"], "sh600036")
+
+    def test_search_validation_does_not_probe_unknown_or_nonmain_codes(self):
+        self.fetch.reset_mock()
+        for query in ("http://bad.test", "sz300001", "sz600036", "999999"):
+            self.assertEqual(self.client.get("/api/stock/search", params={"q": query}).status_code, 404)
+        for query in ("", "x" * 41):
+            self.assertEqual(self.client.get("/api/stock/search", params={"q": query}).status_code, 422)
+        self.assertEqual(self.client.get("/api/stock/search", params={"q": "  "}).status_code, 400)
+        self.fetch.assert_not_called()
+        for symbol in ("sz600036", "sz300001", "60003", "http://a"):
+            self.assertIn(self.client.get("/api/stock/quote", params={"symbol": symbol}).status_code, (400, 422))
+        self.fetch.assert_not_called()
+
+    def test_quote_fetch_is_outside_lock_and_read_preserves_state(self):
+        before = copy.deepcopy((self.ctx.account.positions, self.ctx.account.trades, self.ctx.symbols, self.ctx.last_quotes))
+        def unlocked(symbols):
+            self.assertFalse(self.ctx.lock._is_owned())
+            return {s: copy.deepcopy(self.quotes[s]) for s in symbols if s in self.quotes}
+        with patch.object(MarketFeed, "fetch_quotes", side_effect=unlocked):
+            response = self.client.get("/api/stock/quote", params={"symbol": "000001"})
+            search = self.client.get("/api/stock/search", params={"q": "600519"})
+        self.assertEqual(search.status_code, 200)
+        data = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["fresh"])
+        self.assertTrue(data["can_buy"])
+        self.assertFalse(data["can_sell"])
+        self.assertEqual(data["quote"]["asks"][0]["price"], 10.01)
+        self.assertEqual(before, (self.ctx.account.positions, self.ctx.account.trades, self.ctx.symbols, self.ctx.last_quotes))
+
+    def test_quote_invalid_stale_and_unavailable_fail_closed(self):
+        for update in ({"current": float("nan")}, {"asks": [{"price": float("inf"), "volume": 1}]},
+                       {"symbol": "sh600519"}):
+            with self.subTest(update=update):
+                quote = dict(self.quotes["sz000001"], **update)
+                with patch.object(MarketFeed, "fetch_quotes", return_value={"sz000001": quote}):
+                    data = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+                self.assertFalse(data["quote_available"])
+                self.assertFalse(data["can_buy"])
+        for stamp in ((NOW - dt.timedelta(seconds=121)), (NOW + dt.timedelta(seconds=1)), (NOW - dt.timedelta(days=1))):
+            quote = dict(self.quotes["sz000001"], time=stamp.strftime("%Y%m%d%H%M%S"), fresh=True)
+            with patch.object(MarketFeed, "fetch_quotes", return_value={"sz000001": quote}):
+                data = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+            self.assertTrue(data["quote_available"])
+            self.assertFalse(data["fresh"])
+            self.assertFalse(data["can_buy"])
+        with patch.object(MarketFeed, "fetch_quotes", side_effect=RuntimeError("provider down")):
+            data = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+        self.assertIsNone(data["quote"])
+        self.assertEqual(data["quote_status"], "unavailable")
+
+    def test_quote_t1_preview_is_copy_and_requires_sell_book(self):
+        self.ctx.account.strict_t1 = True
+        self.ctx.account.positions["sz000001"] = dict(total_shares=300, available_shares=0,
+            buy_lots=[dict(date="2026-09-21", shares=200), dict(date="2026-09-22", shares=100)])
+        result = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+        self.assertEqual(result["position"]["available_shares"], 200)
+        self.assertTrue(result["can_sell"])
+        self.assertEqual(self.ctx.account.positions["sz000001"]["available_shares"], 0)
+        self.quotes["sz000001"]["bids"] = []
+        self.assertFalse(self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()["can_sell"])
+        self.quotes["sz000001"]["is_st"] = True
+        self.assertFalse(self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()["can_buy"])
+
+    def test_stock_read_routes_require_auth_and_session_for_trade_flags(self):
+        anonymous = TestClient(server.app)
+        self.addCleanup(anonymous.close)
+        self.assertEqual(anonymous.get("/api/stock/search", params={"q": "000001"}).status_code, 401)
+        self.assertEqual(anonymous.get("/api/stock/quote", params={"symbol": "000001"}).status_code, 401)
+        with patch.object(MarketFeed, "is_trading_time", return_value=False):
+            data = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+        self.assertTrue(data["quote_available"])
+        self.assertFalse(data["can_buy"])
+        self.assertFalse(data["can_sell"])
+
+    def test_stock_quote_declared_stale_suspended_and_invalid_book_disable_orders(self):
+        for update in ({"fresh": False}, {"suspended": True}, {"volume_lots": 0},
+                       {"asks": [{"price": 50, "volume": 100}]},
+                       {"asks": [{"price": 10.01, "volume": -1}]}):
+            with self.subTest(update=update):
+                quote = dict(self.quotes["sz000001"], **update)
+                with patch.object(MarketFeed, "fetch_quotes", return_value={"sz000001": quote}):
+                    data = self.client.get("/api/stock/quote", params={"symbol": "000001"}).json()
+                self.assertFalse(data["can_buy"])
+        quote = dict(self.quotes["sz000001"], asks=[{"price":"10.01", "volume":"100"}])
+        with patch.object(MarketFeed, "fetch_quotes", return_value={"sz000001": quote}):
+            data = self.client.get("/api/stock/quote", params={"symbol":"000001"}).json()
+        self.assertTrue(data["can_buy"])
+        self.assertEqual(data["quote"]["asks"][0]["price"],10.01)
+
+    def test_search_exact_priority_and_bounded_provider_batch(self):
+        stocks = [{"symbol": "sh600%03d" % i, "name": "银行%d" % i} for i in range(20)]
+        self.catalog_path.write_text(json.dumps({"stocks": stocks}), encoding="utf-8")
+        self.ctx.last_quotes = {}
+        self.fetch.reset_mock()
+        result = self.client.get("/api/stock/search", params={"q": "600"})
+        self.assertEqual(len(result.json()), 10)
+        self.assertEqual(len(self.fetch.call_args.args[0]), 10)
+        self.assertEqual(self.client.get("/api/stock/search", params={"q": "600519"}).json()[0]["symbol"], "sh600519")
 
     def test_get_performance(self):
         result = self.client.get("/api/performance")

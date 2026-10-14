@@ -1,21 +1,19 @@
 {
-  "baseline_commit": "37a5746db8940028d3053455d14175d0e3f12f22",
-  "backup": "/home/openarmx/quant_backups/before_entry_guard_20261014/project.tgz",
+  "baseline_commit": "91556507f65ccadbeee56924ab6f43ad45eaa5e2",
+  "backup": "/home/openarmx/quant_backups/before_stock_search_20261014/project.tgz",
   "validation": {
     "local_python": "3.13",
-    "passed": 326,
+    "ui": "offline actual JavaScript DOM/fetch regressions; browser unavailable",
+    "passed": 340,
     "skipped": 6,
-    "subtests_passed": 159,
-    "ui": "actual inline JavaScript offline DOM/fetch harness; browser unavailable",
-    "research": "frozen offline baseline/guard/risk-adjusted/6-position comparisons; 2026 observed diagnostic only",
+    "subtests_passed": 167,
     "remote_python": "3.10",
-    "remote_passed": 319,
-    "remote_skipped": 13,
-    "remote_skip_note": "6 optional network/market tests; 7 Node-dependent UI tests skipped remotely and passed locally"
+    "remote_passed": 327,
+    "remote_skipped": 19
   },
   "files": {
     ".gitignore": "ecde54f7f5a2234bb1514bd6bb575ed9f8d272752b4acbc9a4c647d2e034dcaf",
-    "README.md": "bd7986b84a197917d844c8aef876e4f984984d39159228e4dfb1ea9918833607",
+    "README.md": "f23c903907e16a2bc9f3b1d0c32bf2875c0a3dbf24362d052eff0c237f3a06bb",
     "api_auth.py": "f0ac3a30828be6aaa1fc8f8f470d0014f8338e87d9bfb9bf6eb0c3b3a7380bb1",
     "backtest.py": "75c6aec7866623b3ef8672acef5fb0d077648e78878f60fcac6be3881b50e249",
     "daily_momentum.py": "3e6b32bfb85c8f730a50d411ed629545c631018e869f91889de461713c14f06e",
@@ -25,7 +23,7 @@
     "momentum_backtest.py": "50aa6c89ebded2501dd5df3b9707304c99b452a7374113dff790284891aa123c",
     "notifier.py": "f5ba9329f9a82caa2fe126a913489cc41c1e10ddc494bc0052429c345592ba6e",
     "research.py": "e5ff6829d2be9afbfabb7cbdff2f1c9c78b0b4f555a4088974addf2c398aefb7",
-    "server.py": "31ffa5b59bcbf2a01f336f5f022285f88732181c06da99bf6f08e531da686814",
+    "server.py": "43abed8d01b65d43c511683fdb89bf6989982e6cf70bd72ade244dd8bbc9af3f",
     "sim_trader.py": "6b9599cf52bf0fa1f8e4354a3a3967f6e3e618a2e12f9943ed581043fb270690",
     "snapshot_manager.py": "5dc6fc8078bd8bfd72155442d7ce59c95bac1f8afdcc6b5fe2a743f7c0d64c45",
     "start.sh": "0e96f29f9711772a1c02cf1e0f397bae2eec6f340cab7c06a63d5817586a2026",
@@ -42,15 +40,16 @@
     "test_momentum_backtest.py": "3a3509046647066c53f40b27951e5ec591c9eeb1fe39086a4497f28a81ce1045",
     "test_notifier.py": "12318f2ec984cfcd7fbdd404e000a69e54880bdb9ea138922c3793837bb0d1f8",
     "test_research.py": "224ca5c1a9c0ca20659229e56565ebd49239e2ef39d4e3cfe9d4fdf142d76666",
-    "test_server.py": "a35b09055bcc8e3badb20e94c8b7756e9a6e0b45e8a91ab2f5ab5eda2e259578",
+    "test_server.py": "7bdae668ebfee7635e20afbe1d137cd62d80ed9ee3980c4288b0080645220390",
     "test_server_runtime.py": "5d5ebd83791bb8a166e406fe961664d9f530a4425bc56986c13e60b26c85a420",
     "test_sim_trader.py": "ce08a6694165c8bec54ba303ed82ec13ffcca84ac99a9c966e4dbe1612c88b16",
     "test_snapshot.py": "517710f79b72d9ef4f8f8b244b73418e064ffff0c905a8d4d94281ee96e07440",
     "test_snapshot_security.py": "1946e41fb71f98693884c6e3bb3434940cedbd7bc661097d30e78cebfe2b4be9",
     "test_trade_calendar.py": "e13e42c246c64f5d05ecce4c4696ec8ea85cfa99660c203f7a2a459eba2b655b",
-    "test_web_auth.py": "e003d6d2f1081cf7bea886fcb206bae55d6d3432a2e543508507c095eb3048c0",
+    "test_web_auth.py": "cc872c4c39bccf0a99ac13e3c7c35d88601686d5ab2bb4fc4849e43ccafdadb6",
     "test_web_backtest.py": "f61b2a121a8a0d03574449e5001f1ce33ea7c97bc8da54a39514b75c93692294",
+    "test_web_stock_search.py": "59d9a79eac315352a39f4ba9c4c7c1f16387f17ce850103849f1667e3ff9a19c",
     "trade_calendar.py": "1a7a91379c8daca2bcfb13ce75cbf530d3c594cf9c080a0e6b473c8313779744",
-    "web/index.html": "31f392e40ca2595149e00d2697647e2ca04f0f3e54875457ebcdf957ed87f5b0"
+    "web/index.html": "1b1e1664335a629d575e733285d41bddbae61edbca7c54ae49f25af54db1f038"
   }
 }

@@ -734,31 +734,146 @@ def get_universe_info():
         }
 
 
-@app.get("/api/stock/search")
-def search_stock(q: str):
-    """根据代码或名称快速检索全市场股票"""
-    q_str = q.strip().lower()
-    if not q_str:
-        raise HTTPException(status_code=400, detail="请输入股票代码或名称")
+def _catalog_symbol(value):
+    """Canonical mainland main-board code, with exchange prefixes verified."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    code = value[2:] if value.startswith(("sh", "sz")) else value
+    if len(code) != 6 or not code.isascii() or not code.isdigit() or not StockUniverse.is_main_board(code):
+        return None
+    symbol = ("sh" if code.startswith("6") else "sz") + code
+    return symbol if value == code or value == symbol else None
 
+
+def _stock_catalog():
+    catalog = {}
+    def add(symbol, name=None):
+        symbol = _catalog_symbol(symbol)
+        if symbol:
+            record = catalog.setdefault(symbol, {"symbol": symbol, "code": symbol[-6:], "name": symbol})
+            if isinstance(name, str) and name.strip():
+                record["name"] = name.strip()
+    # Catalog reads never probe unknown codes or change the monitoring pool.
+    try:
+        payload = json.loads(Path(StockUniverse.UNIVERSE_FILE).read_text(encoding="utf-8"))
+        for record in payload.get("stocks", []):
+            if isinstance(record, dict):
+                add(record.get("symbol", record.get("code")), record.get("name"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     with ctx.lock:
-        matched = []
-        for sym, quote in ctx.last_quotes.items():
-            if q_str == sym or q_str == quote.get("code") or q_str in quote.get("name", "").lower():
-                matched.append(quote)
-                if len(matched) >= 10:
-                    break
+        for symbol in ctx.symbols:
+            add(symbol)
+        for symbol, position in (ctx.account.positions.items() if ctx.account else []):
+            add(symbol, position.get("name"))
+        for symbol, quote in ctx.last_quotes.items():
+            if isinstance(quote, dict):
+                add(symbol, quote.get("name"))
+    return catalog
 
-        if not matched:
-            sym = MarketFeed.normalize_symbol(q_str)
-            fetched = MarketFeed.fetch_quotes([sym])
-            if sym in fetched:
-                matched.append(fetched[sym])
 
-        if not matched:
-            raise HTTPException(status_code=404, detail=f"未检索到股票: {q}")
+def _lookup_quotes(symbols):
+    # Do not hold the account/strategy lock across provider IO. A failed new
+    # request cannot promote a cached quote to live or reserve broker capacity.
+    try:
+        fetched = MarketFeed.fetch_quotes(symbols)
+    except Exception:
+        logger.warning("股票查询行情暂不可用")
+        fetched = {}
+    now = datetime.datetime.now(BEIJING)
+    result = {}
+    for symbol in symbols:
+        raw = fetched.get(symbol) if isinstance(fetched, dict) else None
+        quote = _finite_quote(raw)
+        if quote and any(raw.get(key) is not None and _catalog_symbol(raw[key]) != symbol for key in ("symbol", "code")):
+            quote = None
+        timestamp = _quote_timestamp(quote) if quote else None
+        age = (now - timestamp).total_seconds() if timestamp else None
+        fresh = bool(timestamp and timestamp.date() == now.date() and 0 <= age <= 120
+                     and raw.get("fresh") is not False)
+        if quote:
+            for side in ("bids", "asks"):
+                quote[side] = [dict(level, price=float(level["price"]), volume=float(level["volume"]))
+                               for level in quote.get(side, [])]
+            quote.update(symbol=symbol, code=symbol[-6:], fresh=fresh)
+        result[symbol] = {"quote": quote, "quote_available": quote is not None, "fresh": fresh,
+                          "quote_time": timestamp.isoformat() if timestamp else None,
+                          "quote_age_seconds": age,
+                          "quote_status": "fresh" if fresh else "stale" if quote else "invalid" if raw is not None else "unavailable"}
+    return result, now
 
-        return matched
+
+@app.get("/api/stock/search")
+def search_stock(q: str = Query(..., min_length=1, max_length=40)):
+    """检索本地全市场主板目录，最多返回十只及当次查询行情。"""
+    query = q.strip().lower()
+    if not query or any(ord(char) < 32 for char in query):
+        raise HTTPException(status_code=400, detail="请输入有效股票代码或名称")
+    catalog = _stock_catalog()
+    matched = [record for record in catalog.values()
+               if query in record["symbol"] or query in record["code"] or query in record["name"].lower()]
+    matched.sort(key=lambda record: (query not in (record["symbol"], record["code"]), record["symbol"]))
+    matched = matched[:10]
+    if not matched:
+        raise HTTPException(status_code=404, detail="未检索到沪深主板股票")
+    quotes, _ = _lookup_quotes([record["symbol"] for record in matched])
+    output = []
+    for record in matched:
+        meta = quotes[record["symbol"]]
+        item = dict(meta["quote"] or {})
+        item.update(record)
+        item.update({key: value for key, value in meta.items() if key != "quote"})
+        output.append(item)
+    return output
+
+
+@app.get("/api/stock/quote")
+def get_stock_quote(symbol: str = Query(..., min_length=6, max_length=8)):
+    canonical = _catalog_symbol(symbol)
+    if canonical is None:
+        raise HTTPException(status_code=400, detail="请输入有效沪深主板股票代码")
+    catalog = _stock_catalog()
+    if canonical not in catalog:
+        raise HTTPException(status_code=404, detail="股票不在本地主板目录中")
+    quotes, now = _lookup_quotes([canonical])
+    result = dict(catalog[canonical], **quotes[canonical])
+    with ctx.lock:
+        account = ctx.account
+        position = copy.deepcopy(account.positions.get(canonical)) if account else None
+        if position:
+            total = position.get("total_shares", 0)
+            position["available_shares"] = min(total, sum(lot.get("shares", 0) for lot in position.get("buy_lots", [])
+                if str(lot.get("date", "")) < now.date().isoformat())) if account.strict_t1 else total
+        storage_healthy = account is not None and getattr(account, "_persistence_error", None) is None
+    quote = result["quote"]
+    trading = MarketFeed.is_trading_time(now)
+    quote_time = _quote_timestamp(quote) if quote else None
+    executable = (storage_healthy and result["fresh"] and trading and quote_time is not None
+                  and MarketFeed.is_trading_time(quote_time)
+                  and quote.get("volume_lots", 0) > 0
+                  and not quote.get("suspended") and not quote.get("is_suspended"))
+    buy_allowed = True
+    if quote:
+        try:
+            _risk_and_limits("BUY", quote, Decimal(str(quote["pre_close"])), now.date())
+        except (ValueError, TypeError, InvalidOperation):
+            buy_allowed = False
+    def has_book(side):
+        if not quote:
+            return False
+        lower, upper = _risk_and_limits("SELL", quote, Decimal(str(quote["pre_close"])), now.date())
+        levels = quote.get(side, [])
+        if any(level["volume"] < 0 or level["price"] < 0
+               or (level["volume"] > 0 and level["price"] > 0
+                   and not lower <= Decimal(str(level["price"])) <= upper) for level in levels):
+            return False
+        return any(level["price"] > 0 and level["volume"] > 0 for level in levels)
+    available = position.get("available_shares", 0) if position else 0
+    result.update(position=position, available_shares=available, market_status=MarketFeed.get_market_status(now),
+                  is_trading_time=trading, can_buy=bool(executable and buy_allowed and has_book("asks")),
+                  can_sell=bool(executable and available > 0 and has_book("bids")))
+    return result
 
 
 @app.get("/api/strategy/list")
