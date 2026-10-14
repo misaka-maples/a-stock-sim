@@ -14,7 +14,7 @@ from history_data import HistoricalDataFeed, previous_trading_day, normalize_sym
 from trade_calendar import is_trading_day
 from strategy_rules import (
     MomentumConfig, evaluate_momentum, holding_signal, exit_reason,
-    target_weight, allowed_by_sector, sector_of,
+    target_weight, allowed_by_sector, sector_of, entry_guard_reason,
 )
 from execution import match_daily
 
@@ -306,6 +306,16 @@ class MomentumBacktestEngine:
                     if not bar:
                         rejections.append(dict(date=date, symbol=symbol, side="BUY", reason="missing_daily_bar"))
                         continue
+                    previous = stocks[symbol]["by_date"].get(as_of, {})
+                    pre_close = bar.get("raw_pre_close") or previous.get("raw_close")
+                    # Only information available at the open. Today's close,
+                    # high and low cannot decide whether to initiate a buy.
+                    reason = entry_guard_reason(signals[symbol], self.config, pre_close,
+                                                bar.get("raw_open"), bar.get("raw_open"),
+                                                bar.get("limit_down"))
+                    if reason:
+                        rejections.append(dict(date=date, symbol=symbol, side="BUY", reason=reason))
+                        continue
                     open_values = marks(date, opening=True)
                     equity = cash + sum(open_values.values())
                     weight = target_weight(self.config, signals[symbol])
@@ -327,6 +337,12 @@ class MomentumBacktestEngine:
                                          consumed_shares=consumed.get((symbol, "BUY"), 0))
                     if not result.get("success") or not result.get("shares"):
                         rejections.append(dict(date=date, symbol=symbol, side="BUY", reason=result.get("reason")))
+                        continue
+                    reason = entry_guard_reason(signals[symbol], self.config, pre_close,
+                                                bar.get("raw_open"), result["price"],
+                                                bar.get("limit_down"))
+                    if reason:
+                        rejections.append(dict(date=date, symbol=symbol, side="BUY", reason=reason))
                         continue
                     # The pre-fill estimate is only a request size. Apply the
                     # same post-fill mark/fee budgets as the paper broker and

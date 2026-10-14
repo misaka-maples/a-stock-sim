@@ -382,6 +382,49 @@ class TestServerAPI(unittest.TestCase):
         self.assertEqual(server.STRATEGY_CONFIG_PATH.read_text(), before)
         self.assertEqual(self.ctx.strategy.stop_loss_pct, -7.)
 
+    def test_entry_guards_persist_strictly_without_changing_other_parameters(self):
+        original = server.asdict(self.ctx.strategy.config)
+        safeguards = dict(max_entry_gap_down_pct=2.5, max_entry_gap_up_pct=4,
+                          max_entry_intraday_drop_pct=0, entry_require_ma20=False)
+        update = self.client.post("/api/strategy/config", json=safeguards)
+        self.assertEqual(update.status_code, 200, update.text)
+        stored = json.loads(server.STRATEGY_CONFIG_PATH.read_text())["parameters"]
+        for key, value in original.items():
+            self.assertEqual(stored[key], safeguards.get(key, value))
+        listed = self.client.get("/api/strategy/list").json()
+        self.assertEqual(listed["current_parameters"], stored)
+        before = server.STRATEGY_CONFIG_PATH.read_text()
+        for invalid in ({"max_entry_gap_down_pct": True}, {"max_entry_gap_up_pct": "5"},
+                        {"max_entry_intraday_drop_pct": -1}, {"max_entry_gap_down_pct": 21},
+                        {"entry_require_ma20": "false"}, {"entry_require_ma20": 1}):
+            with self.subTest(invalid=invalid):
+                rejected = self.client.post("/api/strategy/config", json=invalid)
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                self.assertEqual(server.STRATEGY_CONFIG_PATH.read_text(), before)
+
+    def test_backtest_accepts_explicit_entry_guards_and_current_snapshot_ignores_overrides(self):
+        with patch.object(server, "run_backtest", return_value={"summary": {}}) as run:
+            guards = dict(max_entry_gap_down_pct=2, max_entry_gap_up_pct=4,
+                          max_entry_intraday_drop_pct=0, entry_require_ma20=False)
+            result = self.client.post("/api/backtest/run", json=guards)
+            self.assertEqual(result.status_code, 200, result.text)
+            for key, value in guards.items():
+                self.assertEqual(run.call_args.kwargs["config"][key], value)
+            result = self.client.post("/api/backtest/run", json=dict(use_current_config=True, **guards))
+            self.assertEqual(result.status_code, 200, result.text)
+            for key in guards:
+                self.assertEqual(run.call_args.kwargs["config"][key], getattr(self.ctx.strategy.config, key))
+
+    def test_editing_active_strategy_guard_preserves_unmentioned_risk_parameters(self):
+        self.ctx.strategy.config = server.MomentumConfig(max_positions=8, max_stock_weight=.17,
+            risk_per_trade=.005, max_sector_weight=.25, volatility_target=.19, cooldown_days=7)
+        before = server.asdict(self.ctx.strategy.config)
+        response = self.client.post("/api/strategy/switch", json=dict(
+            strategy_id=self.ctx.strategy.name, max_entry_gap_down_pct=2))
+        self.assertEqual(response.status_code, 200, response.text)
+        after = server.asdict(self.ctx.strategy.config)
+        self.assertEqual(after, {**before, "max_entry_gap_down_pct": 2})
+
     def test_snapshot_restore_rebinds_strategy_state_and_preserves_risk_capacity(self):
         self.ctx.strategy.state["cooldown"] = {"sh600519": "2026-09-18"}
         self.ctx.account.risk_history = dict(peak_equity=600000., max_drawdown=100000., max_drawdown_pct=20.)

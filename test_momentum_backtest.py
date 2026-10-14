@@ -313,3 +313,29 @@ def test_dated_industry_metadata_overrides_current_snapshot_for_caps_and_exposur
                     industry_map={symbol: "当前同一行业" for symbol in data["stocks"]}).run()
     assert len(result["fills"]) == 2
     assert set(result["equity_curve"][-1]["industry_exposure"]) == {"历史行业0", "历史行业1"}
+
+
+def test_entry_guard_blocks_limit_down_even_when_day_has_other_trades():
+    data, dates = fixture_data()
+    bars=data['stocks']['sh600096']['bars'];previous=bars[129]['raw_close']
+    lower=round(previous*.9,2);bar=bars[130]
+    set_price(bar,lower+.5,opening=lower)
+    result=engine(data,dates,end=130).run()
+    assert not result['fills']
+    assert result['rejections'][0]['reason']=='entry_limit_down'
+
+
+def test_open_entry_guard_never_uses_later_close_to_cancel_buy():
+    data, dates = fixture_data()
+    bars=data['stocks']['sh600096']['bars'];bar=bars[130]
+    opening=bar['raw_open'];set_price(bar,round(opening*.94,2),opening=opening)
+    result=engine(data,dates,end=130).run()
+    assert result['fills'] and result['fills'][0]['date']==dates[130]
+    assert not [r for r in result['rejections'] if r['reason'].startswith('entry_')]
+
+
+def test_backtest_gap_down_rejection_uses_same_shared_rule():
+    data, dates=fixture_data();bars=data['stocks']['sh600096']['bars'];previous=bars[129]['raw_close']
+    set_price(bars[130],previous,opening=round(previous*.96,2))
+    result=engine(data,dates,end=130).run()
+    assert not result['fills'] and result['rejections'][0]['reason']=='entry_gap_down'

@@ -11,7 +11,9 @@ from dataclasses import asdict
 
 from history_data import HistoricalDataFeed, previous_trading_day, last_completed_trading_day, normalize_symbol_for_tencent
 from strategy_rules import (MomentumConfig, evaluate_momentum, holding_signal,
-                            exit_reason, target_weight, allowed_by_sector, sector_of)
+                            exit_reason, target_weight, allowed_by_sector, sector_of,
+                            entry_guard_reason)
+from execution import _timestamp
 from trade_calendar import BEIJING, is_trading_day, is_trading_time
 
 log = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ class DailyMomentumStrategy:
         self.state.setdefault("pending_exits", {})
         self.state.setdefault("exit_signal_dates", {})
         self.state.setdefault("pending_entries", {})
+        self.state.setdefault("entry_rejections", [])
         self.history_cache = {}
         self.latest_candidates = []
         self.data_status = {"status": "not_loaded", "requested": len(self.watchlist), "loaded": 0}
@@ -196,7 +199,8 @@ class DailyMomentumStrategy:
                                 next_failed_retry_seconds=self.FAILED_RETRY_SECONDS,
                                 industry_coverage=sum(s in self.industry_map for s in symbols),
                                 industry_data=getattr(self.feed, "metadata", {}).get("industry_map", {}),
-                                unknown_industry_policy="合并为未知行业，适用同一行业仓位上限")
+                                unknown_industry_policy="合并为未知行业，适用同一行业仓位上限",
+                                entry_rejections=self.state["entry_rejections"][-20:])
         matches = self._ranked_signals(as_of)
         self.latest_candidates = matches[:50]
         self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
@@ -436,15 +440,31 @@ class DailyMomentumStrategy:
                     continue
                 entries[sym] = dict(signal=candidate,
                                     filled_shares=old.get("filled_shares", 0) if old else 0,
-                                    target_shares=old.get("target_shares") if old else None)
+                                    target_shares=old.get("target_shares") if old else None,
+                                    blocked_date=old.get("blocked_date") if old else None,
+                                    blocked_reason=old.get("blocked_reason") if old else None)
         self.state["pending_entries"] = entries
         self.state["planned_as_of"] = as_of
         self.state["planned_revision"] = self._history_revision
         self.state["execution_day"] = execution_day
-        if rebalance:
+        if (rebalance and new_risk_valid
+                and (not self.config.market_filter or self._benchmark_valid)):
             self.state["last_rebalance"] = as_of
             self.state["rebalance_as_of"] = as_of
         self.account.save()
+
+    def _reject_entry(self, symbol, intent, execution_day, reason):
+        # Unsafe prices cancel the rest of this day's intent, including partial
+        # top-ups. A recovering quote or loader publication cannot revive it.
+        if reason != "entry_unverified_prices":
+            intent.update(blocked_date=execution_day, blocked_reason=reason)
+        record = dict(symbol=symbol, name=intent["signal"].get("name", symbol),
+                      date=execution_day, reason=reason)
+        records = self.state["entry_rejections"]
+        if record not in records:
+            records.append(record)
+            del records[:-20]
+        self.data_status["entry_rejections"] = [dict(row) for row in records]
 
     def on_tick(self, quotes, now=None):
         now = now or dt.datetime.now(BEIJING)
@@ -495,6 +515,11 @@ class DailyMomentumStrategy:
         total = self.account.get_summary()["total_equity"]
         weights = {s: p.get("market_value", 0) / total for s, p in self.account.positions.items()} if total > 0 else {}
         for sym, intent in list(self.state["pending_entries"].items()):
+            if intent.get("blocked_date") == execution_day:
+                continue
+            if (intent.get("filled_shares", 0) > 0 and intent.get("target_shares") is not None
+                    and intent["filled_shares"] >= intent["target_shares"]):
+                continue  # Completed buys are not new orders or rejection events.
             if not self._new_risk_data_valid() or sym not in self._entry_eligible:
                 continue
             if self.config.market_filter and not self._benchmark_valid:
@@ -507,14 +532,36 @@ class DailyMomentumStrategy:
             if sym in self.state["pending_exits"]:
                 continue
             q = quotes.get(sym, {})
+            # A stale/malformed observation cannot permanently cancel a valid
+            # plan. The broker independently validates the full book at fill.
+            try:
+                quote_time, current_time = _timestamp(q.get("time")), _timestamp(now)
+                age = (current_time - quote_time).total_seconds()
+                if (q.get("fresh") is False or quote_time.date() != current_time.date()
+                        or not 0 <= age <= 120 or not is_trading_time(quote_time)):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            reason = entry_guard_reason(intent["signal"], self.config, q.get("pre_close"),
+                                        q.get("open"), q.get("current"), q.get("limit_down"))
+            if reason:
+                self._reject_entry(sym, intent, execution_day, reason)
+                continue
             asks = q.get("asks", [])
             if not asks:
                 continue
             price = asks[0].get("price", 0)
             if not price or not math.isfinite(price) or price <= 0:
                 continue
+            reason = entry_guard_reason(intent["signal"], self.config, q.get("pre_close"),
+                                        q.get("open"), price, q.get("limit_down"))
+            if reason:
+                self._reject_entry(sym, intent, execution_day, reason)
+                continue
             weight = target_weight(self.config, intent["signal"])
-            if intent["target_shares"] is None:
+            if intent["target_shares"] is None or not intent["filled_shares"]:
+                # An initially unaffordable lot must not freeze target=0 for
+                # the whole day; recompute until the first actual fill.
                 intent["target_shares"] = int(total * weight / price / 100) * 100
             remaining = intent["target_shares"] - intent["filled_shares"]
             # Recheck growing position value, cash, risk budget and sector cap on every retry.
@@ -528,6 +575,8 @@ class DailyMomentumStrategy:
                 entry["filled_shares"] += trade["shares"]
             result = self.account.execute_buy(sym, q.get("name", sym), price, remaining,
                         reason=f"{self.name}: {as_of}收盘动量排名，次日执行",
+                        limit_price=(q["pre_close"] * (1+self.config.max_entry_gap_up_pct/100)
+                                     if self.config.max_entry_gap_up_pct else None),
                         state_update=commit_purchase, max_position_weight=weight,
                         max_sector_weight=self.config.max_sector_weight,
                         industry_map=self.industry_map)

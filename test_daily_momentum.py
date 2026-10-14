@@ -732,3 +732,89 @@ def test_all_history_cached_with_missing_industry_refreshes_only_industry_in_bac
     feed.fetch_universe_klines.assert_not_called()
     s.prepare(now=premarket)
     feed.fetch_industry_map.assert_called_once()
+
+
+def test_limit_down_buy_is_cancelled_despite_large_ask_book_and_recovery(account, clock):
+    s = prepared(account)
+    lower = round(12.58 * .9, 2)
+    q = market_quote(current=lower, open=lower, asks=[dict(price=lower, volume=100000)])
+    tick(s, {SYMBOL: q}, clock)
+    assert not account.trades
+    assert s.state['pending_entries'][SYMBOL]['blocked_reason'] == 'entry_limit_down'
+    assert s.data_status['entry_rejections'][-1]['reason'] == 'entry_limit_down'
+    # Both restart and a new data publication retain the same-day cancellation.
+    restored = SimAccount(save_path=str(account.save_path))
+    r = prepared(restored)
+    later = NOW + dt.timedelta(seconds=3)
+    tick(r, {SYMBOL: market_quote(now=later)}, clock, now=later)
+    assert not restored.trades
+    assert r.state['pending_entries'][SYMBOL]['blocked_date'] == NOW.date().isoformat()
+
+
+def test_blocked_top_rank_does_not_prevent_safe_lower_rank_entry(account, clock):
+    other = 'sh600001'
+    s = prepared(account, symbols=[SYMBOL, other], max_positions=1)
+    assert s.latest_candidates[0]['symbol'] == SYMBOL
+    lower = round(12.58 * .9, 2)
+    tick(s, {SYMBOL: market_quote(current=lower, open=lower),
+             other: market_quote(other)}, clock)
+    assert SYMBOL not in account.positions and other in account.positions
+    assert s.state['pending_entries'][SYMBOL]['blocked_reason'] == 'entry_limit_down'
+
+
+def test_stale_crash_quote_cannot_cancel_then_fresh_valid_quote_executes(account, clock):
+    s = prepared(account)
+    q = market_quote(current=11.32, open=11.32, time='20260921100000')
+    tick(s, {SYMBOL:q}, clock)
+    assert not s.state['pending_entries'][SYMBOL].get('blocked_date')
+    tick(s, {SYMBOL:market_quote()}, clock)
+    assert account.trades
+
+
+def test_partial_entry_stops_topups_when_market_breaks_signal(account, clock):
+    s = prepared(account)
+    tick(s, {SYMBOL:market_quote()}, clock)
+    assert account.positions[SYMBOL]['total_shares'] == 500
+    later = NOW + dt.timedelta(seconds=3)
+    tick(s, {SYMBOL:market_quote(now=later,current=12.1,open=12.6)}, clock, now=later)
+    assert account.positions[SYMBOL]['total_shares'] == 500
+    assert s.state['pending_entries'][SYMBOL]['blocked_reason'] == 'entry_intraday_drop'
+
+
+def test_entry_chase_ceiling_applies_to_deeper_ask_levels(account, clock):
+    s = prepared(account)
+    q = market_quote(current=13.2, open=13.2,
+                     asks=[dict(price=13.2,volume=100),dict(price=13.6,volume=10000)])
+    tick(s,{SYMBOL:q},clock)
+    assert account.trades and account.trades[-1]['price'] == 13.2
+    assert account.positions[SYMBOL]['total_shares'] == 1500
+
+
+def test_invalid_history_does_not_consume_rotation_schedule(account, clock):
+    s = prepared(account)
+    s._history_valid_until = 0
+    s._plan('2026-09-21','2026-09-22')
+    assert not s.state.get('last_rebalance')
+    assert not s.state.get('rebalance_as_of')
+
+
+def test_zero_initial_target_is_recomputed_before_first_fill(account, clock):
+    s = prepared(account,max_stock_weight=.013,max_entry_intraday_drop_pct=0)
+    tick(s,{SYMBOL:market_quote(current=13.2,open=13.2)},clock)
+    assert s.state['pending_entries'][SYMBOL]['target_shares']==0
+    assert not account.trades
+    later=NOW+dt.timedelta(seconds=3)
+    tick(s,{SYMBOL:market_quote(now=later,current=12.6,open=13.2)},clock,now=later)
+    assert account.positions[SYMBOL]['total_shares']==100
+
+
+def test_completed_entry_is_not_reported_as_new_rejected_order(account, clock):
+    s=prepared(account)
+    for seconds in [0,3,6]:
+        now=NOW+dt.timedelta(seconds=seconds)
+        tick(s,{SYMBOL:market_quote(now=now)},clock,now=now)
+    assert s.state['pending_entries'][SYMBOL]['filled_shares']==1500
+    later=NOW+dt.timedelta(seconds=9)
+    tick(s,{SYMBOL:market_quote(now=later,current=11.32,open=11.32)},clock,now=later)
+    assert not s.state['entry_rejections']
+    assert account.positions[SYMBOL]['total_shares']==1500

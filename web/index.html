@@ -844,6 +844,7 @@
           <div style="font-size:12px; color:var(--accent-blue); font-weight:600">
             <span id="radarCountBadge">策略候选：等待日线</span>
             <span id="historyCoverageBadge" style="display:block;color:var(--text-muted)">有效历史：等待准备</span>
+            <span id="entryRejectionsBadge" style="display:block;color:#fbbf24"></span>
           </div>
         </div>
         <div class="table-responsive">
@@ -1598,6 +1599,7 @@
         const phases = {loading:'日线准备中', ready:'日线就绪', partial:'部分日线可用', failed:'日线不可用', not_loaded:'等待日线'};
         document.getElementById('radarCountBadge').innerText = `策略候选：${st.candidate_count ?? st.radar_count} 只 · 展示 ${st.radar_preview_count ?? st.radar_count} 只（最多50）`;
         document.getElementById('historyCoverageBadge').innerText = `${phases[quality.status] || '历史状态'} · 有效历史 ${quality.loaded || 0}/${quality.requested || 0} · 不可用 ${quality.unavailable || 0} · 截止 ${quality.as_of || '待获取'}`;
+        renderEntryRejections(quality.entry_rejections || []);
         if (backtestContext) {
           backtestContext.current_strategy_id = st.strategy_id;
           backtestContext.current_parameters = Object.keys(st.strategy_parameters || {}).length ? st.strategy_parameters : null;
@@ -1605,6 +1607,19 @@
           updateBacktestControls();
         }
       }
+    }
+
+    function renderEntryRejections(entries) {
+      const labels = {
+        entry_limit_down:'跌停禁止开仓', entry_gap_down:'低开超过阈值', entry_gap_up:'高开或追涨超过阈值',
+        entry_intraday_drop:'从开盘价下跌超过阈值', entry_below_ma20:'成交价跌破MA20',
+        entry_reference_mismatch:'昨收参考价不一致', entry_unverified_prices:'价格信息未核验'
+      };
+      const badge = document.getElementById('entryRejectionsBadge');
+      const recent = Array.isArray(entries) ? entries.slice(-20) : [];
+      badge.innerText = recent.length ? `近期开仓拦截 ${recent.length} 条：` + recent.slice(-3).map(e =>
+        `${e.date || ''} ${e.name || e.symbol || ''} ${labels[e.reason] || e.reason || '风控拦截'}`).join('；') : '';
+      badge.title = recent.map(e => `${e.date || ''} ${e.symbol || ''} ${labels[e.reason] || e.reason || '风控拦截'}`).join('\n');
     }
 
     function quickBuy(sym, price) {
@@ -2104,6 +2119,7 @@
         const data = await res.json();
         availableStrategies = data.strategies || [];
         selectedStrategyId = data.current_strategy || 'Momentum_Rotation';
+        loadStrategyParameterControls(data.current_parameters || {});
         renderStrategyOptions(availableStrategies, data.current_strategy);
       } catch (e) {
         container.innerHTML = `<div style="color:var(--red-up); padding:20px; text-align:center;">加载失败: ${e.message}</div>`;
@@ -2152,25 +2168,54 @@
       }).join('');
     }
 
+    function loadStrategyParameterControls(parameters) {
+      const fields = {
+        modalMaxWeight:['max_stock_weight', .33], modalMaxPositions:['max_positions', 3],
+        modalStopLoss:['stop_loss_pct', -6], modalEntryGapDown:['max_entry_gap_down_pct', 3],
+        modalEntryGapUp:['max_entry_gap_up_pct', 5], modalEntryIntradayDrop:['max_entry_intraday_drop_pct', 3]
+      };
+      for (const [id, [key, fallback]] of Object.entries(fields)) {
+        const control = document.getElementById(id);
+        const value = parameters[key] ?? fallback;
+        if (control.tagName === 'SELECT' && !Array.from(control.options).some(o => o.value === String(value))) {
+          const option = document.createElement('option');
+          option.value = String(value); option.textContent = String(value) + '（当前配置）';
+          control.appendChild(option);
+        }
+        control.value = String(value);
+      }
+      document.getElementById('modalEntryRequireMA20').checked = parameters.entry_require_ma20 ?? true;
+    }
+
+    function buildStrategySwitchPayload() {
+      const number = id => {
+        const raw = document.getElementById(id).value;
+        const value = Number(raw);
+        if (raw.trim() === '' || !Number.isFinite(value)) throw new Error('策略参数必须是有限数值');
+        return value;
+      };
+      const payload = { strategy_id:selectedStrategyId, max_stock_weight:number('modalMaxWeight'),
+        max_positions:number('modalMaxPositions'), stop_loss:number('modalStopLoss') };
+      if (selectedStrategyId.startsWith('Momentum_Rotation')) {
+        Object.assign(payload, {
+          max_entry_gap_down_pct:number('modalEntryGapDown'), max_entry_gap_up_pct:number('modalEntryGapUp'),
+          max_entry_intraday_drop_pct:number('modalEntryIntradayDrop'),
+          entry_require_ma20:document.getElementById('modalEntryRequireMA20').checked
+        });
+      }
+      return payload;
+    }
+
     async function submitStrategySwitch() {
       const btn = document.getElementById('modalSwitchBtn');
       btn.disabled = true;
       btn.innerText = '正在热切换中...';
 
-      const weight = parseFloat(document.getElementById('modalMaxWeight').value) || 0.33;
-      const positions = parseInt(document.getElementById('modalMaxPositions').value) || 3;
-      const stopLoss = parseFloat(document.getElementById('modalStopLoss').value) || -6.0;
-
       try {
         const res = await apiFetch('/api/strategy/switch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            strategy_id: selectedStrategyId,
-            max_stock_weight: weight,
-            max_positions: positions,
-            stop_loss: stopLoss
-          })
+          body: JSON.stringify(buildStrategySwitchPayload())
         });
         const data = await res.json();
         if (data.success) {
@@ -2689,7 +2734,21 @@
               <option value="-8.0">-8.0% (宽幅防守)</option>
             </select>
           </div>
+          <div>
+            <label for="modalEntryGapDown" style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">日线开仓：最大低开幅度 (%)</label>
+            <input type="number" id="modalEntryGapDown" class="form-control" value="3" min="0" max="20" step="0.5">
+          </div>
+          <div>
+            <label for="modalEntryGapUp" style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">日线开仓：最大高开／追涨幅度 (%)</label>
+            <input type="number" id="modalEntryGapUp" class="form-control" value="5" min="0" max="20" step="0.5">
+          </div>
+          <div>
+            <label for="modalEntryIntradayDrop" style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">日线开仓：相对开盘价最大跌幅 (%)</label>
+            <input type="number" id="modalEntryIntradayDrop" class="form-control" value="3" min="0" max="20" step="0.5">
+          </div>
         </div>
+        <label style="display:block; font-size:12px; margin-top:10px;"><input type="checkbox" id="modalEntryRequireMA20" checked> 日线开仓成交价须高于上一完整交易日MA20</label>
+        <p style="font-size:11px; color:var(--text-muted); margin:8px 0 0;">这些阈值用于开仓风控，效果需回测验证。百分比填0可关闭对应幅度限制；跌停禁止开仓始终生效。日内跌幅使用决策时已知的价格。</p>
       </div>
 
       <!-- 操作按钮 -->

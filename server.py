@@ -501,6 +501,11 @@ class MomentumParameters(BaseModel):
     use_high_filter: Optional[bool] = None
     risk_adjusted: Optional[bool] = None
     market_filter: Optional[bool] = None
+    # Preserve the original JSON types for MomentumConfig's strict validation.
+    max_entry_gap_down_pct: Optional[Any] = None
+    max_entry_gap_up_pct: Optional[Any] = None
+    max_entry_intraday_drop_pct: Optional[Any] = None
+    entry_require_ma20: Optional[Any] = None
 
 
 class StrategyConfigRequest(MomentumParameters):
@@ -539,6 +544,10 @@ class BacktestRequest(BaseModel):
     market_filter: bool = False
     use_current_config: bool = Field(False, description="冻结当前同名日线策略的完整参数，忽略表单覆盖")
     parameters: Optional[Dict[str, Any]] = Field(None, description="独立研究的完整 MomentumConfig 参数；不可与当前配置同时使用")
+    max_entry_gap_down_pct: Optional[Any] = None
+    max_entry_gap_up_pct: Optional[Any] = None
+    max_entry_intraday_drop_pct: Optional[Any] = None
+    entry_require_ma20: Optional[Any] = None
 
 
 class NotificationConfigRequest(BaseModel):
@@ -777,6 +786,7 @@ def list_strategies():
             "active_strategy_id": current_id,
             "current_display_name": current_display,
             "strategy_active": ctx.strategy_active,
+            "current_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
             "strategies": strategies
         }
 
@@ -788,7 +798,11 @@ def switch_strategy(req: StrategySwitchRequest):
         if req.strategy_id not in STRATEGY_REGISTRY:
             raise HTTPException(status_code=400, detail=f"不支持的策略ID: {req.strategy_id}")
 
-        kwargs = {}
+        # Editing the active daily strategy must retain fields absent from the
+        # small settings form (risk budget, industry cap, turnover controls).
+        kwargs = (asdict(ctx.strategy.config)
+                  if req.strategy_id == getattr(ctx.strategy, "name", None) and hasattr(ctx.strategy, "config")
+                  else {})
         if req.max_stock_weight is not None:
             kwargs["max_stock_weight"] = req.max_stock_weight
         if req.max_positions is not None:
@@ -1154,7 +1168,8 @@ def run_backtest_endpoint(req: BacktestRequest):
             # fields use the same full defaults as the daily strategy.
             aliases = {"stop_loss": "stop_loss_pct"}
             for key in ("stop_loss", "max_positions", "max_stock_weight", "risk_per_trade",
-                        "max_sector_weight", "risk_adjusted", "market_filter"):
+                        "max_sector_weight", "risk_adjusted", "market_filter", "max_entry_gap_down_pct",
+                        "max_entry_gap_up_pct", "max_entry_intraday_drop_pct", "entry_require_ma20"):
                 if key in supplied:
                     values[aliases.get(key, key)] = getattr(req, key)
             parameters = asdict(MomentumConfig.from_dict(values))
@@ -1185,7 +1200,9 @@ def run_backtest_endpoint(req: BacktestRequest):
         ignored = sorted(supplied & {"take_profit", "max_holding_days"}) if momentum else []
         if momentum and req.use_current_config:
             ignored += sorted(supplied & {"stop_loss", "max_positions", "max_stock_weight",
-                                          "risk_per_trade", "max_sector_weight", "risk_adjusted", "market_filter"})
+                                          "risk_per_trade", "max_sector_weight", "risk_adjusted", "market_filter",
+                                          "max_entry_gap_down_pct", "max_entry_gap_up_pct",
+                                          "max_entry_intraday_drop_pct", "entry_require_ma20"})
         arguments = dict(
             start_date=req.start_date,
             end_date=req.end_date or last_completed_trading_day(),

@@ -5,6 +5,7 @@ adjusted; order prices and cost accounting are unadjusted. No network or account
 mutation belongs here.
 """
 from dataclasses import dataclass, asdict
+from decimal import Decimal, ROUND_HALF_UP
 import math
 import statistics
 
@@ -30,8 +31,19 @@ class MomentumConfig:
     market_filter: bool = False
     participation_rate: float = 0.05
     require_positive_candle: bool = True
+    max_entry_gap_down_pct: float = 3.0
+    max_entry_gap_up_pct: float = 5.0
+    max_entry_intraday_drop_pct: float = 3.0
+    entry_require_ma20: bool = True
 
     def __post_init__(self):
+        if not isinstance(self.entry_require_ma20, bool):
+            raise ValueError("entry_require_ma20 必须为布尔值")
+        for name in ("max_entry_gap_down_pct", "max_entry_gap_up_pct", "max_entry_intraday_drop_pct"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not 0 <= value <= 20 or not math.isfinite(value)):
+                raise ValueError(f"{name} 必须为 [0, 20] 之间的有限数值")
         for name in ("max_positions", "rebalance_every", "rank_buffer", "min_holding_days", "cooldown_days"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool):
@@ -59,6 +71,62 @@ class MomentumConfig:
         if unknown:
             raise ValueError("未知策略参数: " + ", ".join(sorted(unknown)))
         return cls(**values)
+
+
+def entry_guard_reason(signal, config, pre_close, open_price, execution_price, limit_down=None):
+    """Check next-session entry using yesterday's signal and known quote prices.
+
+    No current-session high, low, close or volume is used. Zero disables only
+    the corresponding configurable threshold; the lower-limit guard remains.
+    Prices are raw except MA20, whose adjusted basis comes from the signal.
+    The caller validates signal/session dates and quote freshness.
+    """
+    def positive_number(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value) and value > 0
+        except (OverflowError, ValueError):
+            return False
+
+    if not isinstance(signal, dict):
+        return "entry_unverified_prices"
+    raw_signal = signal.get("raw_signal_price")
+    factor = signal.get("adjustment_factor")
+    prices = (pre_close, open_price, execution_price, raw_signal, factor)
+    if not all(positive_number(value) for value in prices):
+        return "entry_unverified_prices"
+    if limit_down is not None and not positive_number(limit_down):
+        return "entry_unverified_prices"
+    ma20 = signal.get("ma20")
+    if config.entry_require_ma20 and not positive_number(ma20):
+        return "entry_unverified_prices"
+
+    # A different exchange reference can mean an unverified corporate action;
+    # never compare raw execution prices to yesterday's adjusted close directly.
+    previous = Decimal(str(pre_close))
+    raw_previous = Decimal(str(raw_signal))
+    opening = Decimal(str(open_price))
+    execution = Decimal(str(execution_price))
+    if abs(previous - raw_previous) > raw_previous * Decimal("0.01"):
+        return "entry_reference_mismatch"
+    lower_bound = (Decimal(str(limit_down)) if limit_down is not None
+                   else previous * Decimal("0.9")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if execution <= lower_bound:
+        return "entry_limit_down"
+
+    gap_down = Decimal(str(config.max_entry_gap_down_pct)) / 100
+    gap_up = Decimal(str(config.max_entry_gap_up_pct)) / 100
+    intraday_drop = Decimal(str(config.max_entry_intraday_drop_pct)) / 100
+    if gap_down and opening < previous * (1 - gap_down):
+        return "entry_gap_down"
+    if gap_up and (opening > previous * (1 + gap_up) or execution > previous * (1 + gap_up)):
+        return "entry_gap_up"
+    if intraday_drop and execution < opening * (1 - intraday_drop):
+        return "entry_intraday_drop"
+    if config.entry_require_ma20 and execution * Decimal(str(factor)) <= Decimal(str(ma20)):
+        return "entry_below_ma20"
+    return None
 
 
 def evaluate_momentum(bars, as_of, config):

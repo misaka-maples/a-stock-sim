@@ -76,6 +76,39 @@ class TestWebBacktest(unittest.TestCase):
         inline = "\n".join(re.findall(r"<script>([\s\S]*?)</script>", HTML))
         subprocess.run([NODE, "--check"], input=inline, text=True, capture_output=True, check=True, timeout=10)
 
+    def test_entry_controls_preserve_zero_and_current_parameters(self):
+        controls = HTML[HTML.index("    function loadStrategyParameterControls("):HTML.index("    async function submitStrategySwitch(")]
+        ids = ("modalMaxWeight", "modalMaxPositions", "modalStopLoss", "modalEntryGapDown",
+               "modalEntryGapUp", "modalEntryIntradayDrop", "modalEntryRequireMA20")
+        fields = {key: dict(value="", checked=True, tagName="INPUT") for key in ids}
+        script = "const assert = require('node:assert/strict');\nconst fields = " + json.dumps(fields) + ";\n"
+        script += "const document = {getElementById: key => fields[key]}; let selectedStrategyId='Momentum_Rotation_Pro';\n"
+        script += controls + """
+          loadStrategyParameterControls({max_stock_weight:.17,max_positions:8,stop_loss_pct:-7,
+            max_entry_gap_down_pct:0,max_entry_gap_up_pct:4,max_entry_intraday_drop_pct:2.5,entry_require_ma20:false});
+          assert.deepEqual(buildStrategySwitchPayload(), {strategy_id:'Momentum_Rotation_Pro',
+            max_stock_weight:.17,max_positions:8,stop_loss:-7,max_entry_gap_down_pct:0,
+            max_entry_gap_up_pct:4,max_entry_intraday_drop_pct:2.5,entry_require_ma20:false});
+          fields.modalEntryGapDown.value='';
+          assert.throws(buildStrategySwitchPayload, /有限数值/);
+          selectedStrategyId='TurtleBreakout';
+          assert.equal('max_entry_gap_down_pct' in buildStrategySwitchPayload(),false);
+        """
+        subprocess.run([NODE], input=script, text=True, capture_output=True, check=True, timeout=10)
+
+    def test_entry_rejections_use_text_and_translate_latest_events(self):
+        function = HTML[HTML.index("    function renderEntryRejections("):HTML.index("    function quickBuy(")]
+        script = "const assert = require('node:assert/strict'); const badge={}; const document={getElementById:()=>badge};\n"
+        script += function + """
+          renderEntryRejections([{symbol:'sh605577',date:'2026-10-14',reason:'entry_limit_down'},
+            {name:'<img onerror=alert(1)>',date:'2026-10-14',reason:'entry_gap_down'}]);
+          assert.match(badge.innerText,/跌停禁止开仓/);
+          assert.match(badge.innerText,/低开超过阈值/);
+          assert.equal('innerHTML' in badge,false);
+          renderEntryRejections([]); assert.equal(badge.innerText,'');
+        """
+        subprocess.run([NODE], input=script, text=True, capture_output=True, check=True, timeout=10)
+
 
 if __name__ == "__main__":
     unittest.main()
