@@ -490,3 +490,245 @@ def test_market_filter_cannot_use_expired_benchmark_fallback(account, clock):
     tick(s, {SYMBOL: market_quote()}, clock)
     assert not account.trades and not s.state["pending_entries"]
     assert any(error["symbol"] == "_benchmark" for error in s.data_status["errors"])
+
+
+def test_valid_partial_snapshot_is_reused_without_five_minute_full_reload(account, clock, monkeypatch):
+    current = [1000.]
+    monkeypatch.setattr("daily_momentum.time.monotonic", lambda: current[0])
+    feed = StubFeed({"sh600001": []})
+    s = prepared(account, symbols=[SYMBOL, "sh600001"], feed=feed)
+    generation = s._generation
+    current[0] += 301
+    s.prepare(now=NOW)
+    assert len(feed.calls) == 1
+    assert s._generation == generation and s._new_risk_data_valid()
+    assert s.data_status["loaded"] == s.data_status["usable_history"] == 1
+    assert s.data_status["unavailable_reason_counts"] == {"no_cache": 1}
+
+
+def test_failed_symbol_repair_preserves_available_snapshot_and_counts_inflight(account, clock):
+    started, release = threading.Event(), threading.Event()
+    unavailable = "sh600001"
+    class BlockingRepair(StubFeed):
+        def fetch_universe_klines(self, symbols, **kwargs):
+            if self.calls:
+                assert symbols == [unavailable], "a repair must not redownload good names"
+                started.set()
+                assert release.wait(3)
+            return super().fetch_universe_klines(symbols, **kwargs)
+    feed = BlockingRepair({unavailable: []})
+    s = prepared(account, symbols=[SYMBOL, unavailable], feed=feed)
+    generation = s._generation
+    s._next_failed_retry = 0
+    feed.overrides[unavailable] = completed_bars("2026-09-21", trend=.04)
+    try:
+        s.prepare(now=NOW)
+        assert started.wait(1)
+        assert s.data_status["refreshing"] and s.data_status["usable_history"] == 1
+        assert s.data_status["status"] == "partial" and s._new_risk_data_valid()
+        assert s._generation == generation
+        assert s.preview_candidates(NOW)
+    finally:
+        release.set()
+        s._history_thread.join(3)
+    assert s.data_status["usable_history"] == 2 and s.data_status["status"] == "ready"
+    assert s._generation == generation
+    assert s.preview_candidates(NOW)[0]["symbol"] == unavailable
+    assert not s.state.get("planned_as_of") and not account.trades
+
+
+def test_failed_repair_timer_starts_after_completion_not_before_slow_download(account, monkeypatch):
+    current = [1000.]
+    monkeypatch.setattr("daily_momentum.time.monotonic", lambda: current[0])
+    class SlowRepair(StubFeed):
+        def fetch_universe_klines(self, *args, **kwargs):
+            if self.calls:
+                current[0] += 401
+            return super().fetch_universe_klines(*args, **kwargs)
+    feed = SlowRepair({"sh600001": []})
+    s = prepared(account, symbols=[SYMBOL, "sh600001"], feed=feed)
+    current[0] = s._next_failed_retry+1
+    s.prepare(now=NOW)
+    s._history_thread.join(3)
+    assert len(feed.calls) == 2
+    assert s._next_failed_retry == current[0]+s.FAILED_RETRY_SECONDS
+    s.prepare(now=NOW)
+    assert len(feed.calls) == 2 and s._new_risk_data_valid()
+
+
+def test_premarket_preview_is_read_only_and_reports_all_signals_beyond_top_50(account):
+    import copy
+    symbols = ["sh"+str(600000+i) for i in range(55)]
+    s = prepared(account, symbols=symbols)
+    before_state, before_file = copy.deepcopy(account.strategy_state), account.save_path.read_bytes()
+    premarket = NOW.replace(hour=8, minute=53)
+    preview = s.preview_candidates(premarket)
+    assert len(preview) == 50
+    assert s.data_status["candidate_count"] == 55 and s.data_status["preview_count"] == 50
+    assert account.strategy_state == before_state and account.save_path.read_bytes() == before_file
+    assert not account.trades and not account.orders
+    preview[0]["score"] = -999
+    assert s.preview_candidates(premarket)[0]["score"] != -999
+
+
+def test_short_history_is_retained_for_risk_but_not_counted_as_entry_usable(account):
+    feed = StubFeed({SYMBOL: completed_bars("2026-09-21", count=124)})
+    s = prepared(account, feed=feed)
+    assert s.data_status["latest_raw_history"] == 1
+    assert s.data_status["retained_history"] == 1
+    assert s.data_status["usable_history"] == 0
+    assert s.data_status["unavailable_reason_counts"] == {"short": 1}
+    assert not s.preview_candidates(NOW) and s.history_cache[SYMBOL]
+
+
+def test_failed_repair_is_bounded_and_rotates_names(account):
+    symbols = ["sh"+str(600000+i) for i in range(30)]
+    feed = StubFeed({sym: [] for sym in symbols[1:]})
+    s = prepared(account, symbols=symbols, feed=feed)
+    s._next_failed_retry = 0
+    s.prepare(now=NOW)
+    s._history_thread.join(3)
+    assert len(feed.calls[-1]["symbols"]) == 24
+    first = feed.calls[-1]["symbols"]
+    s._next_failed_retry = 0
+    s.prepare(now=NOW)
+    s._history_thread.join(3)
+    assert feed.calls[-1]["symbols"][0] == symbols[25]
+    assert feed.calls[-1]["symbols"] != first
+    assert s.data_status["usable_history"] == 1 and s._new_risk_data_valid()
+
+
+def test_empty_failed_symbol_repair_preserves_raw_holding_stop_without_new_risk(account, clock):
+    seed_position(account, clock, shares=100, price=14.)
+    other = "sh600001"
+    class StaleHoldingFeed(StubFeed):
+        def fetch_universe_klines(self, *args, **kwargs):
+            output = super().fetch_universe_klines(*args, **kwargs)
+            if SYMBOL in output:
+                output[SYMBOL]["metadata"]["fresh"] = False
+            return output
+    feed = StaleHoldingFeed()
+    s = prepared(account, symbols=[SYMBOL, other], feed=feed)
+    feed.overrides[SYMBOL] = []
+    s._next_failed_retry = 0
+    s.prepare(now=NOW)
+    s._history_thread.join(3)
+    assert s.history_cache[SYMBOL] and SYMBOL not in s._entry_eligible
+    assert not s._history_items[SYMBOL]["metadata"]["fresh"]
+    assert s._history_items[SYMBOL]["error"] == "repair_returned_no_bars"
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert account.trades[-1]["side"] == "SELL" and "硬止损" in account.trades[-1]["reason"]
+    assert SYMBOL not in account.positions
+
+
+def test_future_benchmark_fetch_timestamp_cannot_authorize_market_filter(account, clock):
+    feed = StubFeed()
+    feed.metadata["idx_000300"] = dict(fresh=True, fetched_at=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(days=1)).isoformat())
+    s = prepared(account, feed=feed, market_filter=True)
+    assert not s._benchmark_valid
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert not account.trades
+
+
+def cache_bootstrap_feed(tmp_path, stale=False):
+    from history_data import HistoricalDataFeed
+    feed = HistoricalDataFeed(tmp_path / "bootstrap_cache")
+    feed.fetch_industry_map = Mock(return_value={})
+    start = (dt.date(2026, 9, 21)-dt.timedelta(days=400)).isoformat()
+    feed._download = Mock(return_value=("测试股份", completed_bars("2026-09-21"), "offline", []))
+    feed.fetch_stock_kline(SYMBOL, start, "2026-09-21", use_cache=False)
+    if stale:
+        path = feed._get_cache_path(SYMBOL)
+        item = json.loads(path.read_text())
+        item["metadata"]["fetched_at"] = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=2)).isoformat()
+        path.write_text(json.dumps(item))
+    return feed
+
+
+def test_startup_cache_bootstrap_publishes_candidates_before_blocked_provider_finishes(account, tmp_path):
+    import copy
+    missing = "sh600001"
+    feed = cache_bootstrap_feed(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    def blocked(symbols, **kwargs):
+        assert symbols == [missing], "verified cached names should not be redownloaded"
+        started.set()
+        assert release.wait(3)
+        return {missing: dict(bars=[], metadata=dict(fresh=False), error="offline_timeout")}
+    feed.fetch_universe_klines = Mock(side_effect=blocked)
+    s = MomentumRotationProStrategy(account, [SYMBOL, missing], feed=feed, industry_map={})
+    state, stored = copy.deepcopy(account.strategy_state), account.save_path.read_bytes()
+    premarket = NOW.replace(hour=8, minute=53)
+    try:
+        s.prepare(now=premarket)
+        assert started.wait(1)
+        assert s._history_thread.is_alive()
+        assert s.data_status["bootstrap"] and s.data_status["refreshing"]
+        assert s.data_status["usable_history"] == 1 and s.data_status["status"] == "partial"
+        assert s.preview_candidates(premarket)[0]["symbol"] == SYMBOL
+        assert account.strategy_state == state and account.save_path.read_bytes() == stored
+        assert not account.trades and not account.orders
+    finally:
+        release.set()
+        s._history_thread.join(3)
+    assert s.data_status["usable_history"] == 1 and s.preview_candidates(premarket)
+
+
+def test_stale_startup_cache_is_retained_but_cannot_seed_entry_candidates(account, tmp_path):
+    feed = cache_bootstrap_feed(tmp_path, stale=True)
+    started, release = threading.Event(), threading.Event()
+    def blocked(symbols, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return {SYMBOL: dict(bars=[], metadata=dict(fresh=False), error="offline_timeout")}
+    feed.fetch_universe_klines = Mock(side_effect=blocked)
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    try:
+        s.prepare(now=NOW)
+        assert started.wait(1)
+        assert s.history_cache[SYMBOL] and s.data_status["usable_history"] == 0
+        assert not s.preview_candidates(NOW) and not s._new_risk_data_valid()
+    finally:
+        release.set()
+        s._history_thread.join(3)
+    assert s.history_cache[SYMBOL] and not s._entry_eligible
+
+
+def test_empty_initial_provider_result_preserves_cached_holding_risk_evidence(account, clock, tmp_path):
+    seed_position(account, clock, shares=100, price=14.)
+    feed = cache_bootstrap_feed(tmp_path, stale=True)
+    feed.fetch_universe_klines = Mock(return_value={SYMBOL: dict(bars=[], metadata=dict(fresh=False), error="offline_timeout")})
+    s = prepared(account, feed=feed)
+    assert s.history_cache[SYMBOL] and SYMBOL not in s._entry_eligible
+    assert s._history_items[SYMBOL]["metadata"]["fresh"] is False
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert account.trades[-1]["side"] == "SELL" and "硬止损" in account.trades[-1]["reason"]
+    assert SYMBOL not in account.positions
+
+
+def test_all_history_cached_with_missing_industry_refreshes_only_industry_in_background(account, tmp_path):
+    feed = cache_bootstrap_feed(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    def industry_refresh():
+        started.set()
+        assert release.wait(3)
+        feed.metadata["industry_map"] = dict(fresh=True, source="offline_test")
+        return {SYMBOL: "金融"}
+    feed.fetch_industry_map = Mock(side_effect=industry_refresh)
+    feed.fetch_universe_klines = Mock(side_effect=AssertionError("all history already verified in cache"))
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    premarket = NOW.replace(hour=8, minute=53)
+    try:
+        s.prepare(now=premarket)
+        assert started.wait(1)
+        assert s.data_status["usable_history"] == 1 and s.data_status["refreshing"]
+        assert s._new_risk_data_valid() and s.preview_candidates(premarket)
+    finally:
+        release.set()
+        s._history_thread.join(3)
+    assert s.industry_map[SYMBOL] == "金融"
+    assert not s._industry_refresh_needed
+    feed.fetch_industry_map.assert_called_once()
+    feed.fetch_universe_klines.assert_not_called()
+    s.prepare(now=premarket)
+    feed.fetch_industry_map.assert_called_once()

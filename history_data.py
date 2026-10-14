@@ -433,7 +433,14 @@ class HistoricalDataFeed:
             metadata["adjustment"] = adjustment
             range_ok = (old.get("requested_start", "9999") <= start
                         and old.get("requested_end", "") >= end)
-            if range_ok and metadata["fresh"] and metadata["coverage_complete"] and metadata["raw_prices_available"]:
+            sessions = self._session_dates(start, end)
+            latest_ok = bool(subset) and bool(sessions) and subset[-1]["date"] == sessions[-1]
+            # A validated latest bar does not require every pre-IPO/suspension
+            # session to have a bar. Keep those gaps visible, but do not fetch an
+            # identical attempted range on every read within its freshness TTL.
+            if (range_ok and old.get("fetched_at") and old.get("source") and metadata["fresh"] and latest_ok and metadata["raw_prices_available"]
+                    and not old.get("error")):
+                metadata["cache_available"] = True
                 with self._lock:
                     self.metadata[key] = metadata
                 return symbol, cached.get("name", symbol[2:]), subset
@@ -464,6 +471,7 @@ class HistoricalDataFeed:
                                   cached.get("metadata", {}).get("fetched_at") if source == "stale_cache" else None,
                                   warnings, error)
         metadata["adjustment"] = adjustment
+        metadata["cache_available"] = bool(cached or legacy or downloaded)
         if source in ("legacy_cache", "stale_cache"):
             metadata["fresh"] = False
         with self._lock:
@@ -482,6 +490,78 @@ class HistoricalDataFeed:
             cache_meta["adjustment"] = adjustment
             self._write_cache(key, adjustment, name, downloaded, cache_meta)
         return symbol, name, subset
+
+    def _peek_cached(self, symbol, start, end, adjustment="qfq", cache_symbol=None):
+        """No HTTP, writes or legacy trust: expose verified cache plus risk bars."""
+        if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", symbol):
+            raise ValueError("symbol must be an exchange prefix plus six digits")
+        key = cache_symbol or symbol
+        cached = self._read_cache(key, start, end, adjustment)
+        if not cached:
+            metadata = self._describe([], start, end, "cache_unavailable", error="cache_miss")
+            metadata.update(fresh=False, cache_available=False, cache_hit=False, adjustment=adjustment)
+            with self._lock:
+                self.metadata[key] = metadata
+            return dict(symbol=symbol, name=symbol[2:], bars=[], metadata=metadata, error="cache_miss")
+        old = cached.get("metadata", {})
+        bars = [bar for bar in cached["bars"] if start <= bar["date"] <= end]
+        metadata = self._describe(bars, start, end, old.get("source", "cache"),
+                                  old.get("fetched_at"), old.get("warning", []), old.get("error"))
+        sessions = self._session_dates(start, end)
+        evidence = all(isinstance(old.get(field), str) and old[field] for field in
+                       ("fetched_at", "source", "requested_start", "requested_end"))
+        range_ok = evidence and old["requested_start"] <= start and old["requested_end"] >= end
+        valid = (range_ok and metadata["fresh"] and bool(sessions) and bool(bars)
+                 and bars[-1]["date"] == sessions[-1] and metadata["raw_prices_available"]
+                 and not old.get("error"))
+        metadata.update(cache_available=True, cache_hit=bool(valid), adjustment=adjustment)
+        if not evidence:
+            metadata.update(fresh=False, error="cache_metadata_unverified")
+        elif not range_ok:
+            metadata.update(fresh=False, error="cache_range_insufficient")
+        with self._lock:
+            self.metadata[key] = metadata
+        return dict(symbol=symbol, name=cached.get("name", symbol[2:]), bars=bars,
+                    metadata=metadata, error=metadata.get("error"))
+
+    def peek_universe(self, symbols, start_date="2024-01-01", end_date=None):
+        """Read-only cache bootstrap; every missing/invalid name remains explicit."""
+        start, end = self._dates(start_date, end_date)
+        return {symbol: self._peek_cached(symbol, start, end)
+                for symbol in dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols)}
+
+    def peek_benchmark_kline(self, index_code="000300", start_date="2024-01-01", end_date=None):
+        start, end = self._dates(start_date, end_date)
+        code = index_code.lower().replace("sh", "").replace("sz", "")
+        symbol = f"sh{code}" if code in ("000300", "000001", "000905") else f"sz{code}"
+        return self._peek_cached(symbol, start, end, adjustment="none", cache_symbol=f"idx_{code}")["bars"]
+
+    def peek_industry_map(self):
+        """Manual overlay and fresh provider cache only; never trigger a request."""
+        mapping = {}
+        status = dict(source="cache_unavailable", fresh=False, cache_hit=False,
+                      warning=["current_industry_snapshot_not_point_in_time"])
+        try:
+            cached = json.loads((self.cache_dir / "industry_map_eastmoney.json").read_text(encoding="utf-8"))
+            meta = cached.get("metadata", {})
+            fetched = datetime.datetime.fromisoformat(meta.get("fetched_at", ""))
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=datetime.timezone.utc)
+            age = datetime.datetime.now(datetime.timezone.utc)-fetched
+            if cached.get("schema_version") == 1 and datetime.timedelta(0) <= age <= self.INDUSTRY_CACHE_TTL:
+                mapping = self._valid_industries(cached.get("industries", {}))
+                status = dict(meta, fresh=True, cache_hit=True)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        try:
+            supplied = json.loads(self.industry_file.read_text(encoding="utf-8"))
+            if supplied.get("source", "manual") not in ("eastmoney", "eastmoney_clist"):
+                mapping.update(self._valid_industries(supplied.get("industries", {})))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        with self._lock:
+            self.metadata["industry_map"] = dict(status, symbols=len(mapping))
+        return mapping
 
     def fetch_stock_kline(self, symbol_or_code: str, start_date: str = "2024-01-01",
                           end_date: Optional[str] = None, use_cache: bool = True):

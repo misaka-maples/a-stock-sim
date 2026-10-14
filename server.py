@@ -16,6 +16,7 @@ import logging
 import math
 import inspect
 import uuid
+import copy
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -39,7 +40,7 @@ from sim_trader import (
     create_strategy, STRATEGY_REGISTRY
 )
 from backtest import run_backtest
-from history_data import PRESET_POOLS
+from history_data import PRESET_POOLS, normalize_symbol_for_tencent
 from notifier import NotificationManager, WxPusherClient
 from snapshot_manager import SnapshotManager, SNAPSHOTS_DIR
 from dataclasses import asdict
@@ -322,7 +323,11 @@ def worker_step(now=None):
         strategy = ctx.strategy
     if strategy and hasattr(strategy, "prepare"):
         strategy.prepare(now)
-        symbols = [candidate["symbol"] for candidate in strategy.latest_candidates]
+        preview = strategy.preview_candidates(now) if hasattr(strategy, "preview_candidates") else strategy.latest_candidates
+        with ctx.lock:
+            if ctx.strategy is strategy:
+                ctx.radar_candidates = preview
+        symbols = [candidate["symbol"] for candidate in preview]
     is_trading = MarketFeed.is_trading_time(now)
     closing = is_trading_day(now) and now.time() >= datetime.time(15)
     reported = ctx.account.strategy_state.get("__server__", {}).get("closing_report_date") if ctx.account else None
@@ -532,6 +537,8 @@ class BacktestRequest(BaseModel):
     max_sector_weight: float = Field(.35, gt=0, le=1)
     risk_adjusted: bool = False
     market_filter: bool = False
+    use_current_config: bool = Field(False, description="冻结当前同名日线策略的完整参数，忽略表单覆盖")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="独立研究的完整 MomentumConfig 参数；不可与当前配置同时使用")
 
 
 class NotificationConfigRequest(BaseModel):
@@ -666,6 +673,8 @@ def get_status():
         persistence_healthy = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
         strat_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         strat_display = getattr(ctx.strategy, "display_name", strat_id)
+        if hasattr(ctx.strategy, "preview_candidates"):
+            ctx.radar_candidates = ctx.strategy.preview_candidates(now)
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
@@ -688,6 +697,9 @@ def get_status():
             "interval": ctx.interval,
             "universe_count": len(ctx.symbols),
             "radar_count": len(ctx.radar_candidates),
+            "candidate_count": (getattr(ctx.strategy, "data_status", {}).get("candidate_count", len(ctx.radar_candidates))
+                                if ctx.radar_candidates else 0),
+            "radar_preview_count": len(ctx.radar_candidates),
             "board_type": "仅限沪深主板 (10% 涨跌幅)",
             "exclude_sci_tech": True,
             "only_main_board": True,
@@ -1070,6 +1082,13 @@ def purge_non_main_board_assets():
 @app.get("/api/backtest/config")
 def get_backtest_config():
     """获取回测可用策略列表与预设股票池"""
+    with ctx.lock:
+        current_id = getattr(ctx.strategy, "name", None)
+        current_parameters = asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else None
+        current_symbols = list(ctx.symbols)
+        current_pool_count = len(current_symbols)
+        industries = copy.deepcopy(getattr(ctx.strategy, "industry_map", {}))
+        industry_data = copy.deepcopy(getattr(ctx.strategy, "data_status", {}).get("industry_data", {}))
     return {
         "strategies": [
             {"id": "Momentum_Rotation_Pro", "name": "日线动量增强（次日成交）"},
@@ -1082,9 +1101,21 @@ def get_backtest_config():
             {"id": "MomentumBreakout", "name": "价格突破（旧版实验）"}
         ],
         "pools": [
-            {"id": "core_active", "name": "精选核心活跃标的池 (20只主流龙头与持仓股)"},
-            {"id": "csi300_sample", "name": "沪深300指数样本池 (20只代表性蓝筹)"}
+            {"id": "current_watchlist", "name": f"当前监控池快照 ({current_pool_count}只；非历史时点股票池)", "symbol_count": current_pool_count},
+            {"id": "core_active", "name": "核心活跃研究池 (20只；其中16只主板)"},
+            {"id": "csi300_sample", "name": "沪深300研究样本 (20只；其中18只主板)"}
         ],
+        "current_strategy_id": current_id,
+        "current_parameters": current_parameters,
+        "momentum_defaults": {
+            "Momentum_Rotation_Pro": asdict(MomentumConfig()),
+            "Momentum_Rotation": asdict(MomentumConfig(use_ma120=False, use_high_filter=False)),
+        },
+        "current_pool_count": current_pool_count,
+        "current_industry_coverage": sum(bool(industries.get(s)) for s in current_symbols),
+        "industry_source": industry_data,
+        "default_pool": "core_active",
+        "default_use_current_config": bool(current_parameters),
         "default_start": "2024-01-01",
         "default_end": last_completed_trading_day(),
         "default_cash": 100000.0,
@@ -1098,21 +1129,99 @@ def get_backtest_config():
 def run_backtest_endpoint(req: BacktestRequest):
     """触发量化策略历史回测并返回绩效报告与资产曲线"""
     try:
-        res = run_backtest(
+        momentum = req.strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro")
+        supplied = req.model_fields_set if hasattr(req, "model_fields_set") else req.__fields_set__
+        with ctx.lock:
+            captured_at = datetime.datetime.now(BEIJING).isoformat()
+            strategy_id = getattr(ctx.strategy, "name", None)
+            live_parameters = asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else None
+            live_symbols = list(ctx.symbols)
+            industries = copy.deepcopy(getattr(ctx.strategy, "industry_map", {}))
+            industry_source = copy.deepcopy(getattr(ctx.strategy, "data_status", {}).get("industry_data", {}))
+        if req.use_current_config:
+            if not momentum or req.strategy_name != strategy_id or live_parameters is None:
+                raise ValueError("当前配置快照仅适用于当前正在使用的同名 Momentum 日线策略")
+            if req.parameters is not None:
+                raise ValueError("当前配置快照不可同时传入独立研究 parameters")
+            parameters = live_parameters
+            parameter_source = "current_strategy_snapshot"
+        elif momentum:
+            values = dict(req.parameters or {})
+            if req.strategy_name == "Momentum_Rotation":
+                values.setdefault("use_ma120", False)
+                values.setdefault("use_high_filter", False)
+            # Older clients can still explicitly supply these fields. Absent
+            # fields use the same full defaults as the daily strategy.
+            aliases = {"stop_loss": "stop_loss_pct"}
+            for key in ("stop_loss", "max_positions", "max_stock_weight", "risk_per_trade",
+                        "max_sector_weight", "risk_adjusted", "market_filter"):
+                if key in supplied:
+                    values[aliases.get(key, key)] = getattr(req, key)
+            parameters = asdict(MomentumConfig.from_dict(values))
+            parameter_source = "independent_research_parameters"
+        else:
+            if req.parameters is not None:
+                raise ValueError("parameters 仅适用于 Momentum 日线策略")
+            parameters = None
+            parameter_source = "legacy_form_parameters"
+        if req.pool_type == "current_watchlist":
+            if req.symbols is not None:
+                raise ValueError("当前监控池快照不可同时传入自定义 symbols")
+            symbols = live_symbols
+            if not symbols:
+                raise ValueError("当前监控池为空，请选择研究样本池")
+        elif req.symbols is not None:
+            if not req.symbols:
+                raise ValueError("自定义股票池不可为空")
+            symbols = [normalize_symbol_for_tencent(s) for s in req.symbols]
+        else:
+            if req.pool_type not in PRESET_POOLS:
+                raise ValueError("不支持的回测股票池")
+            symbols = list(PRESET_POOLS[req.pool_type])
+        symbols = list(dict.fromkeys(symbols))
+        mapped_count = sum(bool(industries.get(s)) for s in symbols)
+        main_board_symbols = [s for s in symbols if StockUniverse.is_main_board(s)]
+        main_board_mapped = sum(bool(industries.get(s)) for s in main_board_symbols)
+        ignored = sorted(supplied & {"take_profit", "max_holding_days"}) if momentum else []
+        if momentum and req.use_current_config:
+            ignored += sorted(supplied & {"stop_loss", "max_positions", "max_stock_weight",
+                                          "risk_per_trade", "max_sector_weight", "risk_adjusted", "market_filter"})
+        arguments = dict(
             start_date=req.start_date,
             end_date=req.end_date or last_completed_trading_day(),
             initial_cash=req.initial_cash,
             strategy_name=req.strategy_name,
             pool_type=req.pool_type,
-            symbols=req.symbols,
-            take_profit_trigger_pct=req.take_profit,
-            stop_loss_pct=req.stop_loss,
-            max_holding_days=req.max_holding_days,
-            max_positions=req.max_positions,
-            **({"max_stock_weight": req.max_stock_weight, "risk_per_trade": req.risk_per_trade,
-                "max_sector_weight": req.max_sector_weight, "risk_adjusted": req.risk_adjusted,
-                "market_filter": req.market_filter} if req.strategy_name.startswith("Momentum_Rotation") else {})
+            symbols=symbols,
         )
+        if momentum:
+            arguments.update(config=parameters, industry_map=industries)
+        else:
+            arguments.update(take_profit_trigger_pct=req.take_profit, stop_loss_pct=req.stop_loss,
+                             max_holding_days=req.max_holding_days, max_positions=req.max_positions)
+        # Only copies have been captured above; network/data work is outside ctx.lock.
+        res = run_backtest(**arguments)
+        res = dict(res)
+        limitations = (["当前/固定股票池与当前行业分类不代表历史时点，结果仅供研究",
+                        "未计现金分红、送股、拆并股及退市回收事件",
+                        "前一完整日收盘信号，次日原始开盘价与全日成交量容量近似；与实时盘口不同",
+                        "从指定初始现金开始，不复刻当前账户的历史持仓与待成交订单"] if momentum else
+                       ["旧版实验策略与实时执行规则存在差异，结果仅供研究"])
+        if momentum and main_board_mapped < len(main_board_symbols):
+            limitations.append("缺失行业分类的股票合并为未知行业，仍执行同一行业仓位上限")
+        res["request_context"] = dict(
+            snapshot_id=uuid.uuid4().hex, captured_at=captured_at,
+            strategy_id=req.strategy_name, parameter_source=parameter_source,
+            source_params=parameters if momentum else dict(take_profit=req.take_profit, stop_loss=req.stop_loss,
+                                                         max_positions=req.max_positions, max_holding_days=req.max_holding_days),
+            pool_source="custom_symbols" if req.symbols is not None else req.pool_type,
+            pool_size=len(symbols), symbols=symbols,
+            main_board_count=len(main_board_symbols),
+            industry_coverage=dict(mapped=mapped_count, total=len(symbols), ratio=mapped_count/len(symbols) if symbols else 0,
+                main_board_mapped=main_board_mapped, main_board_total=len(main_board_symbols),
+                main_board_ratio=main_board_mapped/len(main_board_symbols) if main_board_symbols else 0),
+            industry_source={"capture": "loaded_strategy_snapshot", **industry_source} if industries else dict(source="unavailable"),
+            ignored_params=ignored, model_limitations=limitations)
         return {"success": True, "data": res}
     except Exception as e:
         logger.error(f"回测执行失败: {e}", exc_info=True)
@@ -1127,22 +1236,13 @@ def run_backtest_get(
     strategy: str = "Momentum_Rotation_Pro",
     pool: str = "core_active",
     take_profit: float = 3.5,
-    stop_loss: float = -6.0
+    stop_loss: float = -6.0,
+    use_current_config: bool = False
 ):
     """GET 方式调用回测接口，方便快速调试"""
-    try:
-        res = run_backtest(
-            start_date=start,
-            end_date=end or last_completed_trading_day(),
-            initial_cash=cash,
-            strategy_name=strategy,
-            pool_type=pool,
-            take_profit_trigger_pct=take_profit,
-            stop_loss_pct=stop_loss
-        )
-        return {"success": True, "data": res}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return run_backtest_endpoint(BacktestRequest(start_date=start, end_date=end, initial_cash=cash,
+        strategy_name=strategy, pool_type=pool, take_profit=take_profit, stop_loss=stop_loss,
+        use_current_config=use_current_config))
 
 
 @app.get("/health")

@@ -6,8 +6,11 @@ A股开盘交易日与法定节假日交易日历管理器 (A-Share Trading Cale
 核心规则：
 1. 周末（周六、周日）全天休市。A股证券交易所永远不在周末开盘（即使国务院安排周末调休补班，股市亦不交易）。
 2. 中国法定节假日（元旦、春节、清明、劳动节、端午、中秋、国庆）全天休市。
-3. 支持 2024~2030 年精确官方节假日放假安排及未覆盖年份自动通用兜底。
-4. 支持从 data/holidays.json 加载用户自定义节假日或特殊交易日配置。
+3. 2023~2026 年采用交易所公布的休市安排；更早未覆盖年份仅提供未核验的固定节日估算。
+   尚未配置官方安排的未来年份停止交易，不把预测假期当作官方日历。
+4. 支持从 data/holidays.json 加载用户自定义节假日或特殊工作日配置，周末不可强制开盘。
+   导入核验后的完整年度安排：{"calendar_years": [2027], "holidays": ["2027-MM-DD", ...]}。
+   calendar_years 表示该年度全部工作日休市日期已录入；未声明时只能逐日覆盖，不能推定整年可交易。
 5. 交易时段判断：9:30-11:30 早盘交易，13:00-14:57 午盘交易，14:57-15:00 尾盘竞价。
 """
 
@@ -21,10 +24,24 @@ BASE_DIR = Path(__file__).resolve().parent
 HOLIDAYS_CONFIG_FILE = BASE_DIR / "data" / "holidays.json"
 
 # 精确官方休市节假日安排 (起始日, 结束日, 节日名称)
+# 来源保留在代码中，方便逐年核对；元旦跨年区间只列当前年度部分。
+OFFICIAL_HOLIDAY_SOURCES = {
+    2023: "https://www.sse.com.cn/disclosure/announcement/general/c/c_20221227_5714458.shtml",
+    2024: "https://www.sse.com.cn/disclosure/dealinstruc/closed/c/c_20231226_5733941.shtml",
+    2025: "https://www.sse.com.cn/disclosure/dealinstruc/closed/c/c_20241223_10767110.shtml",
+    2026: "https://www.sse.com.cn/disclosure/dealinstruc/closed/",
+}
 OFFICIAL_HOLIDAY_RANGES: Tuple[Tuple[str, str, str], ...] = (
+    # 2023 年
+    ("2023-01-01", "2023-01-02", "元旦"),
+    ("2023-01-21", "2023-01-27", "春节"),
+    ("2023-04-05", "2023-04-05", "清明节"),
+    ("2023-04-29", "2023-05-03", "劳动节"),
+    ("2023-06-22", "2023-06-24", "端午节"),
+    ("2023-09-29", "2023-10-06", "中秋节与国庆节"),
     # 2024 年
     ("2024-01-01", "2024-01-01", "元旦"),
-    ("2024-02-09", "2024-02-18", "春节"),
+    ("2024-02-09", "2024-02-17", "春节"),
     ("2024-04-04", "2024-04-06", "清明节"),
     ("2024-05-01", "2024-05-05", "劳动节"),
     ("2024-06-10", "2024-06-10", "端午节"),
@@ -45,40 +62,9 @@ OFFICIAL_HOLIDAY_RANGES: Tuple[Tuple[str, str, str], ...] = (
     ("2026-06-19", "2026-06-21", "端午节"),
     ("2026-09-25", "2026-09-27", "中秋节"),
     ("2026-10-01", "2026-10-07", "国庆节"),
-    # 2027 年
-    ("2027-01-01", "2027-01-03", "元旦"),
-    ("2027-02-05", "2027-02-13", "春节"),
-    ("2027-04-03", "2027-04-05", "清明节"),
-    ("2027-05-01", "2027-05-05", "劳动节"),
-    ("2027-06-09", "2027-06-11", "端午节"),
-    ("2027-09-15", "2027-09-17", "中秋节"),
-    ("2027-10-01", "2027-10-07", "国庆节"),
-    # 2028 年
-    ("2028-01-01", "2028-01-03", "元旦"),
-    ("2028-01-25", "2028-02-02", "春节"),
-    ("2028-04-03", "2028-04-05", "清明节"),
-    ("2028-05-01", "2028-05-05", "劳动节"),
-    ("2028-05-27", "2028-05-29", "端午节"),
-    ("2028-10-01", "2028-10-07", "国庆节与中秋节"),
-    # 2029 年
-    ("2029-01-01", "2029-01-03", "元旦"),
-    ("2029-02-12", "2029-02-20", "春节"),
-    ("2029-04-04", "2029-04-06", "清明节"),
-    ("2029-05-01", "2029-05-05", "劳动节"),
-    ("2029-06-15", "2029-06-17", "端午节"),
-    ("2029-09-21", "2029-09-23", "中秋节"),
-    ("2029-10-01", "2029-10-07", "国庆节"),
-    # 2030 年
-    ("2030-01-01", "2030-01-03", "元旦"),
-    ("2030-02-01", "2030-02-09", "春节"),
-    ("2030-04-04", "2030-04-06", "清明节"),
-    ("2030-05-01", "2030-05-05", "劳动节"),
-    ("2030-06-04", "2030-06-06", "端午节"),
-    ("2030-09-11", "2030-09-13", "中秋节"),
-    ("2030-10-01", "2030-10-07", "国庆节"),
 )
 
-# 通用固定节日兜底 (针对未显式配置的未来年份)
+# 历史未覆盖年份的固定节日估算，不能用于声称精确的历史回测。
 GENERIC_HOLIDAY_RANGES: Tuple[Tuple[str, str, str], ...] = (
     ("01-01", "01-03", "元旦"),
     ("05-01", "05-05", "劳动节"),
@@ -100,6 +86,8 @@ def _build_holiday_dict() -> Dict[str, str]:
 
 
 _OFFICIAL_HOLIDAY_MAP: Dict[str, str] = _build_holiday_dict()
+_OFFICIAL_YEARS = frozenset(OFFICIAL_HOLIDAY_SOURCES)
+_LATEST_OFFICIAL_YEAR = max(_OFFICIAL_YEARS)
 
 
 def _load_custom_config() -> Tuple[Set[str], Set[str]]:
@@ -115,6 +103,18 @@ def _load_custom_config() -> Tuple[Set[str], Set[str]]:
         except Exception:
             pass
     return custom_holidays, custom_trading_days
+
+
+def _load_custom_years() -> Set[int]:
+    """用户明确声明已核验并录入完整休市表的年度，不从零散日期推断覆盖。"""
+    try:
+        with open(HOLIDAYS_CONFIG_FILE, "r", encoding="utf-8") as f:
+            years = json.load(f).get("calendar_years", [])
+        if not isinstance(years, list):
+            return set()
+        return {year for year in years if type(year) is int and 1 <= year <= 9999}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
 
 
 def to_date(dt: Optional[Union[datetime.date, datetime.datetime, str]] = None) -> datetime.date:
@@ -138,15 +138,15 @@ def get_holiday_reason(dt: Optional[Union[datetime.date, datetime.datetime, str]
     d = to_date(dt)
     d_str = d.isoformat()
 
-    # 1. 自定义交易日补丁（优先强制开盘）
-    custom_holidays, custom_trading_days = _load_custom_config()
-    if d_str in custom_trading_days:
-        return None
-
-    # 2. 周末（周六、周日）永远休市
+    # 1. 周末永远休市；调休补班和自定义配置都不能改变此规则。
     if d.weekday() >= 5:
         day_name = "周六" if d.weekday() == 5 else "周日"
         return f"周末休市（{day_name}）"
+
+    # 2. 自定义交易日只允许覆盖工作日。
+    custom_holidays, custom_trading_days = _load_custom_config()
+    if d_str in custom_trading_days:
+        return None
 
     # 3. 自定义节假日覆盖
     if d_str in custom_holidays:
@@ -156,11 +156,22 @@ def get_holiday_reason(dt: Optional[Union[datetime.date, datetime.datetime, str]
     if d_str in _OFFICIAL_HOLIDAY_MAP:
         return _OFFICIAL_HOLIDAY_MAP[d_str]
 
-    # 5. 未覆盖年份通用固定节日兜底
+    # 5. 已核验年度的普通工作日不可再套用通用假期范围。
+    if d.year in _OFFICIAL_YEARS:
+        return None
+
+    if d.year in _load_custom_years():
+        return None
+
+    # 6. 未公布/未录入的未来年度不猜测开市日期，避免错误放行订单。
+    if d.year > _LATEST_OFFICIAL_YEAR:
+        return f"年度交易日历未配置（{d.year}）"
+
+    # 7. 更早未覆盖年份仅提供明确标注的通用估算。
     md = d.strftime("%m-%d")
     for start_md, end_md, name in GENERIC_HOLIDAY_RANGES:
         if start_md <= md <= end_md:
-            return f"{name}假期"
+            return f"估算休市（{name}，年度日历未核验）"
 
     return None
 
@@ -183,6 +194,8 @@ def get_market_status(now: Optional[datetime.datetime] = None) -> str:
         now = datetime.datetime.now(BEIJING)
     elif now.tzinfo is None:
         now = now.replace(tzinfo=BEIJING)
+    else:
+        now = now.astimezone(BEIJING)
 
     # 检查是否为开盘日
     holiday_reason = get_holiday_reason(now)
@@ -221,16 +234,20 @@ def is_trading_time(now: Optional[datetime.datetime] = None) -> bool:
 
 
 def get_next_trading_day(dt: Optional[Union[datetime.date, datetime.datetime, str]] = None) -> datetime.date:
-    """获取下一个开盘交易日"""
-    curr = to_date(dt) + datetime.timedelta(days=1)
-    while not is_trading_day(curr):
-        curr += datetime.timedelta(days=1)
-    return curr
+    """获取下一个开盘日；未配置日历等原因导致一年内找不到时抛出 ValueError。"""
+    return _adjacent_trading_day(dt, 1)
 
 
 def get_previous_trading_day(dt: Optional[Union[datetime.date, datetime.datetime, str]] = None) -> datetime.date:
-    """获取上一个开盘交易日"""
-    curr = to_date(dt) - datetime.timedelta(days=1)
-    while not is_trading_day(curr):
-        curr -= datetime.timedelta(days=1)
-    return curr
+    """获取上一个开盘日；未配置日历等原因导致一年内找不到时抛出 ValueError。"""
+    return _adjacent_trading_day(dt, -1)
+
+
+def _adjacent_trading_day(dt, direction: int) -> datetime.date:
+    curr = to_date(dt)
+    step = datetime.timedelta(days=direction)
+    for _ in range(366):
+        curr += step
+        if is_trading_day(curr):
+            return curr
+    raise ValueError(f"一年内未找到已配置交易日，请更新年度交易日历：{to_date(dt).isoformat()}")

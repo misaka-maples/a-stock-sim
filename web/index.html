@@ -669,7 +669,7 @@
       </div>
       <div class="bt-field">
         <label for="btStrategy">测试策略</label>
-        <select id="btStrategy" class="form-control">
+        <select id="btStrategy" class="form-control" onchange="updateBacktestControls(true)">
           <option value="Momentum_Rotation_Pro" selected>日线动量增强（次日执行）</option>
           <option value="Momentum_Rotation">基础日线动量（次日执行）</option>
           <option value="Minervini_SEPA">趋势收缩突破（旧版实验）</option>
@@ -682,16 +682,17 @@
       </div>
       <div class="bt-field">
         <label for="btPool">标的池</label>
-        <select id="btPool" class="form-control">
-          <option value="core_active">精选核心活跃标的池 (20只主流龙头)</option>
+        <select id="btPool" class="form-control" onchange="updateBacktestControls()">
+          <option value="current_watchlist">当前监控池快照（正在读取数量）</option>
+          <option value="core_active" selected>精选核心活跃标的池 (20只主流龙头)</option>
           <option value="csi300_sample">沪深300指数样本池 (20只代表性蓝筹)</option>
         </select>
       </div>
-      <div class="bt-field" style="max-width: 110px;">
+      <div class="bt-field" id="btTakeProfitField" style="max-width: 110px;">
         <label for="btTakeProfit">追踪止盈点 (%)</label>
         <input type="number" id="btTakeProfit" class="form-control" value="3.5" step="0.5">
       </div>
-      <div class="bt-field" style="max-width: 110px;">
+      <div class="bt-field" id="btStopLossField" style="max-width: 110px;">
         <label for="btStopLoss">硬止损线 (%)</label>
         <input type="number" id="btStopLoss" class="form-control" value="-6.0" step="0.5">
       </div>
@@ -700,6 +701,14 @@
           🚀 开始运行回测
         </button>
       </div>
+    </div>
+    <div style="padding:0 16px 12px;line-height:1.7;font-size:12px;color:var(--text-muted)">
+      <label><input type="checkbox" id="btUseCurrentConfig" checked onchange="updateBacktestControls(true)"> 使用当前同名日线策略的完整配置快照（回测不修改自动交易参数）</label>
+      <p id="btContextNote" style="margin:6px 0">正在读取当前策略与监控池。当前监控池不是历史时点股票池，结果仅供研究。</p>
+      <details id="btParametersEditor" style="display:none">
+        <summary>独立研究参数（完整 JSON；仅本次回测）</summary>
+        <textarea id="btParameters" class="form-control" rows="8" spellcheck="false" style="width:100%;font-family:monospace"></textarea>
+      </details>
     </div>
 
     <!-- 回测结果展示区 (默认隐藏，运行后呈现) -->
@@ -832,7 +841,10 @@
       <div class="panel">
         <div class="panel-header">
           <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
-          <span id="radarCountBadge" style="font-size:12px; color:var(--accent-blue); font-weight:600">全市场高频扫描</span>
+          <div style="font-size:12px; color:var(--accent-blue); font-weight:600">
+            <span id="radarCountBadge">策略候选：等待日线</span>
+            <span id="historyCoverageBadge" style="display:block;color:var(--text-muted)">有效历史：等待准备</span>
+          </div>
         </div>
         <div class="table-responsive">
           <table>
@@ -970,10 +982,7 @@
         initBacktestChartInteractions();
         dashboardInitialized = true;
       }
-      apiFetch('/api/backtest/config').then(r => r.json()).then(config => {
-        const endInput = document.getElementById('btEnd');
-        if (endInput && !endInput.value) endInput.value = config.default_end || '';
-      }).catch(() => {});
+      loadBacktestConfiguration().catch(() => {});
       fetchData();
       fetchNotifyStatus();
       if (timerId) clearInterval(timerId);
@@ -1587,7 +1596,14 @@
       if (st.radar_count !== undefined) {
         const quality = st.data_quality || {};
         const phases = {loading:'日线准备中', ready:'日线就绪', partial:'部分日线可用', failed:'日线不可用', not_loaded:'等待日线'};
-        document.getElementById('radarCountBadge').innerText = `${phases[quality.status] || '策略候选'}: ${st.radar_count} 只${quality.requested ? ` · 历史覆盖 ${quality.loaded || 0}/${quality.requested} · 截止 ${quality.as_of || '待获取'}` : ''}`;
+        document.getElementById('radarCountBadge').innerText = `策略候选：${st.candidate_count ?? st.radar_count} 只 · 展示 ${st.radar_preview_count ?? st.radar_count} 只（最多50）`;
+        document.getElementById('historyCoverageBadge').innerText = `${phases[quality.status] || '历史状态'} · 有效历史 ${quality.loaded || 0}/${quality.requested || 0} · 不可用 ${quality.unavailable || 0} · 截止 ${quality.as_of || '待获取'}`;
+        if (backtestContext) {
+          backtestContext.current_strategy_id = st.strategy_id;
+          backtestContext.current_parameters = Object.keys(st.strategy_parameters || {}).length ? st.strategy_parameters : null;
+          backtestContext.current_pool_count = st.universe_count;
+          updateBacktestControls();
+        }
       }
     }
 
@@ -1683,16 +1699,72 @@
     let currentBtCurve = [];
     let currentBtInitialCash = 100000;
 
+    let backtestContext = null;
+
+    async function loadBacktestConfiguration() {
+      backtestContext = await apiFetch('/api/backtest/config').then(r => r.json());
+      const config = backtestContext;
+      const endInput = document.getElementById('btEnd');
+      if (endInput && !endInput.value) endInput.value = config.default_end || '';
+      const pool = document.getElementById('btPool');
+      pool.replaceChildren();
+      for (const entry of config.pools || []) {
+        const option = document.createElement('option');
+        option.value = entry.id;
+        option.textContent = entry.name;
+        pool.appendChild(option);
+      }
+      pool.value = config.default_pool || 'core_active';
+      if (config.current_parameters) document.getElementById('btStrategy').value = config.current_strategy_id;
+      document.getElementById('btUseCurrentConfig').checked = !!config.default_use_current_config;
+      updateBacktestControls(true);
+    }
+
+    function updateBacktestControls(resetParameters = false) {
+      const strategy = document.getElementById('btStrategy').value;
+      const momentum = strategy === 'Momentum_Rotation' || strategy === 'Momentum_Rotation_Pro';
+      const checkbox = document.getElementById('btUseCurrentConfig');
+      const available = momentum && backtestContext && strategy === backtestContext.current_strategy_id && !!backtestContext.current_parameters;
+      checkbox.disabled = !available;
+      if (!available) checkbox.checked = false;
+      document.getElementById('btTakeProfitField').style.display = momentum ? 'none' : '';
+      document.getElementById('btStopLossField').style.display = momentum ? 'none' : '';
+      document.getElementById('btParametersEditor').style.display = momentum && !checkbox.checked ? '' : 'none';
+      if (resetParameters && momentum && backtestContext) {
+        const parameters = available ? backtestContext.current_parameters : (backtestContext.momentum_defaults || {})[strategy];
+        document.getElementById('btParameters').value = JSON.stringify(parameters || {}, null, 2);
+      }
+      const pool = document.getElementById('btPool').value;
+      const count = (backtestContext || {}).current_pool_count || 0;
+      const source = momentum ? checkbox.checked ? '提交时冻结当前完整配置。' : '使用下方独立研究 JSON 参数。' : '使用旧版实验表单参数。';
+      document.getElementById('btContextNote').textContent = source + (pool === 'current_watchlist'
+        ? ` 当前监控池 ${count}只；多年全池数据首次准备可能耗时较长，请保持页面等待，也可选择20股研究池。`
+        : ' 20股预设研究池与生产监控池不同，部分非主板标的不会入场。') + ' 当前股票池/行业分类不是历史时点资料；从初始现金开始，不重放当前账户。';
+    }
+
+    function buildBacktestPayload() {
+      const strategy = document.getElementById('btStrategy').value;
+      const momentum = strategy === 'Momentum_Rotation' || strategy === 'Momentum_Rotation_Pro';
+      const payload = {
+        start_date: document.getElementById('btStart').value,
+        end_date: document.getElementById('btEnd').value || null,
+        initial_cash: parseFloat(document.getElementById('btCash').value) || 100000,
+        strategy_name: strategy,
+        pool_type: document.getElementById('btPool').value,
+        use_current_config: momentum && document.getElementById('btUseCurrentConfig').checked,
+      };
+      if (momentum) {
+        if (!payload.use_current_config) payload.parameters = JSON.parse(document.getElementById('btParameters').value);
+      } else {
+        payload.take_profit = parseFloat(document.getElementById('btTakeProfit').value) || 3.5;
+        payload.stop_loss = parseFloat(document.getElementById('btStopLoss').value) || -6;
+      }
+      return payload;
+    }
+
     async function runBacktestUI() {
       const btn = document.getElementById('btRunBtn');
       const container = document.getElementById('btResultContainer');
-      const start = document.getElementById('btStart').value;
-      const end = document.getElementById('btEnd').value;
-      const cash = parseFloat(document.getElementById('btCash').value) || 100000;
-      const strategy = document.getElementById('btStrategy').value;
-      const pool = document.getElementById('btPool').value;
-      const tp = parseFloat(document.getElementById('btTakeProfit').value) || 3.5;
-      const sl = parseFloat(document.getElementById('btStopLoss').value) || -6;
 
       btn.disabled = true;
       btn.innerText = '⏳ 正在拉取数据与回测撮合...';
@@ -1701,15 +1773,7 @@
         const res = await apiFetch('/api/backtest/run', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            start_date: start,
-            end_date: end || null,
-            initial_cash: cash,
-            strategy_name: strategy,
-            pool_type: pool,
-            take_profit: tp,
-            stop_loss: sl
-          })
+          body: JSON.stringify(buildBacktestPayload())
         }).then(r => r.json());
 
         if (res.success && res.data) {
@@ -1741,9 +1805,31 @@
         qualityNote.style.cssText = 'color:var(--text-muted);padding:10px 0;line-height:1.6';
         document.getElementById('btResultContainer').prepend(qualityNote);
       }
-      qualityNote.textContent = s.universe_mode === 'fixed_pool_research_only'
-        ? '固定股票池研究结果：未验证历史股票池资格，未计分红送股；次日开盘与日成交量容量为近似。'
-        : (data.warnings || []).length ? '研究结果存在数据或成交模型限制，请同时查看回测接口的质量记录。' : '';
+      const context = data.request_context || {};
+      const coverage = context.industry_coverage || {};
+      const sourceLabel = {current_strategy_snapshot:'当前策略完整配置快照', independent_research_parameters:'独立研究参数', legacy_form_parameters:'旧版实验表单参数'};
+      const poolLabel = {current_watchlist:'当前监控池快照', core_active:'核心20股研究池', csi300_sample:'沪深300的20股研究样本', custom_symbols:'自定义股票池'};
+      qualityNote.textContent = `${sourceLabel[context.parameter_source] || '参数来源未记录'} · ${poolLabel[context.pool_source] || context.pool_source || '股票池未记录'} ${context.pool_size ?? s.symbol_count ?? '--'}只（主板 ${context.main_board_count ?? '--'}只） · 主板行业 ${coverage.main_board_mapped ?? '--'}/${coverage.main_board_total ?? '--'}（整体 ${coverage.mapped ?? '--'}/${coverage.total ?? '--'}）。平均股票仓位 ${Number.isFinite(s.avg_gross_exposure) ? (s.avg_gross_exposure * 100).toFixed(1) + '%' : '未提供'}；沪深300比较线为全额投资，超额收益未经仓位匹配。`;
+      let contextDetails = document.getElementById('btRunContext');
+      if (!contextDetails) {
+        contextDetails = document.createElement('details');
+        contextDetails.id = 'btRunContext';
+        const summary = document.createElement('summary');
+        summary.textContent = '核验本次实际参数、股票池与模型限制';
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text-muted);font-size:12px';
+        contextDetails.append(summary, pre);
+        qualityNote.after(contextDetails);
+      }
+      contextDetails.querySelector('pre').textContent = [
+        `配置截取时间：${context.captured_at || '未记录'} / ${context.snapshot_id || ''}`,
+        `本次未采用的表单参数：${(context.ignored_params || []).join(', ') || '无'}`,
+        `实际参数：\n${JSON.stringify(context.source_params || data.parameters || {}, null, 2)}`,
+        `行业分类来源：${JSON.stringify(context.industry_source || {})}`,
+        `成交笔数：${s.fill_count ?? '--'}；已卖出批次：${s.total_trades ?? '--'}；撮合拒绝记录：${(data.rejections || []).length}`,
+        ...(context.model_limitations || []),
+        ...(data.warnings || []),
+      ].join('\n');
 
       // 1. 核心指标卡
       const isUp = s.total_return_pct >= 0;

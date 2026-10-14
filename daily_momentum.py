@@ -30,6 +30,9 @@ def sessions_between(start, end):
 
 
 class DailyMomentumStrategy:
+    FAILED_RETRY_SECONDS = 900
+    FAILED_RETRY_BATCH = 24
+
     def __init__(self, account, watchlist, name="Momentum_Rotation_Pro", feed=None,
                  industry_map=None, **kwargs):
         self.account, self.name = account, name
@@ -58,11 +61,16 @@ class DailyMomentumStrategy:
         self._history_valid_until = 0
         self._entry_eligible = set()
         self._benchmark_valid = False
+        self._history_items = {}
+        self._history_errors = {}
+        self._next_failed_retry = 0
+        self._industry_refresh_needed = False
 
     def _new_risk_data_valid(self):
         return (self._published_generation == self._generation
                 and time.monotonic() < self._history_valid_until
-                and self.data_status.get("status") in ("ready", "partial"))
+                and self.data_status.get("status") in ("ready", "partial")
+                and set(self.watchlist+list(self.account.positions)) <= set(self.history_cache))
 
     @staticmethod
     def _load_industries():
@@ -104,131 +112,259 @@ class DailyMomentumStrategy:
     def stop_loss_pct(self, value):
         self.set_config({"stop_loss_pct": value})
 
+    def _history_issue(self, item, as_of):
+        bars, meta = item.get("bars", []), item.get("metadata", {})
+        count = len({bar.get("date") for bar in bars if bar.get("date", "") <= as_of})
+        details = dict(last_date=bars[-1].get("date") if bars else None, actual_bars=count)
+        ttl = getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds()
+        if not bars:
+            return ("no_cache" if not meta.get("cache_available", False) else "no_history"), details, ttl
+        if bars[-1].get("date") != as_of:
+            return "latest_outdated", details, ttl
+        if item.get("error") or meta.get("error"):
+            return "error", details, ttl
+        if not HistoricalDataFeed._has_raw(bars[-1]) or not meta.get("raw_prices_available", False):
+            return "raw_missing", details, ttl
+        if meta.get("fresh") is not True:
+            return ("stale" if meta.get("fresh") is False else "unverified"), details, ttl
+        if meta.get("fetched_at"):
+            try:
+                fetched = dt.datetime.fromisoformat(meta["fetched_at"])
+                if fetched.tzinfo is None:
+                    fetched = fetched.replace(tzinfo=dt.timezone.utc)
+                age = (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds()
+                if age < 0 or age >= ttl:
+                    return "stale", details, ttl
+                ttl -= age
+            except (ValueError, TypeError):
+                return "invalid_timestamp", details, ttl
+        if count < 125:
+            return "short", details, ttl
+        return None, details, ttl
+
+    def _publish_history(self, items, symbols, as_of, generation, industries, benchmark,
+                         benchmark_valid, benchmark_ttl, repair=False):
+        """Publish one coherent snapshot; unavailable names never zero good names."""
+        if generation != self._generation:
+            return
+        eligible, errors, gaps, counts = set(), {}, [], {}
+        latest_raw = 0
+        remaining = getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds()
+        for sym in symbols:
+            item = items.get(sym, {})
+            bars, meta = item.get("bars", []), item.get("metadata", {})
+            if bars and bars[-1].get("date") == as_of and HistoricalDataFeed._has_raw(bars[-1]):
+                latest_raw += 1
+            reason, details, lifetime = self._history_issue(item, as_of)
+            if reason:
+                errors[sym] = dict(symbol=sym, reason=reason, **details,
+                                   error=item.get("error") or meta.get("error") or meta.get("warning"))
+                counts[reason] = counts.get(reason, 0)+1
+            else:
+                eligible.add(sym)
+                remaining = min(remaining, lifetime)
+            if meta.get("coverage_complete") is False:
+                gaps.append(dict(symbol=sym, coverage=meta.get("coverage", {}), warning=meta.get("warning", [])))
+        # Rotate only attempted failures to the end so later batches get a turn.
+        if repair:
+            old_order = [sym for sym in self._history_errors if sym in errors]
+            errors = {sym: errors[sym] for sym in old_order} | {sym: error for sym, error in errors.items() if sym not in old_order}
+        self._history_items = {sym: dict(name=items.get(sym, {}).get("name", sym),
+                                        bars=items.get(sym, {}).get("bars", []),
+                                        metadata=items.get(sym, {}).get("metadata", {}),
+                                        error=items.get(sym, {}).get("error")) for sym in symbols}
+        self.history_cache = {sym: item["bars"] for sym, item in self._history_items.items()}
+        self._stock_names = {sym: item["name"] for sym, item in self._history_items.items()}
+        self._history_errors = errors
+        self._benchmark, self._benchmark_valid = benchmark, benchmark_valid
+        self.industry_map = industries
+        self._entry_eligible = eligible
+        self._history_date, self._published_generation = as_of, generation
+        self._history_valid_until = time.monotonic()+min(remaining, benchmark_ttl)
+        self._history_revision = uuid.uuid4().hex
+        self._next_failed_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
+        unavailable = len(errors)
+        samples = list(errors.values())[:10]
+        if not benchmark_valid and len(samples) < 10:
+            samples.append(dict(symbol="_benchmark", reason="benchmark_unavailable", error="基准行情缺失、过期或未验证"))
+        self.data_status = dict(status="ready" if not unavailable and benchmark_valid else "partial" if eligible else "failed",
+                                as_of=as_of, requested=len(symbols), loaded=len(eligible), usable_history=len(eligible),
+                                latest_raw_history=latest_raw, retained_history=sum(bool(b) for b in self.history_cache.values()),
+                                unavailable=unavailable, unavailable_reason_counts=counts,
+                                errors=samples, coverage_gaps=gaps[:10], coverage_gap_count=len(gaps),
+                                benchmark_available=benchmark_valid, refreshing=False,
+                                next_failed_retry_seconds=self.FAILED_RETRY_SECONDS,
+                                industry_coverage=sum(s in self.industry_map for s in symbols),
+                                industry_data=getattr(self.feed, "metadata", {}).get("industry_map", {}),
+                                unknown_industry_policy="合并为未知行业，适用同一行业仓位上限")
+        matches = self._ranked_signals(as_of)
+        self.latest_candidates = matches[:50]
+        self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
+
+    def _benchmark_evidence(self, bars, as_of):
+        meta = getattr(self.feed, "metadata", {}).get("idx_000300", {})
+        ttl = getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds()
+        valid = (bool(bars) and bars[-1].get("date") == as_of and meta.get("fresh") is True
+                 and not meta.get("error") and meta.get("raw_prices_available", True)
+                 and meta.get("cache_hit", True))
+        if valid and meta.get("fetched_at"):
+            try:
+                fetched = dt.datetime.fromisoformat(meta["fetched_at"])
+                if fetched.tzinfo is None:
+                    fetched = fetched.replace(tzinfo=dt.timezone.utc)
+                age = (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds()
+                valid = 0 <= age < ttl
+                if valid:
+                    ttl -= age
+            except (ValueError, TypeError):
+                valid = False
+        return valid, ttl
+
+    def _industry_refresh_required(self, symbols):
+        if not hasattr(self.feed, "peek_industry_map"):
+            return False
+        if all(self._industry_overrides.get(sym) for sym in symbols):
+            return False
+        return getattr(self.feed, "metadata", {}).get("industry_map", {}).get("fresh") is not True
+
     def prepare(self, now=None, synchronous=False):
-        """Download outside the account lock; poll/HTTP remain responsive."""
+        """Reuse valid partial data; repair only failed names without blocking it."""
         now = now or dt.datetime.now(BEIJING)
         as_of = last_completed_trading_day(now)
         with self._history_lock:
-            symbols = list(dict.fromkeys(self.watchlist + list(self.account.positions)))
-            if (self._history_date == as_of and self.data_status.get("status") == "ready"
-                    and self._new_risk_data_valid()
-                    and set(symbols) <= set(self.history_cache)):
-                return
+            symbols = list(dict.fromkeys(self.watchlist+list(self.account.positions)))
+            current = (self._history_date == as_of and self._published_generation == self._generation
+                       and time.monotonic() < self._history_valid_until
+                       and set(symbols) <= set(self.history_cache))
             if self._history_thread and self._history_thread.is_alive():
                 return
-            if not synchronous and time.monotonic() - self._last_attempt < 300:
+            repair = current and not synchronous
+            if current and self.data_status.get("status") == "ready" and not self._industry_refresh_needed:
                 return
+            if repair:
+                if time.monotonic() < self._next_failed_retry:
+                    return
+                retryable = [sym for sym, issue in self._history_errors.items() if issue["reason"] != "short"]
+                requested = retryable[:self.FAILED_RETRY_BATCH]
+                retry_benchmark = self.config.market_filter and not self._benchmark_valid
+                retry_industry = self._industry_refresh_needed
+                if not requested and not retry_benchmark and not retry_industry:
+                    self._next_failed_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
+                    return
+                generation = self._generation  # Published good names remain authorized.
+                self.data_status = dict(self.data_status, refreshing=True,
+                                        refresh=dict(mode="failed_symbols", requested=len(requested), status="loading"))
+            else:
+                context_changed = (self._history_date != as_of or self._published_generation != self._generation
+                                   or not set(symbols) <= set(self.history_cache))
+                if not synchronous and not context_changed and time.monotonic()-self._last_attempt < 300:
+                    return
+                self._generation += 1
+                generation = self._generation
+                requested, retry_benchmark, retry_industry = symbols, self.config.market_filter, False
+                self.data_status = dict(status="loading", as_of=as_of, requested=len(symbols), loaded=0,
+                                        usable_history=0, refreshing=True, previous_usable_history=len(self._entry_eligible))
             self._last_attempt = time.monotonic()
-            self._generation += 1
-            generation = self._generation
             config = self.config
-            self.data_status = dict(status="loading", as_of=as_of, requested=len(symbols), loaded=0)
-        def load():
+
+        def load(requested=requested, retry_benchmark=retry_benchmark, retry_industry=retry_industry):
+            seeded = False
             try:
-                if hasattr(self.feed, "fetch_industry_map"):
+                industries = dict(self.industry_map)
+                start = (dt.date.fromisoformat(as_of)-dt.timedelta(days=400)).isoformat()
+                cached = {}
+                benchmark = getattr(self, "_benchmark", []) if repair else []
+                benchmark_valid = self._benchmark_valid if repair else not config.market_filter
+                benchmark_ttl = (max(0, self._history_valid_until-time.monotonic()) if repair else
+                                 getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds())
+                if not repair and hasattr(self.feed, "peek_universe"):
+                    # Publish verified disk data before a retired/unknown name
+                    # can hold the first batch open for minutes. Holdings first.
+                    priority = list(dict.fromkeys(list(self.account.positions)+symbols))
+                    cached = self.feed.peek_universe(priority, start_date=start, end_date=as_of)
+                    if hasattr(self.feed, "peek_industry_map"):
+                        industries = {**self.feed.peek_industry_map(), **self._industry_overrides}
+                    retry_industry = self._industry_refresh_required(symbols)
+                    if config.market_filter and hasattr(self.feed, "peek_benchmark_kline"):
+                        benchmark = self.feed.peek_benchmark_kline(start_date=start, end_date=as_of)
+                        benchmark_valid, benchmark_ttl = self._benchmark_evidence(benchmark, as_of)
+                    requested = [sym for sym in symbols if not cached.get(sym, {}).get("metadata", {}).get("cache_hit")]
+                    retry_benchmark = config.market_filter and not benchmark_valid
+                    with self._history_lock:
+                        if generation != self._generation:
+                            return
+                        if any(item.get("bars") for item in cached.values()):
+                            self._industry_refresh_needed = retry_industry
+                            self._publish_history(cached, symbols, as_of, generation, industries, benchmark,
+                                                  benchmark_valid, benchmark_ttl)
+                            seeded = True
+                            pending = bool(requested or retry_benchmark or retry_industry)
+                            self.data_status = dict(self.data_status, refreshing=pending,
+                                                    bootstrap=True, refresh=dict(mode="cache_bootstrap",
+                                                    requested=len(requested), industry_pending=retry_industry,
+                                                    status="loading" if pending else "complete"))
+                    if seeded and not requested and not retry_benchmark and not retry_industry:
+                        return
+                if (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
                     industries = {**self.feed.fetch_industry_map(), **self._industry_overrides}
-                else:
-                    industries = dict(self.industry_map)
-                start = (dt.date.fromisoformat(as_of) - dt.timedelta(days=400)).isoformat()
-                data = self.feed.fetch_universe_klines(symbols, start_date=start, end_date=as_of, max_workers=6)
-                usable, entry_eligible, errors, gaps = {}, set(), [], []
-                ttl = getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds()
-                remaining_ttl = ttl
-                for sym in symbols:
-                    item = data.get(sym, {})
-                    bars = item.get("bars", [])
-                    meta = item.get("metadata", {})
-                    # Retain dated bars for existing-position risk management.
-                    # A suspension or pre-IPO gap in the warmup range does not
-                    # erase a valid latest close or make 130 real bars unusable.
-                    usable[sym] = bars
-                    last_valid = bool(bars) and bars[-1].get("date") == as_of and HistoricalDataFeed._has_raw(bars[-1])
-                    if (last_valid and meta.get("fresh") is True
-                            and meta.get("raw_prices_available", False)
-                            and not (item.get("error") or meta.get("error"))):
-                        entry_eligible.add(sym)
-                        if meta.get("fetched_at"):
-                            try:
-                                fetched = dt.datetime.fromisoformat(meta["fetched_at"])
-                                if fetched.tzinfo is None:
-                                    fetched = fetched.replace(tzinfo=dt.timezone.utc)
-                                age = max(0, (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds())
-                                if age >= ttl:
-                                    entry_eligible.discard(sym)
-                                    errors.append({"symbol": sym, "error": "缓存已超过有效期"})
-                                else:
-                                    remaining_ttl = min(remaining_ttl, ttl-age)
-                            except (TypeError, ValueError):
-                                entry_eligible.discard(sym)
-                                errors.append({"symbol": sym, "error": "缓存时间戳无效"})
-                    else:
-                        errors.append({"symbol": sym, "error": item.get("error") or meta.get("warning") or "历史缺失、过期或缺原始价格"})
-                    if meta.get("coverage_complete") is False:
-                        gaps.append({"symbol": sym, "coverage": meta.get("coverage", {}), "warning": meta.get("warning", [])})
-                benchmark = []
-                benchmark_valid = not config.market_filter
-                if config.market_filter:
+                fetched = self.feed.fetch_universe_klines(requested, start_date=start, end_date=as_of, max_workers=6) if requested else {}
+                data = {**cached, **fetched} if cached else fetched
+                if retry_benchmark:
                     benchmark = self.feed.fetch_benchmark_kline(start_date=start, end_date=as_of)
-                    benchmeta = getattr(self.feed, "metadata", {}).get("idx_000300", {})
-                    benchmark_valid = (benchmeta.get("fresh") is True and not benchmeta.get("error")
-                                       and bool(benchmark) and benchmark[-1].get("date") == as_of)
-                    if not benchmark_valid:
-                        errors.append({"symbol": "_benchmark", "error": "基准行情缺失、过期或未验证"})
-                    elif benchmeta.get("fetched_at"):
-                        try:
-                            fetched = dt.datetime.fromisoformat(benchmeta["fetched_at"])
-                            if fetched.tzinfo is None:
-                                fetched = fetched.replace(tzinfo=dt.timezone.utc)
-                            age = max(0, (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds())
-                            benchmark_valid = age < ttl
-                            remaining_ttl = min(remaining_ttl, max(0, ttl-age))
-                        except (TypeError, ValueError):
-                            benchmark_valid = False
-                        if not benchmark_valid:
-                            errors.append({"symbol": "_benchmark", "error": "基准缓存时间戳无效或已过期"})
+                    benchmark_valid, benchmark_ttl = self._benchmark_evidence(benchmark, as_of)
                 with self._history_lock:
                     if generation != self._generation:
                         return
-                    # Include explicit empty entries: coverage never silently claims the full universe.
-                    self.history_cache = {sym: usable.get(sym, []) for sym in symbols}
-                    self._stock_names = {sym: data.get(sym, {}).get("name", sym) for sym in symbols}
-                    self._benchmark = benchmark
-                    self._benchmark_valid = benchmark_valid
-                    self.industry_map = industries
-                    self._entry_eligible = entry_eligible
-                    self._history_date = as_of
-                    self._published_generation = generation
-                    self._history_valid_until = time.monotonic() + remaining_ttl
-                    self._history_revision = uuid.uuid4().hex
-                    self.data_status = dict(status="ready" if not errors else "partial" if entry_eligible else "failed",
-                                            as_of=as_of, requested=len(symbols), loaded=len(entry_eligible),
-                                            unavailable=len(errors), errors=errors[:10],
-                                            coverage_gaps=gaps[:10], coverage_gap_count=len(gaps),
-                                            industry_coverage=sum(s in self.industry_map for s in symbols),
-                                            industry_data=getattr(self.feed, "metadata", {}).get("industry_map", {}),
-                                            unknown_industry_policy="合并为未知行业，适用同一行业仓位上限")
+                    self._industry_refresh_needed = self._industry_refresh_required(symbols)
+                    items = {**self._history_items, **data} if repair else data
+                    if repair or seeded:
+                        for sym, fetched_item in fetched.items():
+                            previous = self._history_items.get(sym, {})
+                            if not fetched_item.get("bars") and previous.get("bars"):
+                                # Retain dated raw-close evidence for a holding's
+                                # risk exit, while rejecting all new risk from
+                                # this failed observation. Never copy old fresh.
+                                failure = fetched_item.get("error") or "repair_returned_no_bars"
+                                meta = dict(fetched_item.get("metadata", {}), fresh=False, error=failure)
+                                items[sym] = dict(fetched_item, bars=previous["bars"],
+                                                  name=previous.get("name", sym), metadata=meta, error=failure)
+                    if repair:
+                        # Queue attempted failures after untouched failures.
+                        for sym in requested:
+                            issue = self._history_errors.pop(sym, None)
+                            if issue is not None:
+                                self._history_errors[sym] = issue
+                    self._publish_history(items, symbols, as_of, generation, industries, benchmark,
+                                          benchmark_valid, benchmark_ttl, repair=repair)
             except Exception as exc:
                 log.exception("日线数据准备失败")
                 with self._history_lock:
-                    if generation == self._generation:
+                    if generation != self._generation:
+                        return
+                    self._next_failed_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
+                    if repair or seeded:
+                        self.data_status = dict(self.data_status, refreshing=False,
+                                                refresh=dict(mode="failed_symbols" if repair else "cache_bootstrap", status="failed", error=str(exc)))
+                    else:
                         self._entry_eligible = set()
                         self._benchmark_valid = False
-                        self._history_date = as_of
-                        self._published_generation = generation
+                        self._history_date, self._published_generation = as_of, generation
                         self._history_valid_until = 0
                         self._history_revision = uuid.uuid4().hex
-                        self.data_status = dict(status="failed", as_of=as_of, requested=len(symbols), loaded=0, error=str(exc))
+                        self.data_status = dict(status="failed", as_of=as_of, requested=len(symbols), loaded=0,
+                                                usable_history=0, unavailable=len(symbols), refreshing=False, error=str(exc))
         if synchronous:
             load()
         else:
             self._history_thread = threading.Thread(target=load, name="daily-signal-data", daemon=True)
             self._history_thread.start()
 
-    def _plan(self, as_of, execution_day):
+    def _ranked_signals(self, as_of):
         signals = []
-        new_risk_valid = self._new_risk_data_valid()
+        if self._history_date != as_of or not self._new_risk_data_valid():
+            return signals
         for sym, bars in self.history_cache.items():
-            if not new_risk_valid or sym not in self.watchlist or sym not in self._entry_eligible:
+            if sym not in self.watchlist or sym not in self._entry_eligible:
                 continue
             code = sym[-6:]
             if not code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
@@ -238,9 +374,24 @@ class DailyMomentumStrategy:
                 continue
             signal = evaluate_momentum(bars, as_of, self.config)
             if signal and signal.get("raw_signal_price") and signal.get("adjustment_factor"):
-                signals.append({"symbol": sym, "code": code, "name": name,
-                                "current": signal["raw_signal_price"], **signal})
-        signals.sort(key=lambda c: (-c["score"], c["symbol"]))
+                signals.append(dict(symbol=sym, code=code, name=name,
+                                    current=signal["raw_signal_price"], **signal))
+        signals.sort(key=lambda candidate: (-candidate["score"], candidate["symbol"]))
+        return signals
+
+    def preview_candidates(self, now=None):
+        """Read-only top 50; no orders, account writes or plan-state changes."""
+        as_of = last_completed_trading_day(now or dt.datetime.now(BEIJING))
+        with self._history_lock:
+            if self._history_date != as_of or not self._new_risk_data_valid():
+                return []
+            # Ranking was computed at publication. HTTP polling need not sort
+            # the complete universe again; copies protect the cached preview.
+            return [dict(candidate) for candidate in self.latest_candidates]
+
+    def _plan(self, as_of, execution_day):
+        new_risk_valid = self._new_risk_data_valid()
+        signals = self._ranked_signals(as_of)
         ranks = {c["symbol"]: i + 1 for i, c in enumerate(signals)}
         self.latest_candidates = signals[:50]
         rebalance = self.state.get("rebalance_as_of") == as_of or not self.state.get("last_rebalance") or sessions_between(self.state["last_rebalance"], as_of) >= self.config.rebalance_every

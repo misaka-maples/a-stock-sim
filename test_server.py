@@ -187,10 +187,113 @@ class TestServerAPI(unittest.TestCase):
                 stop_loss=-7., risk_per_trade=.005, max_sector_weight=.25))
         self.assertEqual(result.status_code, 200)
         self.assertTrue(result.json()["success"], result.json())
-        self.assertEqual(result.json()["data"], report)
+        self.assertEqual(result.json()["data"]["summary"], report["summary"])
         self.assertEqual(run.call_args.kwargs["symbols"], ["sh600237"])
-        self.assertEqual(run.call_args.kwargs["stop_loss_pct"], -7.)
-        self.assertEqual(run.call_args.kwargs["risk_per_trade"], .005)
+        self.assertEqual(run.call_args.kwargs["config"]["stop_loss_pct"], -7.)
+        self.assertEqual(run.call_args.kwargs["config"]["risk_per_trade"], .005)
+
+    def test_backtest_current_snapshot_captures_complete_config_pool_and_industry_outside_lock(self):
+        config = server.MomentumConfig(max_positions=8, max_stock_weight=.17, stop_loss_pct=-8,
+            momentum_w20=1.4, momentum_w60=.7, alpha_high=.91, require_positive_candle=False,
+            rebalance_every=7, rank_buffer=4, min_holding_days=9, cooldown_days=2, participation_rate=.025)
+        self.ctx.strategy.config = config
+        self.ctx.strategy.industry_map = {"sh600519": {"industry": "食品"}, "sz002594": "汽车"}
+        self.ctx.strategy.data_status["industry_data"] = {"source": "fixture", "warning": "not_point_in_time"}
+        expected_symbols = list(self.ctx.symbols)
+        before_account = self.ctx.account.save_path.read_text() if isinstance(self.ctx.account.save_path, Path) else Path(self.ctx.account.save_path).read_text()
+
+        def research_only(**kwargs):
+            self.assertFalse(self.ctx.lock._is_owned(), "historical I/O must run outside the server lock")
+            self.assertEqual(kwargs["config"], server.asdict(config))
+            self.assertEqual(kwargs["symbols"], expected_symbols)
+            self.assertNotIn("take_profit_trigger_pct", kwargs)
+            # A concurrent runtime edit cannot change the captured research input.
+            self.ctx.symbols.append("sh600036")
+            self.ctx.strategy.industry_map["sh600519"]["industry"] = "已修改"
+            self.assertEqual(kwargs["symbols"], expected_symbols)
+            self.assertEqual(kwargs["industry_map"]["sh600519"]["industry"], "食品")
+            return dict(summary={"symbol_count": len(kwargs["symbols"])}, parameters=kwargs["config"])
+
+        with patch.object(server, "run_backtest", side_effect=research_only) as run:
+            result = self.client.post("/api/backtest/run", json=dict(
+                strategy_name="Momentum_Rotation_Pro", pool_type="current_watchlist", use_current_config=True,
+                take_profit=99, stop_loss=-1)).json()
+        self.assertTrue(result["success"], result)
+        context = result["data"]["request_context"]
+        self.assertEqual(context["source_params"], server.asdict(config))
+        self.assertEqual(context["pool_size"], 3)
+        self.assertEqual(context["industry_coverage"], dict(mapped=2, total=3, ratio=2/3,
+            main_board_mapped=2, main_board_total=3, main_board_ratio=2/3))
+        self.assertEqual(context["industry_source"]["source"], "fixture")
+        self.assertEqual(context["ignored_params"], ["take_profit", "stop_loss"])
+        self.assertEqual(Path(self.ctx.account.save_path).read_text(), before_account)
+        run.assert_called_once()
+
+    def test_backtest_presets_remain_explicitly_distinct_from_current_watchlist(self):
+        self.ctx.strategy.config = server.MomentumConfig(max_positions=8)
+        with patch.object(server, "run_backtest", return_value=dict(summary={})) as run:
+            result = self.client.post("/api/backtest/run", json=dict(
+                strategy_name="Momentum_Rotation_Pro", pool_type="core_active", use_current_config=True)).json()
+        self.assertTrue(result["success"])
+        self.assertEqual(len(run.call_args.kwargs["symbols"]), 20)
+        self.assertEqual(run.call_args.kwargs["config"]["max_positions"], 8)
+        context = result["data"]["request_context"]
+        self.assertEqual(context["main_board_count"], 16)
+        self.assertEqual(context["industry_coverage"]["mapped"], 0)
+        self.assertTrue(any("未知行业" in note for note in context["model_limitations"]))
+        self.ctx.strategy.industry_map = {s: "测试行业" for s in server.PRESET_POOLS["core_active"]
+                                         if server.StockUniverse.is_main_board(s)}
+        with patch.object(server, "run_backtest", return_value=dict(summary={})):
+            mapped = self.client.post("/api/backtest/run", json=dict(
+                pool_type="core_active", use_current_config=True)).json()["data"]["request_context"]
+        self.assertEqual(mapped["industry_coverage"], dict(mapped=16, total=20, ratio=.8,
+            main_board_mapped=16, main_board_total=16, main_board_ratio=1.))
+        self.assertFalse(any("未知行业" in note for note in mapped["model_limitations"]))
+
+    def test_backtest_snapshot_rejects_mismatched_strategy_and_ambiguous_inputs(self):
+        cases = [dict(strategy_name="Momentum_Rotation", use_current_config=True),
+                 dict(use_current_config=True, parameters={"max_positions": 3}),
+                 dict(pool_type="current_watchlist", symbols=["sh600519"]),
+                 dict(symbols=[])]
+        with patch.object(server, "run_backtest") as run:
+            for request in cases:
+                with self.subTest(request=request):
+                    result = self.client.post("/api/backtest/run", json=request).json()
+                    self.assertFalse(result["success"], result)
+            run.assert_not_called()
+
+    def test_backtest_complete_independent_parameters_and_ignored_legacy_knobs(self):
+        config = server.asdict(server.MomentumConfig(max_positions=5, volatility_target=.19,
+            momentum_w20=1.3, alpha_high=.9, rebalance_every=8, require_positive_candle=False))
+        with patch.object(server, "run_backtest", return_value=dict(summary={})) as run:
+            result = self.client.post("/api/backtest/run", json=dict(parameters=config,
+                take_profit=20, max_holding_days=1)).json()
+        self.assertTrue(result["success"])
+        self.assertEqual(run.call_args.kwargs["config"], config)
+        self.assertEqual(result["data"]["request_context"]["ignored_params"], ["max_holding_days", "take_profit"])
+        self.assertNotIn("max_holding_days", run.call_args.kwargs)
+
+    def test_backtest_get_post_use_same_default_momentum_rules(self):
+        with patch.object(server, "run_backtest", return_value=dict(summary={})) as run:
+            self.client.post("/api/backtest/run", json={})
+            post_arguments = copy.deepcopy(run.call_args.kwargs)
+            self.client.get("/api/backtest/run")
+            self.assertEqual(run.call_args.kwargs, post_arguments)
+            self.assertEqual(post_arguments["config"]["max_positions"], 6)
+
+    def test_status_candidate_preview_is_separate_from_history_coverage_and_does_not_trade(self):
+        self.ctx.strategy.data_status = dict(status="partial", loaded=2, requested=3, unavailable=1)
+        before_state = copy.deepcopy(self.ctx.account.strategy_state)
+        with patch.object(self.ctx.strategy, "preview_candidates", create=True,
+                          return_value=[dict(symbol="sh600519")]) as preview, \
+             patch.object(self.ctx.strategy, "on_tick") as on_tick:
+            result = self.client.get("/api/status").json()
+        self.assertEqual(result["radar_count"], 1)
+        self.assertEqual(result["data_quality"]["loaded"], 2)
+        self.assertEqual(result["data_quality"]["requested"], 3)
+        self.assertEqual(self.ctx.account.strategy_state, before_state)
+        preview.assert_called_once()
+        on_tick.assert_not_called()
 
     def test_strategy_list(self):
         result = self.client.get("/api/strategy/list")

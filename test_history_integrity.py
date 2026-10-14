@@ -105,7 +105,7 @@ def test_old_date_named_cache_is_never_accepted_as_fresh(feed):
     assert feed._download.call_count == 1
 
 
-def test_missing_sessions_do_not_get_filled_and_force_retry(feed):
+def test_old_missing_sessions_stay_visible_without_refetching_fresh_latest_data(feed):
     mock_download(feed, [raw_bar("2026-10-12"), raw_bar("2026-10-14")])
     result = feed.fetch_universe_klines(["sh600519"], "2026-10-12", "2026-10-14")
     metadata = result["sh600519"]["metadata"]
@@ -113,7 +113,41 @@ def test_missing_sessions_do_not_get_filled_and_force_retry(feed):
     assert not metadata["coverage_complete"]
     assert "2026-10-13" not in result["sh600519"]["by_date"]
     feed.fetch_stock_kline("sh600519", "2026-10-12", "2026-10-14")
+    assert feed._download.call_count == 1
+
+
+def test_partial_cache_with_missing_latest_session_still_requires_repair(feed):
+    mock_download(feed, [raw_bar("2026-10-12")])
+    feed.fetch_stock_kline("sh600519", "2026-10-12", "2026-10-13")
+    feed.fetch_stock_kline("sh600519", "2026-10-12", "2026-10-13")
     assert feed._download.call_count == 2
+    assert feed.metadata["sh600519"]["coverage"]["end"] == "2026-10-12"
+
+
+def test_cache_only_peek_is_network_free_and_requires_freshness_evidence(feed):
+    mock_download(feed, [raw_bar("2026-10-13")])
+    feed.fetch_stock_kline("sh600519", "2026-10-13", "2026-10-13")
+    result = feed.peek_universe(["sh600519", "sh600001"], "2026-10-13", "2026-10-13")
+    assert result["sh600519"]["metadata"]["cache_hit"]
+    assert not result["sh600001"]["metadata"]["fresh"]
+    path = feed._get_cache_path("sh600519")
+    stored = json.loads(path.read_text())
+    stored["metadata"].pop("fetched_at")
+    path.write_text(json.dumps(stored))
+    unverified = feed.peek_universe(["sh600519"], "2026-10-13", "2026-10-13")["sh600519"]
+    assert unverified["bars"] and not unverified["metadata"]["fresh"]
+    assert unverified["error"] == "cache_metadata_unverified"
+    assert feed._download.call_count == 1
+    feed.session.get.assert_not_called()
+
+
+def test_cache_only_benchmark_and_industry_miss_never_request_or_write(feed):
+    before = set(feed.cache_dir.iterdir())
+    assert feed.peek_benchmark_kline("000300", "2026-10-13", "2026-10-13") == []
+    assert feed.metadata["idx_000300"]["fresh"] is False
+    assert feed.peek_industry_map() == {}
+    assert set(feed.cache_dir.iterdir()) == before
+    feed.session.get.assert_not_called()
 
 
 def test_validation_sorts_deduplicates_and_rejects_bad_bars():
