@@ -358,7 +358,9 @@ class DailyMomentumStrategy:
                     # Production publishes bounded batches. Do not wait for
                     # thousands of failing requests before exposing holdings.
                     if seeded and not synchronous:
-                        requested = self._prioritize_updates(requested)[:self.CATCHUP_BATCH]
+                        priority = self._prioritize_updates(requested)
+                        holdings = [sym for sym in priority if sym in self.account.positions]
+                        requested = holdings or priority[:self.CATCHUP_BATCH]
                     if seeded and not requested and not retry_benchmark and not retry_industry:
                         return
                 if (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
@@ -405,7 +407,10 @@ class DailyMomentumStrategy:
                             else:
                                 self._symbol_retry_due.pop(sym, None)
                         if large:
-                            self._next_failed_retry = now_mono+self._source_retry_delay()
+                            delay = self._source_retry_delay()
+                            if requested and not any(sym in self._entry_eligible for sym in requested):
+                                delay = max(delay, self.HOLDING_RETRY_SECONDS)
+                            self._next_failed_retry = now_mono+delay
                         self.data_status.update(next_failed_retry_seconds=max(0,round(self._next_failed_retry-now_mono)),
                                                 refresh_batch_size=len(requested),
                                                 holding_history_ready=all(sym in self._entry_eligible for sym in self.account.positions),

@@ -832,10 +832,13 @@ def test_large_rollover_batches_publish_holdings_first_and_catch_up(account, clo
     s=MomentumRotationProStrategy(account,symbols,feed=feed,industry_map={})
     s.prepare(now=NOW);s._history_thread.join(5)
     assert feed.calls[0]['symbols'][0]==SYMBOL
-    assert len(feed.calls[0]['symbols'])==s.CATCHUP_BATCH
-    assert s.data_status['usable_history']==s.CATCHUP_BATCH
+    assert feed.calls[0]['symbols']==[SYMBOL]
+    assert s.data_status['usable_history']==1
+    assert s.data_status['holding_history_ready']
     assert not s.data_status['rotation_ready']
     assert s.history_cache[SYMBOL][-1]['date']=='2026-09-21'
+    s._next_failed_retry=0;s.prepare(now=NOW);s._history_thread.join(5)
+    assert s.data_status['usable_history']==97 and not s.data_status['rotation_ready']
     s._next_failed_retry=0;s.prepare(now=NOW);s._history_thread.join(5)
     assert s.data_status['usable_history']==131 and s.data_status['rotation_ready']
     assert s.data_status['holding_history_ready']
@@ -857,3 +860,19 @@ def test_dated_risk_warning_excluded_even_if_provider_omits_name(account):
     s=prepared(account,feed=StubFeed({SYMBOL:bars}))
     assert s.data_status['usable_history']==1
     assert not s.preview_candidates(NOW)
+
+
+def test_failed_large_catchup_backs_off_without_new_data(account):
+    class UnavailableRollover(StubFeed):
+        def peek_universe(self,symbols,**kwargs):
+            return {sym:dict(name='测试',bars=completed_bars('2026-09-18'),
+                    metadata=dict(fresh=False,cache_hit=False,raw_prices_available=True)) for sym in symbols}
+        def fetch_universe_klines(self,symbols,**kwargs):
+            self.calls.append(dict(symbols=list(symbols)))
+            return {sym:dict(bars=[],metadata=dict(fresh=False),error='offline') for sym in symbols}
+    symbols=['sh'+str(600000+i) for i in range(100)]
+    s=MomentumRotationProStrategy(account,symbols,feed=UnavailableRollover(),industry_map={})
+    s.prepare(now=NOW);s._history_thread.join(5)
+    assert s.data_status['usable_history']==0
+    assert s.data_status['next_failed_retry_seconds']>=60
+    assert not s.data_status['rotation_ready']
