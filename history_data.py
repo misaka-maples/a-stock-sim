@@ -27,6 +27,8 @@ from trade_calendar import BEIJING, get_previous_trading_day, is_trading_day, to
 
 import requests
 
+from history_providers import SourceRouter, ProviderUnavailable
+
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "data" / "history_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -146,9 +148,17 @@ class HistoricalDataFeed:
         self.session.trust_env = False
         self.session.headers.update(HEADERS)
         self.request_timeout = request_timeout
+        self._sources = SourceRouter(base_dir=BASE_DIR, timeout=request_timeout)
         self.industry_file = BASE_DIR / "data" / "industry_map.json"
         self.metadata: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+        try:
+            catalog = json.loads((BASE_DIR / "stock_universe.json").read_text())
+            self._stock_names = {item["symbol"]: item["name"] for item in catalog.get("stocks", [])
+                                 if isinstance(item, dict) and isinstance(item.get("name"), str)
+                                 and isinstance(item.get("symbol"), str)}
+        except (OSError, ValueError, TypeError, AttributeError):
+            self._stock_names = {}
 
     def _get_cache_path(self, symbol: str, start_date=None, end_date=None,
                         adjustment: str = "qfq") -> Path:
@@ -158,6 +168,14 @@ class HistoricalDataFeed:
 
     def _legacy_cache_path(self, symbol, start, end):
         return self.cache_dir / f"{symbol.replace('.', '_')}_{start}_{end}.json"
+
+    def _security_name(self, symbol, name):
+        return self._stock_names.get(symbol, name) if name in (symbol, symbol[2:], "") else name
+
+    @staticmethod
+    def _risk_marker_valid(source, adjustment, bars):
+        return (source != "baostock" or adjustment != "qfq"
+                or bool(bars) and isinstance(bars[-1].get("is_st"), bool))
 
     @staticmethod
     def _dates(start_date, end_date):
@@ -240,7 +258,17 @@ class HistoricalDataFeed:
             fresh = False
         if not fresh:
             warnings.append("cache_expired")
+        sessions = self._session_dates(start, end)
+        latest_required = sessions[-1] if sessions else None
+        latest_available = max(dates) if dates else None
+        latest_ok = bool(latest_required and latest_required in dates)
+        if not latest_ok:
+            fresh = False
+            error = error or "latest_completed_session_missing"
+            warnings.append("latest_completed_session_missing")
         return {
+            "latest_required": latest_required, "latest_available": latest_available,
+            "latest_status": "current" if latest_ok else "missing",
             "schema_version": self.CACHE_SCHEMA,
             "fetched_at": fetched_at,
             "requested_start": start, "requested_end": end,
@@ -299,15 +327,26 @@ class HistoricalDataFeed:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
+    def _history_get(self, provider, url, params):
+        def request():
+            response = self.session.get(url, params=params, timeout=self.request_timeout)
+            response.raise_for_status()
+            return response
+        return self._sources.circuit.call(provider, request)
+
+    @staticmethod
+    def _provider_error(exc):
+        # ProviderUnavailable text is deliberately sanitized by SourceRouter;
+        # retain the useful exception class without remote bodies or secrets.
+        return str(exc) if isinstance(exc, ProviderUnavailable) else type(exc).__name__
+
     def _eastmoney(self, symbol, start, end, adjustment):
         secid, _ = normalize_code_for_eastmoney(symbol)
         params = {"secid": secid, "fields1": "f1,f2,f3,f4,f5,f6",
                   "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                   "klt": 101, "fqt": 1 if adjustment == "qfq" else 0,
                   "beg": start.replace("-", ""), "end": end.replace("-", "")}
-        response = self.session.get("https://push2his.eastmoney.com/api/qt/stock/kline/get",
-                                    params=params, timeout=self.request_timeout)
-        response.raise_for_status()
+        response = self._history_get("eastmoney", "https://push2his.eastmoney.com/api/qt/stock/kline/get", params)
         payload = response.json().get("data") or {}
         bars = []
         for line in payload.get("klines", []):
@@ -336,9 +375,7 @@ class HistoricalDataFeed:
             slice_end = min(datetime.date(start_day.year, 12, 31), finish)
             param = f"{symbol},day,{start_day.isoformat()},{slice_end.isoformat()},640,{adjustment if adjustment == 'qfq' else ''}"
             try:
-                response = self.session.get("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
-                                            params={"param": param}, timeout=self.request_timeout)
-                response.raise_for_status()
+                response = self._history_get("tencent", "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get", {"param": param})
                 payload = response.json().get("data", {}).get(symbol, {})
                 quote = payload.get("qt", {}).get(symbol, [])
                 if len(quote) > 1 and quote[1]:
@@ -358,24 +395,37 @@ class HistoricalDataFeed:
                     except (ValueError, TypeError):
                         continue
             except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
-                errors.append(f"tencent_{start_day.year}_{type(exc).__name__}")
+                errors.append(f"tencent_{start_day.year}_{self._provider_error(exc)}")
             start_day = slice_end + datetime.timedelta(days=1)
         return name, bars, errors
 
     def _download(self, symbol, start, end, adjustment):
+        return self._sources.download(symbol, start, end, adjustment,
+                                      legacy_download=self._download_legacy)
+
+    def _download_legacy(self, symbol, start, end, adjustment):
         warnings = []
+        expected = end if is_trading_day(end) else previous_trading_day(end)
+        def current(bars):
+            return bool(bars) and max(bar.get("date", "") for bar in bars) == expected
         name, adjusted, raw = symbol[2:], [], []
         try:
             name, adjusted = self._eastmoney(symbol, start, end, adjustment)
+            if adjusted and not current(adjusted):
+                warnings.append("eastmoney_adjusted_latest_missing")
+                adjusted = []
         except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
-            warnings.append(f"eastmoney_adjusted_{type(exc).__name__}")
+            warnings.append(f"eastmoney_adjusted_{self._provider_error(exc)}")
         if adjustment == "none":
             raw = adjusted
         elif adjusted:
             try:
                 _, raw = self._eastmoney(symbol, start, end, "none")
+                if raw and not current(raw):
+                    warnings.append("eastmoney_original_latest_missing")
+                    raw = []
             except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
-                warnings.append(f"eastmoney_original_{type(exc).__name__}")
+                warnings.append(f"eastmoney_original_{self._provider_error(exc)}")
         if not adjusted:
             name, adjusted, errors = self._tencent(symbol, start, end, adjustment)
             warnings.extend(errors)
@@ -418,77 +468,150 @@ class HistoricalDataFeed:
         sources = sorted({b.get("source", "unknown") for b in adjusted + raw})
         return name, adjusted, "+".join(sources) or "unavailable", warnings
 
+    @staticmethod
+    def _merge_incremental(cached_bars, downloaded, adjustment):
+        """Prove a common price basis before combining independently fetched bars."""
+        old = {bar["date"]: bar for bar in cached_bars}
+        new = {bar["date"]: bar for bar in downloaded}
+        overlap = sorted(set(old) & set(new))
+        required = min(3, len(old))
+        if not required or len(overlap) < required:
+            return None, "insufficient_overlap", None
+        ratios = []
+        for date in overlap:
+            before, after = old[date], new[date]
+            if not HistoricalDataFeed._has_raw(before) or not HistoricalDataFeed._has_raw(after):
+                return None, "raw_prices_unverified", None
+            for field in ("raw_open", "raw_close", "raw_high", "raw_low", "volume"):
+                if not math.isclose(float(before[field]), float(after[field]), rel_tol=1e-6, abs_tol=1e-6):
+                    return None, "original_prices_or_volume_changed", None
+            for field in ("open", "close", "high", "low", "adjustment_factor"):
+                ratio = float(after[field]) / float(before[field])
+                if not math.isfinite(ratio) or ratio <= 0:
+                    return None, "invalid_adjustment_ratio", None
+                ratios.append(ratio)
+        ratio = ratios[0]
+        if not all(math.isclose(value, ratio, rel_tol=1e-6, abs_tol=1e-8) for value in ratios):
+            return None, "inconsistent_adjustment_basis", None
+        if adjustment == "none" and not math.isclose(ratio, 1.0, rel_tol=1e-6):
+            return None, "unadjusted_prices_changed", None
+        merged = copy.deepcopy(old)
+        for bar in merged.values():
+            for field in ("open", "close", "high", "low", "adjustment_factor"):
+                bar[field] = float(bar[field]) * ratio
+        merged.update(copy.deepcopy(new))
+        return [merged[date] for date in sorted(merged)], "validated", ratio
+
     def _fetch(self, symbol, start_date, end_date, use_cache, adjustment="qfq", cache_symbol=None):
         if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", symbol):
             raise ValueError("symbol must be an exchange prefix plus six digits")
         start, end = self._dates(start_date, end_date)
         key = cache_symbol or symbol
         cached = self._read_cache(key, start, end, adjustment) if use_cache else None
-        legacy = None
+        legacy = None if cached or not use_cache else self._read_legacy(key, start, end)
+        old = cached.get("metadata", {}) if cached else {}
+        cached_bars = cached["bars"] if cached else []
+        subset = [bar for bar in cached_bars if start <= bar["date"] <= end]
+        evidence = all(isinstance(old.get(field), str) and old[field] for field in
+                       ("source", "fetched_at", "requested_start", "requested_end"))
+        if evidence:
+            try:
+                fetched = datetime.datetime.fromisoformat(old["fetched_at"])
+                if fetched.tzinfo is None:
+                    fetched = fetched.replace(tzinfo=datetime.timezone.utc)
+                evidence = (fetched <= datetime.datetime.now(datetime.timezone.utc)
+                            and datetime.date.fromisoformat(old["requested_start"])
+                            <= datetime.date.fromisoformat(old["requested_end"]))
+            except (ValueError, TypeError):
+                evidence = False
         if cached:
-            subset = [b for b in cached["bars"] if start <= b["date"] <= end]
-            old = cached.get("metadata", {})
             metadata = self._describe(subset, start, end, old.get("source", "cache"),
-                                      old.get("fetched_at"), old.get("warning", []))
-            metadata["adjustment"] = adjustment
-            range_ok = (old.get("requested_start", "9999") <= start
-                        and old.get("requested_end", "") >= end)
-            sessions = self._session_dates(start, end)
-            latest_ok = bool(subset) and bool(sessions) and subset[-1]["date"] == sessions[-1]
-            # A validated latest bar does not require every pre-IPO/suspension
-            # session to have a bar. Keep those gaps visible, but do not fetch an
-            # identical attempted range on every read within its freshness TTL.
-            if (range_ok and old.get("fetched_at") and old.get("source") and metadata["fresh"] and latest_ok and metadata["raw_prices_available"]
-                    and not old.get("error")):
-                metadata["cache_available"] = True
+                                      old.get("fetched_at"), old.get("warning", []), old.get("error"))
+            range_ok = evidence and old["requested_start"] <= start and old["requested_end"] >= end
+            if (range_ok and metadata["fresh"] and metadata["raw_prices_available"] and not old.get("error")
+                    and self._risk_marker_valid(old.get("source"), adjustment, subset)):
+                metadata.update(adjustment=adjustment, cache_available=True, update_mode="cache_hit")
                 with self._lock:
                     self.metadata[key] = metadata
-                return symbol, cached.get("name", symbol[2:]), subset
-        else:
-            legacy = self._read_legacy(key, start, end) if use_cache else None
+                return symbol, self._security_name(symbol, cached.get("name", symbol[2:])), subset
 
-        # One preceding session provides a real reference close for a first-day
-        # Tencent bar. Expand to the cache range so a short request never erases
-        # longer history. Re-download the union: qfq changes after corporate
-        # actions must not be mixed with an older adjustment basis.
-        download_start, download_end = previous_trading_day(start), end
-        if cached and cached["bars"]:
-            download_start = min(download_start, cached["bars"][0]["date"])
-            download_end = max(end, cached["bars"][-1]["date"])
-        name, downloaded, source, warnings = self._download(symbol, download_start, download_end, adjustment)
-        downloaded = [b for b in downloaded if download_start <= b["date"] <= download_end]
-        subset = [b for b in downloaded if start <= b["date"] <= end]
+        full_start = previous_trading_day(start)
+        if cached_bars:
+            full_start = min(full_start, cached_bars[0]["date"])
+        # Historical end dates remain strict: never fetch a later cache tail.
+        full_end = end
+        incremental = bool(cached_bars and evidence and old["source"] not in
+                           ("stale_cache", "legacy_cache", "unavailable")
+                           and old["requested_start"] <= start
+                           and end >= cached_bars[-1]["date"]
+                           and all(self._has_raw(bar) for bar in cached_bars))
+        download_start = cached_bars[-min(5, len(cached_bars))]["date"] if incremental else full_start
+        mode = "incremental" if incremental else "full"
+        name, downloaded, source, warnings = self._download(symbol, download_start, full_end, adjustment)
+        downloaded, rejected, duplicates = self._validate_bars(downloaded)
+        downloaded = [bar for bar in downloaded if download_start <= bar["date"] <= full_end]
+        warnings = list(warnings)
+        if rejected or duplicates:
+            warnings.append("download_validation_removed_invalid_or_duplicate_bars")
+        overlap_status, rebase_ratio = "not_applicable", None
+        if incremental and downloaded:
+            merged, overlap_status, rebase_ratio = self._merge_incremental(cached_bars, downloaded, adjustment)
+            if merged is not None:
+                downloaded = merged
+            else:
+                # A price correction or corporate action with inconsistent
+                # overlap requires one coherent full history, never a splice.
+                mode = "full_after_overlap_rejected"
+                warnings.append("incremental_overlap_rejected:" + overlap_status)
+                name, downloaded, source, full_warnings = self._download(symbol, full_start, full_end, adjustment)
+                downloaded, _, _ = self._validate_bars(downloaded)
+                downloaded = [bar for bar in downloaded if full_start <= bar["date"] <= full_end]
+                warnings.extend(full_warnings)
+        elif incremental:
+            # An outage is not evidence of a basis change. Do not immediately
+            # amplify the failure with an expensive full-history retry.
+            overlap_status = "empty_tail"
+        subset = [bar for bar in downloaded if start <= bar["date"] <= end]
+        if name in (symbol, symbol[2:], ""):
+            cached_name = cached.get("name") if cached else None
+            name = (cached_name if cached_name and cached_name not in (symbol, symbol[2:])
+                    else self._stock_names.get(symbol, name))
         error = None
         if not subset:
             error = "no_valid_bars_for_requested_range"
             fallback = cached or legacy
             if fallback:
-                subset = [b for b in fallback["bars"] if start <= b["date"] <= end]
+                subset = [bar for bar in fallback["bars"] if start <= bar["date"] <= end]
                 name = fallback.get("name", name)
                 source = "stale_cache" if cached else "legacy_cache"
                 warnings.append("download_failed_cache_fallback_not_eligible_for_live_signals")
         metadata = self._describe(subset, start, end, source,
-                                  cached.get("metadata", {}).get("fetched_at") if source == "stale_cache" else None,
+                                  old.get("fetched_at") if source == "stale_cache" else None,
                                   warnings, error)
-        metadata["adjustment"] = adjustment
-        metadata["cache_available"] = bool(cached or legacy or downloaded)
-        if source in ("legacy_cache", "stale_cache"):
+        metadata.update(adjustment=adjustment, cache_available=bool(cached or legacy or downloaded),
+                        update_mode=mode, overlap_validation=overlap_status,
+                        adjustment_rebase_ratio=rebase_ratio, download_start=download_start)
+        if not self._risk_marker_valid(source, adjustment, subset):
+            metadata.update(fresh=False, error="risk_status_unverified")
+        if source in ("legacy_cache", "stale_cache") or metadata.get("error"):
             metadata["fresh"] = False
-        with self._lock:
-            self.metadata[key] = metadata
-        # A partially failed refresh must not destroy the wider old cache. We
-        # cannot merge old/new qfq bases safely, so return the explicitly partial
-        # fetch while retaining the old file for the next repair attempt.
-        cache_dates = {b["date"] for b in cached["bars"]} if cached else set()
-        downloaded_dates = {b["date"] for b in downloaded}
+        cache_dates = {bar["date"] for bar in cached_bars}
+        downloaded_dates = {bar["date"] for bar in downloaded}
         regression = bool(cache_dates - downloaded_dates)
         if regression and downloaded:
             metadata["warning"].append("partial_refresh_retained_wider_cache")
-        if downloaded and not regression:
-            cache_meta = self._describe(downloaded, min(start, download_start), download_end, source,
+        # Missing newest session may simply mean suspension. Preserve evidence,
+        # but it is not a successful refresh and must never erase the old file.
+        # An initial partial download can be retained with its explicit error;
+        # this gives subsequent repair an overlap without claiming freshness.
+        if downloaded and not regression and (not metadata.get("error") or not cached):
+            cache_meta = self._describe(downloaded, min(start, full_start), full_end, source,
                                         metadata["fetched_at"], warnings)
-            cache_meta["adjustment"] = adjustment
+            cache_meta.update(adjustment=adjustment, update_mode=mode,
+                              overlap_validation=overlap_status, adjustment_rebase_ratio=rebase_ratio)
             self._write_cache(key, adjustment, name, downloaded, cache_meta)
+        with self._lock:
+            self.metadata[key] = metadata
         return symbol, name, subset
 
     def _peek_cached(self, symbol, start, end, adjustment="qfq", cache_symbol=None):
@@ -513,15 +636,17 @@ class HistoricalDataFeed:
         range_ok = evidence and old["requested_start"] <= start and old["requested_end"] >= end
         valid = (range_ok and metadata["fresh"] and bool(sessions) and bool(bars)
                  and bars[-1]["date"] == sessions[-1] and metadata["raw_prices_available"]
-                 and not old.get("error"))
+                 and not old.get("error") and self._risk_marker_valid(old.get("source"), adjustment, bars))
         metadata.update(cache_available=True, cache_hit=bool(valid), adjustment=adjustment)
         if not evidence:
             metadata.update(fresh=False, error="cache_metadata_unverified")
         elif not range_ok:
             metadata.update(fresh=False, error="cache_range_insufficient")
+        elif not self._risk_marker_valid(old.get("source"), adjustment, bars):
+            metadata.update(fresh=False, error="risk_status_unverified")
         with self._lock:
             self.metadata[key] = metadata
-        return dict(symbol=symbol, name=cached.get("name", symbol[2:]), bars=bars,
+        return dict(symbol=symbol, name=self._security_name(symbol, cached.get("name", symbol[2:])), bars=bars,
                     metadata=metadata, error=metadata.get("error"))
 
     def peek_universe(self, symbols, start_date="2024-01-01", end_date=None):
@@ -584,6 +709,11 @@ class HistoricalDataFeed:
         start, end = self._dates(start_date, end_date)
         unique = list(dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols))
         results = {}
+        source_health = self._sources.status()
+        if source_health.get("baostock", {}).get("installed") and not source_health.get("tushare", {}).get("configured"):
+            # BaoStock is a single serialized SDK session. Parallel callers
+            # would merely time out in its local queue and starve each other.
+            max_workers = 1
 
         def fetch_one(symbol):
             try:

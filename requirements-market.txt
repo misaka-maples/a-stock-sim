@@ -1,0 +1,3 @@
+# Optional independent historical-data provider; installed into data/market_sdk.
+baostock==0.9.4
+pandas==2.3.3

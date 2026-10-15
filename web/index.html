@@ -1768,6 +1768,13 @@
         const phases = {loading:'日线准备中', ready:'日线就绪', partial:'部分日线可用', failed:'日线不可用', not_loaded:'等待日线'};
         document.getElementById('radarCountBadge').innerText = `策略候选：${st.candidate_count ?? st.radar_count} 只 · 展示 ${st.radar_preview_count ?? st.radar_count} 只（最多50）`;
         document.getElementById('historyCoverageBadge').innerText = `${phases[quality.status] || '历史状态'} · 有效历史 ${quality.loaded || 0}/${quality.requested || 0} · 不可用 ${quality.unavailable || 0} · 截止 ${quality.as_of || '待获取'}`;
+        const coverageBadge = document.getElementById('historyCoverageBadge');
+        if (quality.ranking_coverage !== undefined) {
+          coverageBadge.innerText += ` · 排名覆盖 ${(quality.ranking_coverage * 100).toFixed(1)}% · ${quality.rotation_ready ? '轮动可用' : '等待追更，暂停排名交易'}`;
+          if (quality.refreshing) coverageBadge.innerText += ' · 正在追更';
+          coverageBadge.title = `持仓历史：${quality.holding_history_ready ? '已准备' : '待核验'}；下一批约 ${quality.next_failed_retry_seconds ?? '--'} 秒。
+源状态：${JSON.stringify(quality.source_health || {})}`;
+        }
         renderEntryRejections(quality.entry_rejections || []);
         if (backtestContext) {
           backtestContext.current_strategy_id = st.strategy_id;

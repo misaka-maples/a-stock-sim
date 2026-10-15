@@ -34,6 +34,9 @@ def sessions_between(start, end):
 class DailyMomentumStrategy:
     FAILED_RETRY_SECONDS = 900
     FAILED_RETRY_BATCH = 24
+    CATCHUP_BATCH = 96
+    CATCHUP_SECONDS = 5
+    HOLDING_RETRY_SECONDS = 60
 
     def __init__(self, account, watchlist, name="Momentum_Rotation_Pro", feed=None,
                  industry_map=None, **kwargs):
@@ -68,6 +71,8 @@ class DailyMomentumStrategy:
         self._history_errors = {}
         self._next_failed_retry = 0
         self._industry_refresh_needed = False
+        self._symbol_retry_due = {}
+        self._next_industry_retry = 0
 
     def _new_risk_data_valid(self):
         return (self._published_generation == self._generation
@@ -204,6 +209,43 @@ class DailyMomentumStrategy:
         matches = self._ranked_signals(as_of)
         self.latest_candidates = matches[:50]
         self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
+        self.data_status["ranking_coverage"] = self._ranking_coverage()
+        self.data_status["rotation_ready"] = self._ranking_coverage() >= .95
+
+    def _ranking_coverage(self):
+        # Known sufficiently long series are expected to update as a group.
+        # Dead/unlisted codes with no history do not prevent a useful quorum.
+        expected = {sym for sym, bars in self.history_cache.items()
+                    if sym in self.watchlist and len(bars) >= 125}
+        return len(expected & self._entry_eligible)/len(expected) if expected else 0.
+
+    def _prioritize_updates(self, symbols):
+        symbols = list(dict.fromkeys(symbols))
+        held = [sym for sym in self.account.positions if sym in symbols]
+        warm = [sym for sym in symbols if sym not in held and self.history_cache.get(sym)]
+        cold = [sym for sym in symbols if sym not in held and not self.history_cache.get(sym)]
+        return held+warm+cold
+
+    def _catchup_needed(self):
+        return (len(self._history_errors) >= self.CATCHUP_BATCH
+                or any(issue["reason"] in ("latest_outdated", "stale") and self.history_cache.get(sym)
+                       for sym, issue in self._history_errors.items()))
+
+    def _source_health(self):
+        sources = getattr(self.feed, "_sources", None)
+        return sources.status() if sources is not None else {}
+
+    def _source_retry_delay(self):
+        health = self._source_health()
+        enabled = ["eastmoney", "tencent"]
+        if health.get("baostock", {}).get("installed"):
+            enabled.append("baostock")
+        if health.get("tushare", {}).get("configured"):
+            enabled.append("tushare")
+        states = health.get("circuits", {})
+        if all(states.get(name, {}).get("state") == "open" for name in enabled):
+            return max(1, min(states[name]["retry_after_seconds"] for name in enabled))
+        return self.CATCHUP_SECONDS
 
     def _benchmark_evidence(self, bars, as_of):
         meta = getattr(self.feed, "metadata", {}).get("idx_000300", {})
@@ -249,11 +291,16 @@ class DailyMomentumStrategy:
                 if time.monotonic() < self._next_failed_retry:
                     return
                 retryable = [sym for sym, issue in self._history_errors.items() if issue["reason"] != "short"]
-                requested = retryable[:self.FAILED_RETRY_BATCH]
+                retryable = [sym for sym in self._prioritize_updates(retryable)
+                             if time.monotonic() >= self._symbol_retry_due.get(sym, 0)]
+                catchup = self._catchup_needed()
+                requested = retryable[:self.CATCHUP_BATCH if catchup else self.FAILED_RETRY_BATCH]
                 retry_benchmark = self.config.market_filter and not self._benchmark_valid
-                retry_industry = self._industry_refresh_needed
+                retry_industry = self._industry_refresh_needed and time.monotonic() >= self._next_industry_retry
                 if not requested and not retry_benchmark and not retry_industry:
-                    self._next_failed_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
+                    future = [due for sym, due in self._symbol_retry_due.items()
+                              if sym in self._history_errors and due > time.monotonic()]
+                    self._next_failed_retry = min(future) if future else time.monotonic()+self.FAILED_RETRY_SECONDS
                     return
                 generation = self._generation  # Published good names remain authorized.
                 self.data_status = dict(self.data_status, refreshing=True,
@@ -264,6 +311,7 @@ class DailyMomentumStrategy:
                 if not synchronous and not context_changed and time.monotonic()-self._last_attempt < 300:
                     return
                 self._generation += 1
+                self._symbol_retry_due = {}
                 generation = self._generation
                 requested, retry_benchmark, retry_industry = symbols, self.config.market_filter, False
                 self.data_status = dict(status="loading", as_of=as_of, requested=len(symbols), loaded=0,
@@ -307,10 +355,15 @@ class DailyMomentumStrategy:
                                                     bootstrap=True, refresh=dict(mode="cache_bootstrap",
                                                     requested=len(requested), industry_pending=retry_industry,
                                                     status="loading" if pending else "complete"))
+                    # Production publishes bounded batches. Do not wait for
+                    # thousands of failing requests before exposing holdings.
+                    if seeded and not synchronous:
+                        requested = self._prioritize_updates(requested)[:self.CATCHUP_BATCH]
                     if seeded and not requested and not retry_benchmark and not retry_industry:
                         return
                 if (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
                     industries = {**self.feed.fetch_industry_map(), **self._industry_overrides}
+                    self._next_industry_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
                 fetched = self.feed.fetch_universe_klines(requested, start_date=start, end_date=as_of, max_workers=6) if requested else {}
                 data = {**cached, **fetched} if cached else fetched
                 if retry_benchmark:
@@ -340,6 +393,23 @@ class DailyMomentumStrategy:
                                 self._history_errors[sym] = issue
                     self._publish_history(items, symbols, as_of, generation, industries, benchmark,
                                           benchmark_valid, benchmark_ttl, repair=repair)
+                    if not synchronous:
+                        now_mono = time.monotonic()
+                        large = self._catchup_needed()
+                        for sym in requested:
+                            if sym in self._history_errors:
+                                delay = (self.HOLDING_RETRY_SECONDS if sym in self.account.positions
+                                         else 300 if self.history_cache.get(sym) else 3600)
+                                if large:
+                                    self._symbol_retry_due[sym] = now_mono+delay
+                            else:
+                                self._symbol_retry_due.pop(sym, None)
+                        if large:
+                            self._next_failed_retry = now_mono+self._source_retry_delay()
+                        self.data_status.update(next_failed_retry_seconds=max(0,round(self._next_failed_retry-now_mono)),
+                                                refresh_batch_size=len(requested),
+                                                holding_history_ready=all(sym in self._entry_eligible for sym in self.account.positions),
+                                                source_health=self._source_health())
             except Exception as exc:
                 log.exception("日线数据准备失败")
                 with self._history_lock:
@@ -374,7 +444,9 @@ class DailyMomentumStrategy:
             if not code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
                 continue
             name = getattr(self, "_stock_names", {}).get(sym, sym)
-            if "ST" in name.upper() or "退" in name or name.upper().startswith("PT"):
+            risk_flag = bars[-1].get("is_st") if bars else None
+            if (risk_flag is True or (risk_flag is not False and "ST" in name.upper())
+                    or "退" in name or name.upper().startswith("PT")):
                 continue
             signal = evaluate_momentum(bars, as_of, self.config)
             if signal and signal.get("raw_signal_price") and signal.get("adjustment_factor"):
@@ -394,7 +466,7 @@ class DailyMomentumStrategy:
             return [dict(candidate) for candidate in self.latest_candidates]
 
     def _plan(self, as_of, execution_day):
-        new_risk_valid = self._new_risk_data_valid()
+        new_risk_valid = self._new_risk_data_valid() and self._ranking_coverage() >= .95
         signals = self._ranked_signals(as_of)
         ranks = {c["symbol"]: i + 1 for i, c in enumerate(signals)}
         self.latest_candidates = signals[:50]
@@ -427,7 +499,7 @@ class DailyMomentumStrategy:
             market_ok = self._benchmark_valid and len(bench) >= 120 and bench[-1]["date"] == as_of and bench[-1]["close"] > sum(b["close"] for b in bench[-120:]) / 120
         if not market_ok:
             entries = {}
-        if rebalance and market_ok:
+        if rebalance and market_ok and new_risk_valid:
             for candidate in signals:
                 sym = candidate["symbol"]
                 old = previous_entries.get(sym)
@@ -520,7 +592,7 @@ class DailyMomentumStrategy:
             if (intent.get("filled_shares", 0) > 0 and intent.get("target_shares") is not None
                     and intent["filled_shares"] >= intent["target_shares"]):
                 continue  # Completed buys are not new orders or rejection events.
-            if not self._new_risk_data_valid() or sym not in self._entry_eligible:
+            if not self._new_risk_data_valid() or self._ranking_coverage() < .95 or sym not in self._entry_eligible:
                 continue
             if self.config.market_filter and not self._benchmark_valid:
                 continue

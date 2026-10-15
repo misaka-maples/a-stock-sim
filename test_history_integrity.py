@@ -413,3 +413,208 @@ def test_industry_non_main_board_rows_are_counted_for_pagination_and_excluded(fe
     assert status["coverage"]["excluded_non_main_board_rows"] == 2
     assert status["coverage"]["missing_industry_rows"] == 0
     assert status["coverage_complete"]
+
+
+def incremental_fixture(feed):
+    dates = ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29", "2026-09-30"]
+    bars = [raw_bar(date, 10 + i) for i, date in enumerate(dates)]
+    mock_download(feed, bars)
+    feed.fetch_stock_kline("sh600519", dates[0], dates[-1])
+    return bars
+
+
+def test_incremental_downloads_five_cached_bars_and_missing_tail_only(feed):
+    bars = incremental_fixture(feed)
+    mock_download(feed, bars[-5:] + [raw_bar("2026-10-08", 17)])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    feed._download.assert_called_once_with("sh600519", bars[-5]["date"], "2026-10-08", "qfq")
+    assert len(result) == 8
+    assert feed.metadata["sh600519"]["update_mode"] == "incremental"
+    assert feed.metadata["sh600519"]["overlap_validation"] == "validated"
+    assert feed.metadata["sh600519"]["fresh"]
+    stored = json.loads(feed._get_cache_path("sh600519").read_text())
+    assert stored["bars"] == result
+
+
+def test_uniform_rebase_rescales_old_adjusted_prices_never_original_prices(feed):
+    bars = incremental_fixture(feed)
+    rebased = json.loads(json.dumps(bars[-5:] + [raw_bar("2026-10-08", 17)]))
+    for bar in rebased:
+        for field in ("open", "close", "high", "low", "adjustment_factor"):
+            bar[field] *= 0.8
+    mock_download(feed, rebased)
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    assert result[0]["close"] == pytest.approx(bars[0]["close"] * 0.8)
+    assert result[0]["adjustment_factor"] == pytest.approx(0.4)
+    assert result[0]["raw_close"] == bars[0]["raw_close"]
+    assert result[0]["raw_pre_close"] == bars[0]["raw_pre_close"]
+    assert feed.metadata["sh600519"]["adjustment_rebase_ratio"] == pytest.approx(0.8)
+    assert len(result) == 8
+
+
+@pytest.mark.parametrize("damage", ["mixed_basis", "raw_revision", "volume_revision", "too_few_overlap"])
+def test_unproven_overlap_refetches_full_history(feed, damage):
+    bars = incremental_fixture(feed)
+    tail = json.loads(json.dumps(bars[-5:] + [raw_bar("2026-10-08", 17)]))
+    if damage == "mixed_basis":
+        tail[0]["open"] *= 0.99
+    elif damage == "raw_revision":
+        tail[0]["raw_open"] *= 1.01
+    elif damage == "volume_revision":
+        tail[0]["volume"] += 1
+    else:
+        tail = tail[-3:]
+    full = bars + [raw_bar("2026-10-08", 17)]
+    feed._download = Mock(side_effect=[("测试", tail, "source", []), ("测试", full, "source", [])])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    assert feed._download.call_count == 2
+    assert feed._download.call_args.args[1] == "2026-09-21"
+    assert result == full
+    assert feed.metadata["sh600519"]["update_mode"] == "full_after_overlap_rejected"
+
+
+def test_empty_incremental_tail_does_not_double_request_and_preserves_cache(feed):
+    bars = incremental_fixture(feed)
+    path = feed._get_cache_path("sh600519")
+    before = path.read_bytes()
+    mock_download(feed, [])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    feed._download.assert_called_once()
+    assert result == bars and path.read_bytes() == before
+    meta = feed.metadata["sh600519"]
+    assert not meta["fresh"] and meta["error"]
+    assert meta["latest_status"] == "missing"
+    assert meta["overlap_validation"] == "empty_tail"
+
+
+def test_incomplete_incremental_tail_preserves_disk_and_marks_unusable(feed):
+    bars = incremental_fixture(feed)
+    path = feed._get_cache_path("sh600519")
+    before = path.read_bytes()
+    mock_download(feed, bars[-5:] + [raw_bar("2026-10-08", 17)])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-09")
+    assert len(result) == 8 and path.read_bytes() == before
+    meta = feed.metadata["sh600519"]
+    assert not meta["fresh"] and meta["error"] == "latest_completed_session_missing"
+    assert meta["latest_required"] == "2026-10-09"
+    assert meta["latest_available"] == "2026-10-08"
+
+
+def test_historical_refresh_never_requests_future_cache_tail_or_truncates_file(feed):
+    bars = incremental_fixture(feed)
+    path = feed._get_cache_path("sh600519")
+    stored = json.loads(path.read_text())
+    stored["metadata"]["fetched_at"] = "2020-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(stored))
+    before = path.read_bytes()
+    mock_download(feed, bars[:4])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-09-25")
+    assert feed._download.call_args.args[2] == "2026-09-25"
+    assert result == bars[:4] and path.read_bytes() == before
+    assert feed.metadata["sh600519"]["update_mode"] == "full"
+
+
+def test_wider_start_requires_full_coherent_history(feed):
+    bars = incremental_fixture(feed)
+    mock_download(feed, [raw_bar("2026-09-21", 9)] + bars + [raw_bar("2026-10-08", 17)])
+    feed.fetch_stock_kline("sh600519", "2026-09-20", "2026-10-08")
+    assert feed._download.call_args.args[1] == "2026-09-18"
+    assert feed.metadata["sh600519"]["update_mode"] == "full"
+
+
+def test_failed_full_fallback_retains_original_cache(feed):
+    bars = incremental_fixture(feed)
+    path = feed._get_cache_path("sh600519")
+    before = path.read_bytes()
+    feed._download = Mock(side_effect=[("测试", [raw_bar("2026-10-08", 17)], "source", []),
+                                       ("测试", [], "unavailable", [])])
+    _, _, result = feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    assert result == bars and path.read_bytes() == before
+    assert not feed.metadata["sh600519"]["fresh"]
+
+
+@pytest.mark.parametrize("damage", ["raw_missing", "source_missing", "timestamp_future"])
+def test_unverified_cached_basis_forces_full_history(feed, damage):
+    bars = incremental_fixture(feed)
+    path = feed._get_cache_path("sh600519")
+    stored = json.loads(path.read_text())
+    if damage == "raw_missing":
+        stored["bars"][0].pop("raw_close")
+    elif damage == "source_missing":
+        stored["metadata"].pop("source")
+    else:
+        stored["metadata"]["fetched_at"] = "2099-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(stored))
+    mock_download(feed, bars + [raw_bar("2026-10-08", 17)])
+    feed.fetch_stock_kline("sh600519", bars[0]["date"], "2026-10-08")
+    assert feed._download.call_args.args[1] == "2026-09-21"
+    assert feed.metadata["sh600519"]["update_mode"] == "full"
+
+
+def test_initial_partial_history_is_cached_with_error_for_incremental_repair(feed):
+    bars = [raw_bar(date) for date in ("2026-10-09", "2026-10-12", "2026-10-13")]
+    mock_download(feed, bars)
+    feed.fetch_stock_kline("sh600519", "2026-10-09", "2026-10-14")
+    stored = json.loads(feed._get_cache_path("sh600519").read_text())
+    assert stored["metadata"]["error"] == "latest_completed_session_missing"
+    assert not stored["metadata"]["fresh"]
+    mock_download(feed, bars + [raw_bar("2026-10-14")])
+    feed.fetch_stock_kline("sh600519", "2026-10-09", "2026-10-14")
+    assert feed.metadata["sh600519"]["update_mode"] == "incremental"
+    assert feed.metadata["sh600519"]["fresh"]
+
+
+def test_public_provider_outages_open_circuit_instead_of_repeating_per_symbol(feed):
+    feed.session.get = Mock(side_effect=requests.Timeout("secret remote details must stay private"))
+    for symbol in ("sh600000", "sh600001", "sh600002", "sh600003", "sh600004"):
+        feed.fetch_stock_kline(symbol, "2026-10-13", "2026-10-13")
+    # Three probes per provider, then all further symbol requests fail fast.
+    assert feed.session.get.call_count == 6
+    states = feed._sources.circuit.status()
+    assert states["eastmoney"]["state"] == "open"
+    assert states["tencent"]["state"] == "open"
+    assert "secret" not in json.dumps(feed.metadata)
+
+
+def test_stale_public_provider_switches_before_accepting_tail(feed):
+    feed._eastmoney=Mock(return_value=('旧源',[row('2026-10-13')]))
+    feed._tencent=Mock(return_value=('备用源',[row('2026-10-13'),row('2026-10-14')],[]))
+    _,bars,_,warnings=feed._download_legacy('sh600036','2026-10-13','2026-10-14','qfq')
+    assert bars[-1]['date']=='2026-10-14'
+    assert feed._tencent.call_count==2
+    assert 'eastmoney_adjusted_latest_missing' in warnings
+
+
+def test_numeric_provider_name_keeps_known_security_name(feed):
+    feed._stock_names={'sh600519':'贵州茅台'}
+    feed._download=Mock(return_value=('600519',[raw_bar('2026-10-14')],'baostock',[]))
+    _,name,_=feed.fetch_stock_kline('sh600519','2026-10-14','2026-10-14')
+    assert name=='贵州茅台'
+
+
+def test_baostock_cache_without_dated_risk_marker_is_refreshed(feed):
+    bar=raw_bar('2026-10-14');bar['source']='baostock'
+    meta=feed._describe([bar],'2026-10-14','2026-10-14','baostock');meta['adjustment']='qfq'
+    feed._write_cache('sh600519','qfq','600519',[bar],meta)
+    feed._stock_names={'sh600519':'贵州茅台'}
+    peek=feed.peek_universe(['sh600519'],'2026-10-14','2026-10-14')['sh600519']
+    assert not peek['metadata']['cache_hit'] and not peek['metadata']['fresh']
+    assert peek['name']=='贵州茅台'
+    checked=dict(bar,is_st=False)
+    feed._download=Mock(return_value=('600519',[checked],'baostock',[]))
+    feed.fetch_stock_kline('sh600519','2026-10-14','2026-10-14')
+    assert feed._download.called and feed.metadata['sh600519']['fresh']
+
+
+def test_serial_sdk_never_creates_a_parallel_local_wait_queue(feed):
+    import threading,time
+    active=[0];peak=[0];lock=threading.Lock()
+    feed._sources.status=Mock(return_value={'baostock':{'installed':True},'tushare':{'configured':False}})
+    def fetch(symbol,*args):
+        with lock:active[0]+=1;peak[0]=max(peak[0],active[0])
+        time.sleep(.005)
+        with lock:active[0]-=1
+        return symbol,'测试',[raw_bar('2026-10-14')]
+    feed.fetch_stock_kline=fetch
+    feed.fetch_universe_klines(['sh600036','sh600519','sh600000'],'2026-10-14','2026-10-14',max_workers=6)
+    assert peak[0]==1

@@ -21,6 +21,10 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 echo "[*] 正在启动 A股模拟交易系统服务..."
+# Optional market SDKs stay isolated from the user's Python environment.
+if [ -d "$DIR/data/market_sdk" ]; then
+    export PYTHONPATH="$DIR/data/market_sdk${PYTHONPATH:+:$PYTHONPATH}"
+fi
 # 默认传递所有脚本传入参数（如 --test, --port 8080 等）
 nohup python3 "$DIR/server.py" "$@" < /dev/null >> "$LOG_FILE" 2>&1 &
 SERVER_PID=$!

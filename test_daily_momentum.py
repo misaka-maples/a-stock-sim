@@ -378,13 +378,14 @@ def test_configuration_change_invalidates_inflight_publication(account, clock):
 
 def test_revised_same_day_rank_updates_partial_intent_signal_and_order(account, clock):
     other = "sh600001"
-    feed = StubFeed({other: completed_bars("2026-09-18")})
+    feed = StubFeed({other: completed_bars("2026-09-21", trend=.01)})
     s = prepared(account, symbols=[SYMBOL, other], feed=feed)
     tick(s, {SYMBOL: market_quote()}, clock)
     assert s.state["pending_entries"][SYMBOL]["filled_shares"] == 500
     old_signal = s.state["pending_entries"][SYMBOL]["signal"]["score"]
     feed.overrides[SYMBOL] = completed_bars("2026-09-21", trend=.01)
     feed.overrides[other] = completed_bars("2026-09-21", trend=.04)
+    s._history_valid_until = 0  # Model a newly available revised snapshot.
     s.prepare(now=NOW, synchronous=True)
     with s._history_lock:
         s._plan("2026-09-21", "2026-09-22")
@@ -818,3 +819,41 @@ def test_completed_entry_is_not_reported_as_new_rejected_order(account, clock):
     tick(s,{SYMBOL:market_quote(now=later,current=11.32,open=11.32)},clock,now=later)
     assert not s.state['entry_rejections']
     assert account.positions[SYMBOL]['total_shares']==1500
+
+
+def test_large_rollover_batches_publish_holdings_first_and_catch_up(account, clock):
+    seed_position(account,clock,shares=100)
+    symbols=['sh'+str(600001+i) for i in range(130)]
+    class RolloverFeed(StubFeed):
+        def peek_universe(self,symbols,start_date=None,end_date=None):
+            return {sym:dict(name='测试股票',bars=completed_bars('2026-09-18'),
+                        metadata=dict(fresh=False,cache_hit=False,raw_prices_available=True)) for sym in symbols}
+    feed=RolloverFeed()
+    s=MomentumRotationProStrategy(account,symbols,feed=feed,industry_map={})
+    s.prepare(now=NOW);s._history_thread.join(5)
+    assert feed.calls[0]['symbols'][0]==SYMBOL
+    assert len(feed.calls[0]['symbols'])==s.CATCHUP_BATCH
+    assert s.data_status['usable_history']==s.CATCHUP_BATCH
+    assert not s.data_status['rotation_ready']
+    assert s.history_cache[SYMBOL][-1]['date']=='2026-09-21'
+    s._next_failed_retry=0;s.prepare(now=NOW);s._history_thread.join(5)
+    assert s.data_status['usable_history']==131 and s.data_status['rotation_ready']
+    assert s.data_status['holding_history_ready']
+
+
+def test_incomplete_ranking_defers_new_buys_but_preserves_risk_exit(account,clock):
+    seed_position(account,clock,shares=100,price=14.)
+    other='sh600001'
+    s=prepared(account,symbols=[SYMBOL,other],feed=StubFeed({other:completed_bars('2026-09-18')}))
+    assert s._ranking_coverage()==.5
+    tick(s,{SYMBOL:market_quote()},clock)
+    assert SYMBOL not in account.positions
+    assert not s.state['pending_entries'] and not s.state.get('last_rebalance')
+    assert account.trades[-1]['side']=='SELL'
+
+
+def test_dated_risk_warning_excluded_even_if_provider_omits_name(account):
+    bars=completed_bars('2026-09-21');bars[-1]['is_st']=True
+    s=prepared(account,feed=StubFeed({SYMBOL:bars}))
+    assert s.data_status['usable_history']==1
+    assert not s.preview_candidates(NOW)
