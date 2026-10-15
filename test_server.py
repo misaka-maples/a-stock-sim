@@ -286,6 +286,14 @@ class TestServerAPI(unittest.TestCase):
         self.assertEqual(len(self.fetch.call_args.args[0]), 10)
         self.assertEqual(self.client.get("/api/stock/search", params={"q": "600519"}).json()[0]["symbol"], "sh600519")
 
+    def test_history_retry_countdown_is_live_and_does_not_mutate_snapshot(self):
+        import time
+        self.ctx.strategy.data_status['next_failed_retry_seconds']=900
+        self.ctx.strategy._next_failed_retry=time.monotonic()+120
+        result=self.client.get('/api/status').json()['data_quality']
+        self.assertTrue(118<=result['next_failed_retry_seconds']<=120)
+        self.assertEqual(self.ctx.strategy.data_status['next_failed_retry_seconds'],900)
+
     def test_get_performance(self):
         result = self.client.get("/api/performance")
         self.assertEqual(result.status_code, 200)

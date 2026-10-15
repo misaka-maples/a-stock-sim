@@ -684,6 +684,11 @@ def get_status():
         strat_display = getattr(ctx.strategy, "display_name", strat_id)
         if hasattr(ctx.strategy, "preview_candidates"):
             ctx.radar_candidates = ctx.strategy.preview_candidates(now)
+        quality = dict(getattr(ctx.strategy, "data_status", {}))
+        if hasattr(ctx.strategy, "_next_failed_retry"):
+            quality["next_failed_retry_seconds"] = max(0, round(ctx.strategy._next_failed_retry-time.monotonic()))
+        if hasattr(ctx.strategy, "_source_health"):
+            quality["source_health"] = ctx.strategy._source_health()
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
@@ -715,7 +720,7 @@ def get_status():
             "symbols_sample": ctx.symbols[:10],
             "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None,
-            "data_quality": getattr(ctx.strategy, "data_status", {}),
+            "data_quality": quality,
             "strategy_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
             "signal_schedule": "完整日线信号，下一交易日按实际有效盘口撮合" if hasattr(ctx.strategy, "config") else "旧版实验策略"
         }

@@ -1,4 +1,5 @@
 import json
+import io
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,7 +12,7 @@ from unittest.mock import Mock, patch
 from history_providers import (CircuitBreaker, HistoryNotCurrent,
                                ProviderUnavailable, ProviderBusy, SourceRouter,
                                normalize_baostock, normalize_tushare,
-                               _bao_query, _baostock_worker)
+                               _bao_query, _baostock_worker, _baostock_stream, _acquire_worker_lease)
 
 
 def raw(day='20261014', close=10):
@@ -25,8 +26,10 @@ def combined(day='2026-10-14'):
 
 class ProviderTests(unittest.TestCase):
     def router(self, root=None):
+        if root is None:
+            tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=tmp.name
         with patch.dict('os.environ', {}, clear=True), patch('history_providers.importlib.util.find_spec', return_value=None):
-            return SourceRouter(base_dir=root or '/does-not-exist')
+            return SourceRouter(base_dir=root)
 
     def test_tushare_factor_raw_prices_and_units(self):
         bars = normalize_tushare([raw('20261013'),raw()], [dict(trade_date='20261013',adj_factor=1),dict(trade_date='20261014',adj_factor=2)])
@@ -184,6 +187,106 @@ class ProviderTests(unittest.TestCase):
                 _baostock_worker('sh600036','2026-10-13','2026-10-14','qfq')
             sdk.logout.assert_called_once()
 
+    def test_three_bad_assets_do_not_disable_healthy_source(self):
+        router=self.router();router._bao_available=True
+        router._baostock=Mock(side_effect=[HistoryNotCurrent('invalid_number')]*3+[combined()])
+        for symbol in ('sh600001','sh600002','sh600003'):
+            self.assertEqual(router.download(symbol,'2026-10-13','2026-10-14')[1],[])
+        self.assertEqual(router.circuit.status()['baostock']['failures'],0)
+        self.assertEqual(router.download('sh600036','2026-10-13','2026-10-14')[2],'baostock')
+        diag=router.status()['failure_diagnostics']['baostock']
+        self.assertEqual(diag['last_error_code'],'invalid_number')
+        self.assertEqual(diag['last_failed_symbol'],'sh600003')
+        self.assertEqual(diag['counts_by_code'],{'invalid_number':3})
+
+    def test_optional_invalid_preclose_does_not_discard_verified_ohlc(self):
+        for value in ('',0,'0',None,float('nan'),'unknown'):
+            with self.subTest(value=value):
+                row=raw();row['pre_close']=value
+                b=normalize_tushare([row],[dict(trade_date='20261014',adj_factor=1)])[0]
+                self.assertEqual(b['raw_close'],10)
+                self.assertNotIn('raw_pre_close',b)
+        row=dict(date='2026-10-14',open=10,close=10,high=11,low=9,volume=12300,amount=45678,preclose='0')
+        self.assertNotIn('raw_pre_close',normalize_baostock([row],[row])[0])
+
+    def test_safe_failure_code_and_symbol_retained_without_secrets(self):
+        router=self.router();router._bao_available=True
+        router._baostock=Mock(side_effect=ProviderUnavailable('sdk_error_10001001'))
+        router.download('sh600036','2026-10-13','2026-10-14')
+        self.assertEqual(router.status()['circuits']['baostock']['last_error_code'],'sdk_error_10001001')
+        router._baostock.side_effect=ProviderUnavailable('token=private-super-secret')
+        router.download('sh600036','2026-10-13','2026-10-14')
+        self.assertNotIn('private-super-secret',json.dumps(router.status()))
+        self.assertEqual(router.status()['failure_diagnostics']['baostock']['last_error_code'],'provider_error')
+
+    def test_stream_login_refusal_emits_sanitized_numeric_code(self):
+        sdk=Mock();sdk.login.return_value.error_code='10001011'
+        sdk.login.return_value.error_msg='private response must not escape'
+        out=io.StringIO()
+        with patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',out),patch('sys.stdin',io.StringIO('')):
+            self.assertEqual(_baostock_stream(),1)
+        message=json.loads(out.getvalue())
+        self.assertEqual(message,{'id':None,'phase':'login','error':'sdk_error_10001011','asset_error':False})
+        self.assertNotIn('private',out.getvalue())
+        sdk.logout.assert_not_called()
+        sdk.query_history_k_data_plus.assert_not_called()
+
+    def test_blacklist_persists_six_hours_and_cannot_be_reset_by_success(self):
+        router=self.router()
+        with patch('history_providers.time.time',return_value=100000):
+            router._persist_bao_restriction()
+            data=json.loads(router._provider_state_path.read_text())
+            self.assertEqual(data['baostock']['blocked_until'],121600)
+            self.assertEqual(router._provider_state_path.stat().st_mode & 0o777,0o600)
+            router.circuit.call('baostock',lambda:42)
+            another=self.router(str(router.base_dir))
+            self.assertEqual(another.status()['baostock']['retry_after_seconds'],21600)
+            self.assertEqual(another.status()['circuits']['baostock']['state'],'open')
+            self.assertEqual(another.status()['circuits']['baostock']['retry_after_seconds'],21600)
+            with patch('history_providers.subprocess.Popen') as spawn:
+                with self.assertRaisesRegex(ProviderUnavailable,'provider_restricted'):
+                    another._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+                spawn.assert_not_called()
+        with patch('history_providers.time.time',return_value=121601):
+            self.assertEqual(router.status()['baostock']['retry_after_seconds'],0)
+
+    def test_cross_process_lease_and_idle_worker_logout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            leasepath=str(Path(directory)/'baostock.lock')
+            with patch.dict('os.environ',{'QUANT_BAO_LEASE_PATH':leasepath}):
+                handle=_acquire_worker_lease()
+                try:
+                    code="from history_providers import _acquire_worker_lease,ProviderBusy\ntry:\n _acquire_worker_lease();print('unexpected')\nexcept ProviderBusy:\n print('busy')"
+                    child=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=3)
+                    self.assertEqual(child.stdout.strip(),'busy')
+                finally:handle.close()
+                sdk=Mock();sdk.login.return_value.error_code='0'
+                def idle(*args):
+                    with self.assertRaises(ProviderBusy):_acquire_worker_lease()
+                    return ([],[],[])
+                with patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',io.StringIO()),patch('history_providers.select.select',side_effect=idle):
+                    self.assertEqual(_baostock_stream(),0)
+                sdk.logout.assert_called_once()
+                after=_acquire_worker_lease();after.close()
+
+    def test_one_shot_blacklist_code_persisted_without_generic_worker_error(self):
+        router=self.router();router._bao_stream=False
+        result=Mock(returncode=1,stdout=json.dumps({'error':'sdk_error_10001011'}))
+        with patch('history_providers.subprocess.run',return_value=result):
+            with self.assertRaisesRegex(ProviderUnavailable,'sdk_error_10001011'):
+                router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+        self.assertGreaterEqual(router.status()['baostock']['retry_after_seconds'],21599)
+
+    def test_provider_state_wrong_types_fail_closed_without_process(self):
+        router=self.router();router._provider_state_path.parent.mkdir(parents=True)
+        for state in ([],{'baostock':[]},{'baostock':{'blocked_until':'bad'}},{'baostock':{'blocked_until':float('nan')}}):
+            with self.subTest(state=state):
+                router._provider_state_path.write_text(json.dumps(state))
+                with patch('history_providers.subprocess.Popen') as spawn:
+                    with self.assertRaisesRegex(ProviderUnavailable,'provider_state_unavailable'):
+                        router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+                    spawn.assert_not_called()
+
     def test_invalid_symbol_never_starts_worker(self):
         with self.assertRaises(ProviderUnavailable):
             self.router().download('../private','2026-10-13','2026-10-14')
@@ -225,8 +328,9 @@ class CircuitTests(unittest.TestCase):
 
 class StreamWorkerTests(unittest.TestCase):
     def router(self):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         with patch.dict('os.environ', {}, clear=True), patch('history_providers.importlib.util.find_spec', return_value=None):
-            return SourceRouter(base_dir='/does-not-exist')
+            return SourceRouter(base_dir=tmp.name)
 
     def child(self, code):
         # Real local pipes exercise framing/timeouts; no provider/network access.
@@ -286,4 +390,34 @@ class StreamWorkerTests(unittest.TestCase):
                     router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
             self.assertIsNone(router._bao_process)
             self.assertIsNotNone(child.poll())
+        finally:router.close()
+
+    def test_worker_known_bad_asset_response_is_not_transport_failure(self):
+        child=self.child("import sys,json\nfor line in sys.stdin:\n r=json.loads(line);print(json.dumps({'id':r['id'],'error':'invalid_number','asset_error':True}),flush=True)")
+        router=self.router()
+        try:
+            with patch('history_providers.subprocess.Popen',return_value=child):
+                with self.assertRaisesRegex(HistoryNotCurrent,'invalid_number'):
+                    router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+            self.assertIsNone(router._bao_process)
+            self.assertIsNotNone(child.poll())
+        finally:router.close()
+
+    def test_untrusted_worker_error_text_not_exposed(self):
+        child=self.child("import sys,json\nfor line in sys.stdin:\n r=json.loads(line);print(json.dumps({'id':r['id'],'error':'private-secret-token','asset_error':True}),flush=True)")
+        router=self.router()
+        try:
+            with patch('history_providers.subprocess.Popen',return_value=child):
+                with self.assertRaisesRegex(ProviderUnavailable,'^invalid_worker_result$'):
+                    router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+        finally:router.close()
+
+    def test_login_handshake_failure_preserves_numeric_sdk_code(self):
+        child=self.child("import json;print(json.dumps({'id':None,'phase':'login','error':'sdk_error_10001011','asset_error':False}),flush=True)")
+        router=self.router()
+        try:
+            with patch('history_providers.subprocess.Popen',return_value=child):
+                with self.assertRaisesRegex(ProviderUnavailable,'^sdk_error_10001011$'):
+                    router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+            self.assertIsNone(router._bao_process)
         finally:router.close()

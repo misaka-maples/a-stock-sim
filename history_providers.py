@@ -10,6 +10,7 @@ No fabricated bars, credentials in URLs, proxy bypass, or WAF workarounds.
 import atexit
 import contextlib
 import datetime as dt
+import fcntl
 import importlib.util
 import io
 import json
@@ -22,7 +23,8 @@ import subprocess
 import sys
 import threading
 import time
-
+import tempfile
+import select
 import requests
 
 
@@ -38,6 +40,26 @@ class ProviderBusy(ProviderUnavailable):
     """Local bounded queue contention, not evidence of a remote outage."""
 
 
+ASSET_ERROR_CODES = frozenset({"invalid_number", "invalid_ohlc", "invalid_raw_ohlc", "negative_activity", "raw_adjusted_dates_mismatch", "missing_adjustment_factor", "empty_history", "stale_history"})
+SAFE_ERROR_CODES = ASSET_ERROR_CODES | frozenset({"busy", "circuit_open", "provider_error", "api_rejected", "invalid_payload", "invalid_symbol", "invalid_request", "out_of_range", "query_failed", "query_incomplete", "login_failed", "worker_failed", "worker_write_failed", "worker_timeout", "worker_closed", "worker_response_too_large", "worker_protocol_noise", "invalid_worker_result", "provider_restricted", "provider_state_unavailable"})
+SAFE_EXCEPTION_NAMES = frozenset({"RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError", "TimeoutExpired", "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectionError", "HTTPError", "OSError", "JSONDecodeError", "BrokenPipeError", "BlockingIOError"})
+
+
+def _safe_error_code(exc):
+    # Only constants generated here or a numeric SDK code can enter diagnostics.
+    # Never expose arbitrary exception strings, SDK messages or response bodies.
+    if isinstance(exc, ProviderUnavailable):
+        code = str(exc)
+        if code in SAFE_ERROR_CODES or code in SAFE_EXCEPTION_NAMES or re.fullmatch(r"sdk_error_-?\d{1,8}", code):
+            return code
+    return type(exc).__name__ if type(exc).__name__ in SAFE_EXCEPTION_NAMES else "provider_error"
+
+
+def _sdk_error_code(value, fallback="query_failed"):
+    text = str(value)
+    return "sdk_error_" + text if re.fullmatch(r"-?\d{1,8}", text) else fallback
+
+
 class CircuitBreaker:
     def __init__(self, failures=3, cooldown=300, clock=time.monotonic):
         self.threshold, self.cooldown, self.clock = failures, cooldown, clock
@@ -46,7 +68,7 @@ class CircuitBreaker:
 
     def call(self, provider, callback):
         with self._lock:
-            state = self._states.setdefault(provider, {"failures": 0, "until": 0, "probe": False, "last_error": None})
+            state = self._states.setdefault(provider, {"failures": 0, "until": 0, "probe": False, "last_error": None, "last_error_code": None})
             now = self.clock()
             if state["until"] > now or state["probe"]:
                 raise ProviderUnavailable("circuit_open")
@@ -72,9 +94,10 @@ class CircuitBreaker:
                 state["probe"] = False
                 state["failures"] += 1
                 state["last_error"] = type(exc).__name__
+                state["last_error_code"] = _safe_error_code(exc)
                 if probe or state["failures"] >= self.threshold:
                     state["until"] = self.clock() + self.cooldown
-            raise ProviderUnavailable(type(exc).__name__) from None
+            raise ProviderUnavailable(_safe_error_code(exc)) from None
         with self._lock:
             state.update(failures=0, until=0, probe=False, last_error=None)
         return value
@@ -82,13 +105,16 @@ class CircuitBreaker:
     def status(self):
         with self._lock:
             now = self.clock()
-            return {name: {"failures": s["failures"], "state": "half_open" if s["probe"] else "open" if s["until"] > now else "closed", "retry_after_seconds": max(0, round(s["until"] - now)), "last_error": s["last_error"]} for name, s in self._states.items()}
+            return {name: {"failures": s["failures"], "state": "half_open" if s["probe"] else "open" if s["until"] > now else "closed", "retry_after_seconds": max(0, round(s["until"] - now)), "last_error": s["last_error"], "last_error_code": s["last_error_code"]} for name, s in self._states.items()}
 
 
 def _number(value, positive=False):
-    value = float(value)
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise HistoryNotCurrent("invalid_number") from None
     if not math.isfinite(value) or (positive and value <= 0):
-        raise ProviderUnavailable("invalid_number")
+        raise HistoryNotCurrent("invalid_number")
     return value
 
 
@@ -111,17 +137,22 @@ def _bar(raw, adjusted, source, date, pre_close=None):
         out[key] = _number(adjusted[key], positive=True)
         out["raw_" + key] = _number(raw[key], positive=True)
     if out["high"] < max(out["open"], out["close"], out["low"]) - 1e-8 or out["low"] > min(out["open"], out["close"], out["high"]) + 1e-8:
-        raise ProviderUnavailable("invalid_ohlc")
+        raise HistoryNotCurrent("invalid_ohlc")
     if out["raw_high"] < max(out["raw_open"], out["raw_close"], out["raw_low"]) - 1e-8 or out["raw_low"] > min(out["raw_open"], out["raw_close"], out["raw_high"]) + 1e-8:
-        raise ProviderUnavailable("invalid_raw_ohlc")
+        raise HistoryNotCurrent("invalid_raw_ohlc")
     out["volume"] = _number(raw["volume"])
     out["amount"] = _number(raw.get("amount", 0))
     if out["volume"] < 0 or out["amount"] < 0:
-        raise ProviderUnavailable("negative_activity")
+        raise HistoryNotCurrent("negative_activity")
     out["adjustment_factor"] = out["close"] / out["raw_close"]
     if pre_close not in (None, ""):
-        out["raw_pre_close"] = _number(pre_close, positive=True)
-        out["raw_pre_close_source"] = "provider_pre_close"
+        try:
+            out["raw_pre_close"] = _number(pre_close, positive=True)
+            out["raw_pre_close_source"] = "provider_pre_close"
+        except HistoryNotCurrent:
+            # IPO/blank/zero exchange reference is unknown, not corrupt OHLC.
+            # Never substitute a fabricated previous close or limit price.
+            pass
     return out
 
 
@@ -130,7 +161,7 @@ def normalize_baostock(raw_rows, adjusted_rows, adjustment="qfq"):
     raws = {_day(r["date"]): r for r in raw_rows}
     adjusted = {_day(r["date"]): r for r in adjusted_rows}
     if set(raws) != set(adjusted):
-        raise ProviderUnavailable("raw_adjusted_dates_mismatch")
+        raise HistoryNotCurrent("raw_adjusted_dates_mismatch")
     result = []
     for date in sorted(raws):
         raw = dict(raws[date])
@@ -153,7 +184,7 @@ def normalize_tushare(raw_rows, factor_rows, adjustment="qfq"):
     raws = {_day(r["trade_date"]): r for r in raw_rows}
     factors = {_day(r["trade_date"]): _number(r["adj_factor"], True) for r in factor_rows}
     if adjustment == "qfq" and not set(raws).issubset(factors):
-        raise ProviderUnavailable("missing_adjustment_factor")
+        raise HistoryNotCurrent("missing_adjustment_factor")
     anchor = factors[max(raws)] if raws and adjustment == "qfq" else 1
     result = []
     for date in sorted(raws):
@@ -174,13 +205,26 @@ def _bao_query(sdk, code, start, end, flag):
         fields += ",isST"
     result = sdk.query_history_k_data_plus(code, fields, start_date=start, end_date=end, frequency="d", adjustflag=flag)
     if result.error_code != "0":
-        raise ProviderUnavailable("query_failed")
+        raise ProviderUnavailable(_sdk_error_code(result.error_code))
     rows = []
     while result.next():
         rows.append(dict(zip(result.fields, result.get_row_data())))
     if result.error_code != "0":
-        raise ProviderUnavailable("query_incomplete")
+        raise ProviderUnavailable(_sdk_error_code(result.error_code, "query_incomplete"))
     return rows
+
+
+def _acquire_worker_lease():
+    path = Path(os.environ.get("QUANT_BAO_LEASE_PATH", str(Path.home() / ".cache/openarmx-quant/baostock.lock")))
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    handle = open(path, "a+b")
+    os.chmod(path, 0o600)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise ProviderBusy("busy") from None
+    return handle
 
 
 def _baostock_worker(symbol, start, end, adjustment):
@@ -190,7 +234,7 @@ def _baostock_worker(symbol, start, end, adjustment):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         login = sdk.login()
         if login.error_code != "0":
-            raise ProviderUnavailable("login_failed")
+            raise ProviderUnavailable(_sdk_error_code(login.error_code, "login_failed"))
         try:
             code = symbol[:2] + "." + symbol[2:]
             raw = _bao_query(sdk, code, start, end, "3")
@@ -205,14 +249,29 @@ def _baostock_stream():
     protocol = sys.stdout
     sdk = None
     logged_in = False
+    lease = None
     with open(os.devnull, "w") as quiet:
         try:
+            lease = _acquire_worker_lease()
             with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
                 import baostock as sdk
-                if sdk.login().error_code != "0":
+                login = sdk.login()
+                if login.error_code != "0":
+                    # Startup happens before reading a request. Emit a bounded,
+                    # sanitized handshake error so parent can distinguish an
+                    # explicit login refusal from an unexplained dead process.
+                    protocol.write(json.dumps({"id": None, "phase": "login", "error": _sdk_error_code(login.error_code, "login_failed"), "asset_error": False}) + "\n")
+                    protocol.flush()
                     return 1
                 logged_in = True
-            for line in sys.stdin:
+            while True:
+                # Release the SDK session/OS lease after five idle seconds, so
+                # another research feed can acquire the single allowed login.
+                if not select.select([sys.stdin], [], [], 5)[0]:
+                    break
+                line = sys.stdin.readline()
+                if not line:
+                    break
                 request_id = None
                 try:
                     request = json.loads(line)
@@ -229,13 +288,16 @@ def _baostock_stream():
                         bars = normalize_baostock(raw, adjusted, adjustment)
                     protocol.write(json.dumps({"id": request_id, "bars": bars}, allow_nan=False) + "\n")
                     protocol.flush()
-                except Exception:
-                    protocol.write(json.dumps({"id": request_id, "error": "query_failed"}) + "\n")
+                except Exception as exc:
+                    code = _safe_error_code(exc)
+                    protocol.write(json.dumps({"id": request_id, "error": code, "asset_error": code in ASSET_ERROR_CODES}) + "\n")
                     protocol.flush()
                     # Failed SDK protocol state must not contaminate next call.
                     return 1
             return 0
-        except Exception:
+        except Exception as exc:
+            protocol.write(json.dumps({"id": None, "phase": "login", "error": _safe_error_code(exc), "asset_error": False}) + "\n")
+            protocol.flush()
             return 1
         finally:
             if sdk is not None and logged_in:
@@ -244,6 +306,8 @@ def _baostock_stream():
                         sdk.logout()
                     except Exception:
                         pass
+            if lease is not None:
+                lease.close()
 
 
 _BAO_LOCK = threading.Lock()
@@ -267,10 +331,88 @@ class SourceRouter:
         self._bao_stream = baostock_stream
         self._bao_process = None
         self._bao_request_id = 0
+        self._failure_lock = threading.Lock()
+        self._failure_diagnostics = {}
+        self._provider_state_path = self.base_dir / "data/private/market_provider_state.json"
+        self._bao_lease_path = Path.home() / ".cache/openarmx-quant/baostock.lock"
         atexit.register(self.close)
 
     def status(self):
-        return {"tushare": {"configured": bool(self._token)}, "baostock": {"installed": self._bao_available}, "circuits": self.circuit.status()}
+        with self._failure_lock:
+            diagnostics = {name: dict(info, counts_by_code=dict(info["counts_by_code"])) for name, info in self._failure_diagnostics.items()}
+        try:
+            restriction = self._bao_restriction()
+        except ProviderUnavailable:
+            restriction = {"state_error": "provider_state_unavailable"}
+        circuits = self.circuit.status()
+        if restriction.get("retry_after_seconds", 0):
+            current = circuits.setdefault("baostock", {"failures": 0, "last_error": None})
+            current.update(state="open", retry_after_seconds=max(current.get("retry_after_seconds", 0), restriction["retry_after_seconds"]), blocked_until=restriction["blocked_until"], last_error_code="sdk_error_10001011")
+        return {"tushare": {"configured": bool(self._token)}, "baostock": dict(installed=self._bao_available, **restriction), "circuits": circuits, "failure_diagnostics": diagnostics}
+
+    def _bao_restriction(self):
+        try:
+            state = json.loads(self._provider_state_path.read_text())
+        except FileNotFoundError:
+            state = {}
+        except (OSError, ValueError, TypeError):
+            raise ProviderUnavailable("provider_state_unavailable") from None
+        try:
+            until = float(state.get("baostock", {}).get("blocked_until", 0))
+            if not math.isfinite(until):
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise ProviderUnavailable("provider_state_unavailable") from None
+        return {"blocked_until": until, "retry_after_seconds": max(0, math.ceil(until-time.time()))}
+
+    def _persist_bao_restriction(self):
+        path = self._provider_state_path
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(path.with_suffix(".lock"), "a+b") as lock:
+            os.chmod(path.with_suffix(".lock"), 0o600)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                state = json.loads(path.read_text())
+            except (FileNotFoundError, ValueError):
+                state = {}
+            if not isinstance(state, dict):
+                state = {}
+            previous = state.get("baostock", {})
+            if not isinstance(previous, dict):
+                previous = {}
+            try:
+                prior_until = float(previous.get("blocked_until", 0))
+                if not math.isfinite(prior_until):
+                    prior_until = 0
+            except (TypeError, ValueError):
+                prior_until = 0
+            until = max(prior_until, time.time()+21600)
+            state["baostock"] = {"blocked_until": until, "last_error_code": "sdk_error_10001011", "updated_at": time.time()}
+            tempname = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as tmp:
+                    tempname = tmp.name
+                    json.dump(state, tmp)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tempname, path)
+            finally:
+                if tempname and os.path.exists(tempname):
+                    os.unlink(tempname)
+
+    def _worker_env(self):
+        env = dict(os.environ)
+        env["QUANT_BAO_LEASE_PATH"] = str(self._bao_lease_path)
+        return env
+
+    def _record_failure(self, provider, symbol, exc):
+        code = _safe_error_code(exc)
+        with self._failure_lock:
+            info = self._failure_diagnostics.setdefault(provider, {"last_error_code": None, "last_failed_symbol": None, "counts_by_code": {}})
+            info["last_error_code"] = code
+            info["last_failed_symbol"] = symbol
+            info["counts_by_code"][code] = info["counts_by_code"].get(code, 0) + 1
+        return code
 
     def _tushare_api(self, api, params, fields):
         response = self.session.post("https://api.tushare.pro", json={"api_name": api, "token": self._token, "params": params, "fields": fields}, timeout=self.timeout)
@@ -343,8 +485,19 @@ class SourceRouter:
     def _baostock_once(self, symbol, start, end, adjustment):
         """Bounded one-shot protocol retained for standalone diagnostics."""
         command = [sys.executable, str(Path(__file__).resolve()), "--baostock-worker", symbol, start, end, adjustment]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, check=False)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, check=False, env=self._worker_env())
         if result.returncode:
+            try:
+                code = json.loads(result.stdout).get("error")
+            except (ValueError, TypeError, AttributeError):
+                code = None
+            if isinstance(code, str):
+                if code == "busy":
+                    raise ProviderBusy("busy")
+                if code in ASSET_ERROR_CODES:
+                    raise HistoryNotCurrent(code)
+                if code in SAFE_ERROR_CODES or re.fullmatch(r"sdk_error_-?\d{1,8}", code):
+                    raise ProviderUnavailable(code)
             raise ProviderUnavailable("worker_failed")
         payload = json.loads(result.stdout)
         if not isinstance(payload, list):
@@ -352,6 +505,9 @@ class SourceRouter:
         return payload
 
     def _baostock(self, symbol, start, end, adjustment):
+        # A documented provider restriction survives process/service restarts.
+        if self._bao_restriction()["retry_after_seconds"]:
+            raise ProviderUnavailable("provider_restricted")
         # Serialize a persistent session, with bounded queueing as well as I/O.
         if not _BAO_LOCK.acquire(timeout=self.timeout):
             raise ProviderBusy("busy")
@@ -363,7 +519,7 @@ class SourceRouter:
                 self._stop_bao_worker()
                 command = [sys.executable, "-u", str(Path(__file__).resolve()), "--baostock-stream"]
                 self._bao_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                                     stderr=subprocess.DEVNULL, bufsize=0)
+                                                     stderr=subprocess.DEVNULL, bufsize=0, env=self._worker_env())
                 os.set_blocking(self._bao_process.stdin.fileno(), False)
                 os.set_blocking(self._bao_process.stdout.fileno(), False)
             process = self._bao_process
@@ -391,11 +547,28 @@ class SourceRouter:
                         if extra:
                             raise ProviderUnavailable("worker_protocol_noise")
                         payload = json.loads(line)
-                        if not isinstance(payload, dict) or payload.get("id") != request_id or not isinstance(payload.get("bars"), list):
+                        if not isinstance(payload, dict):
+                            raise ProviderUnavailable("invalid_worker_result")
+                        startup_error = payload.get("phase") == "login" and payload.get("id") is None and "error" in payload
+                        if payload.get("id") != request_id and not startup_error:
+                            raise ProviderUnavailable("invalid_worker_result")
+                        if "error" in payload:
+                            # Never trust worker messages outside our allowlist.
+                            code = payload["error"]
+                            if code in ASSET_ERROR_CODES and payload.get("asset_error") is True:
+                                raise HistoryNotCurrent(code)
+                            if code == "busy":
+                                raise ProviderBusy("busy")
+                            if isinstance(code, str) and (code in SAFE_ERROR_CODES or re.fullmatch(r"sdk_error_-?\d{1,8}", code)):
+                                raise ProviderUnavailable(code)
+                            raise ProviderUnavailable("invalid_worker_result")
+                        if not isinstance(payload.get("bars"), list):
                             raise ProviderUnavailable("invalid_worker_result")
                         return payload["bars"]
-        except Exception:
+        except Exception as exc:
             self._stop_bao_worker()
+            if isinstance(exc, ProviderUnavailable) and str(exc) == "sdk_error_10001011":
+                self._persist_bao_restriction()
             raise
         finally:
             _BAO_LOCK.release()
@@ -429,7 +602,7 @@ class SourceRouter:
                 bars = self.circuit.call(name, lambda cb=callback, p=name: self._validated(p, lambda: cb(symbol, start, end, adjustment), start, end))
                 return symbol[2:], bars, name, warnings
             except ProviderUnavailable as exc:
-                warnings.append(name + "_" + str(exc))
+                warnings.append(name + "_" + self._record_failure(name, symbol, exc))
         if legacy_download is not None:
             name, bars, source, errors = legacy_download(symbol, start, end, adjustment)
             return name, bars, source, warnings + errors
@@ -441,9 +614,12 @@ if __name__ == "__main__":
         sys.exit(_baostock_stream())
     elif len(sys.argv) == 6 and sys.argv[1] == "--baostock-worker":
         try:
-            result = _baostock_worker(*sys.argv[2:])
-            sys.stdout.write(json.dumps(result, allow_nan=False))
-        except Exception:
+            with _acquire_worker_lease():
+                result = _baostock_worker(*sys.argv[2:])
+                sys.stdout.write(json.dumps(result, allow_nan=False))
+        except Exception as exc:
+            sys.stdout.write(json.dumps({"error": _safe_error_code(exc)}, allow_nan=False))
+            sys.stdout.flush()
             sys.exit(1)
     else:
         sys.exit(2)
