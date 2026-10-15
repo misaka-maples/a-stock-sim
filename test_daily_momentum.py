@@ -592,7 +592,8 @@ def test_failed_repair_is_bounded_and_rotates_names(account):
     assert len(feed.calls[-1]["symbols"]) == 24
     first = feed.calls[-1]["symbols"]
     s._next_failed_retry = 0
-    s.prepare(now=NOW)
+    s._next_nonholding_refresh = 0  # next 15-minute batch
+    s.prepare(now=NOW+dt.timedelta(minutes=15))
     s._history_thread.join(3)
     assert feed.calls[-1]["symbols"][0] == symbols[25]
     assert feed.calls[-1]["symbols"] != first
@@ -830,16 +831,16 @@ def test_large_rollover_batches_publish_holdings_first_and_catch_up(account, clo
                         metadata=dict(fresh=False,cache_hit=False,raw_prices_available=True)) for sym in symbols}
     feed=RolloverFeed()
     s=MomentumRotationProStrategy(account,symbols,feed=feed,industry_map={})
-    s.prepare(now=NOW);s._history_thread.join(5)
+    s.prepare(now=NOW.replace(hour=7));s._history_thread.join(5)
     assert feed.calls[0]['symbols'][0]==SYMBOL
     assert feed.calls[0]['symbols']==[SYMBOL]
     assert s.data_status['usable_history']==1
     assert s.data_status['holding_history_ready']
     assert not s.data_status['rotation_ready']
     assert s.history_cache[SYMBOL][-1]['date']=='2026-09-21'
-    s._next_failed_retry=0;s.prepare(now=NOW);s._history_thread.join(5)
+    s._next_failed_retry=0;s.prepare(now=NOW.replace(hour=7));s._history_thread.join(5)
     assert s.data_status['usable_history']==97 and not s.data_status['rotation_ready']
-    s._next_failed_retry=0;s.prepare(now=NOW);s._history_thread.join(5)
+    s._next_failed_retry=0;s.prepare(now=NOW.replace(hour=7));s._history_thread.join(5)
     assert s.data_status['usable_history']==131 and s.data_status['rotation_ready']
     assert s.data_status['holding_history_ready']
 
@@ -876,3 +877,77 @@ def test_failed_large_catchup_backs_off_without_new_data(account):
     assert s.data_status['usable_history']==0
     assert s.data_status['next_failed_retry_seconds']>=60
     assert not s.data_status['rotation_ready']
+
+
+def test_intraday_missing_history_uses_small_batches_and_no_repeat_within_interval(account):
+    class RolloverFeed(StubFeed):
+        def peek_universe(self, symbols, **kwargs):
+            return {sym: dict(bars=completed_bars("2026-09-18"),
+                             metadata=dict(cache_hit=False, fresh=False)) for sym in symbols}
+    symbols = ["sh"+str(600000+i) for i in range(100)]
+    feed = RolloverFeed()
+    s = MomentumRotationProStrategy(account, symbols, feed=feed, industry_map={})
+    s.prepare(now=NOW); s._history_thread.join(5)
+    assert len(feed.calls) == 1 and len(feed.calls[0]["symbols"]) == 24
+    s._next_failed_retry = 0
+    s.prepare(now=NOW+dt.timedelta(seconds=30))
+    assert len(feed.calls) == 1
+    assert s.data_status["update_mode"] == "holding_and_missing_only"
+    assert s.data_status["deferred_history"] >= 76
+
+
+def test_cold_failure_survives_restart_but_new_holding_bypasses_cooldown(account, clock):
+    class ColdFeed(StubFeed):
+        def peek_universe(self, symbols, **kwargs):
+            return {sym: dict(bars=[], metadata=dict(cache_hit=False)) for sym in symbols}
+    feed = ColdFeed({SYMBOL: []})
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    s.prepare(now=NOW); s._history_thread.join(5)
+    assert len(feed.calls) == 1
+    retry = json.loads(s._retry_path.read_text())["symbols"][SYMBOL]
+    assert retry["retry_at"] >= NOW.timestamp()+86400
+    restarted = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    restarted.prepare(now=NOW); restarted._history_thread.join(5)
+    assert len(feed.calls) == 1, "restart must not redownload known empty codes"
+    assert not restarted.data_status["refreshing"]
+    seed_position(account, clock, shares=100)
+    restarted._next_failed_retry = 0
+    restarted.prepare(now=NOW); restarted._history_thread.join(5)
+    assert len(feed.calls) == 2 and feed.calls[-1]["symbols"] == [SYMBOL]
+
+
+def test_malformed_persistent_retry_records_do_not_block_holding_preparation(account, clock):
+    path = account.save_path.parent / "history_refresh_retries.json"
+    path.write_text(json.dumps(dict(symbols={SYMBOL: dict(retry_at="forever"), "bad": None})))
+    seed_position(account, clock, shares=100)
+    feed = StubFeed()
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    s.prepare(now=NOW); s._history_thread.join(5)
+    assert feed.calls[0]["symbols"] == [SYMBOL]
+    assert s.data_status["holding_history_ready"]
+
+
+def test_empty_codes_backoff_weekly_after_three_failures(account):
+    feed = StubFeed({SYMBOL: []})
+    s = prepared(account, feed=feed)
+    for day in range(3):
+        s._record_update_results([SYMBOL], NOW+dt.timedelta(days=day), "2026-09-21")
+    assert s._retry_records[SYMBOL]["retry_at"] == (NOW+dt.timedelta(days=9)).timestamp()
+
+
+def test_repeated_stale_nonholding_waits_until_next_session_after_close(account):
+    s = prepared(account, feed=StubFeed({SYMBOL: completed_bars("2026-09-18")}))
+    s._record_update_results([SYMBOL], NOW, "2026-09-21")
+    assert s._retry_records[SYMBOL]["retry_at"] == NOW.timestamp()+900
+    s._record_update_results([SYMBOL], NOW+dt.timedelta(minutes=15), "2026-09-21")
+    due = dt.datetime.fromtimestamp(s._retry_records[SYMBOL]["retry_at"], BEIJING)
+    assert due.date() == dt.date(2026, 9, 23) and due.time() == dt.time(16, 30)
+
+
+def test_fresh_all_pool_has_no_additional_intraday_downloads(account):
+    feed = StubFeed()
+    s = prepared(account, feed=feed)
+    for minutes in (5, 30, 180):
+        s._next_failed_retry = 0
+        s.prepare(now=NOW+dt.timedelta(minutes=minutes))
+    assert len(feed.calls) == 1

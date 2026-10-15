@@ -1772,6 +1772,10 @@
         if (quality.ranking_coverage !== undefined) {
           coverageBadge.innerText += ` · 排名覆盖 ${(quality.ranking_coverage * 100).toFixed(1)}% · ${quality.rotation_ready ? '轮动可用' : '等待追更，暂停排名交易'}`;
           if (quality.refreshing) coverageBadge.innerText += ' · 正在追更';
+          if (quality.update_mode === 'holding_and_missing_only') coverageBadge.innerText += ' · 盘中低频补数';
+          const baoBudget = quality.source_health?.request_budget?.baostock;
+          if (baoBudget?.reason === 'untracked_prior_usage') coverageBadge.innerText += ' · Bao今日用量未知，暂停请求';
+          else if (baoBudget?.daily_limit) coverageBadge.innerText += ` · Bao请求 ${baoBudget.used ?? 0}/${baoBudget.daily_limit}`;
           coverageBadge.title = `持仓历史：${quality.holding_history_ready ? '已准备' : '待核验'}；下一批约 ${quality.next_failed_retry_seconds ?? '--'} 秒。
 源状态：${JSON.stringify(quality.source_health || {})}`;
         }

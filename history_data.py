@@ -12,6 +12,8 @@
 """
 
 import os
+import fcntl
+import time
 import json
 import datetime
 import math
@@ -27,7 +29,7 @@ from trade_calendar import BEIJING, get_previous_trading_day, is_trading_day, to
 
 import requests
 
-from history_providers import SourceRouter, ProviderUnavailable
+from history_providers import SourceRouter, ProviderUnavailable, ProviderBusy
 
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "data" / "history_cache"
@@ -332,7 +334,7 @@ class HistoricalDataFeed:
             response = self.session.get(url, params=params, timeout=self.request_timeout)
             response.raise_for_status()
             return response
-        return self._sources.circuit.call(provider, request)
+        return self._sources.circuit.call(provider, lambda: self._sources.request(provider, request))
 
     @staticmethod
     def _provider_error(exc):
@@ -429,6 +431,8 @@ class HistoricalDataFeed:
         if not adjusted:
             name, adjusted, errors = self._tencent(symbol, start, end, adjustment)
             warnings.extend(errors)
+        if not adjusted:
+            return name, [], "unavailable", warnings
         if adjustment == "none":
             raw = adjusted
         elif not raw:
@@ -503,6 +507,33 @@ class HistoricalDataFeed:
         return [merged[date] for date in sorted(merged)], "validated", ratio
 
     def _fetch(self, symbol, start_date, end_date, use_cache, adjustment="qfq", cache_symbol=None):
+        # A second feed must recheck the cache after the first writer finishes,
+        # rather than repeating the same HTTP request or overwriting wider data.
+        if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", symbol):
+            raise ValueError("symbol must be an exchange prefix plus six digits")
+        if adjustment not in ("qfq", "none"):
+            raise ValueError("invalid history adjustment")
+        key = cache_symbol or symbol
+        if not re.fullmatch(r"(?:(?:sh|sz|bj)\d{6}|idx_\d{6})", key):
+            raise ValueError("invalid history cache key")
+        lock_dir = self.cache_dir / ".locks"
+        lock_dir.mkdir(exist_ok=True)
+        with open(lock_dir / (key+"_"+adjustment+".lock"), "a+b") as lock:
+            deadline = time.monotonic()+30
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ProviderBusy("busy") from None
+                    time.sleep(.05)
+            try:
+                return self._fetch_locked(symbol, start_date, end_date, use_cache, adjustment, cache_symbol)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _fetch_locked(self, symbol, start_date, end_date, use_cache, adjustment="qfq", cache_symbol=None):
         if not re.fullmatch(r"(?:sh|sz|bj)\d{6}", symbol):
             raise ValueError("symbol must be an exchange prefix plus six digits")
         start, end = self._dates(start_date, end_date)
@@ -710,6 +741,31 @@ class HistoricalDataFeed:
         unique = list(dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols))
         results = {}
         source_health = self._sources.status()
+        if use_cache and source_health.get("tushare", {}).get("configured"):
+            # Warm incremental histories share the same market-day payloads.
+            # Do not download hundreds of all-market days for a cold stock.
+            bulk_days = set()
+            for symbol in unique:
+                cached = self._read_cache(symbol, start, end, "qfq")
+                if not cached or not cached.get("bars"):
+                    continue
+                bars, meta = cached["bars"], cached.get("metadata", {})
+                if (meta.get("requested_start", "9999") > start
+                        or not all(self._has_raw(bar) for bar in bars)):
+                    continue
+                subset = [bar for bar in bars if start <= bar["date"] <= end]
+                if self._describe(subset, start, end, meta.get("source", "cache"),
+                                  meta.get("fetched_at"), error=meta.get("error"))["fresh"]:
+                    continue
+                days = self._session_dates(bars[-min(5, len(bars))]["date"], end)
+                if 0 < len(days) <= 12:
+                    bulk_days.update(days)
+            if bulk_days:
+                try:
+                    self._sources.prepare_trade_days(sorted(bulk_days))
+                except ProviderUnavailable:
+                    # Other configured sources remain available to each stock.
+                    pass
         if source_health.get("baostock", {}).get("installed") and not source_health.get("tushare", {}).get("configured"):
             # BaoStock is a single serialized SDK session. Parallel callers
             # would merely time out in its local queue and starve each other.
@@ -824,9 +880,7 @@ class HistoricalDataFeed:
                       "fid": "f12", "fs": "m:1+t:2,m:1+t:23,m:0+t:6,m:0+t:13",
                       "fields": "f12,f13,f14,f100"}
             try:
-                response = self.session.get("https://push2.eastmoney.com/api/qt/clist/get", params=params,
-                                            timeout=min(10, max(1, self.request_timeout)))
-                response.raise_for_status()
+                response = self._history_get("eastmoney", "https://push2.eastmoney.com/api/qt/clist/get", params)
                 payload = response.json().get("data")
                 if not isinstance(payload, dict):
                     raise ValueError("industry response has no data")
@@ -872,7 +926,7 @@ class HistoricalDataFeed:
                     error = "industry_empty_page_before_reported_total"
                     break
             except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
-                error = f"industry_fetch_{type(exc).__name__}"
+                error = f"industry_fetch_{self._provider_error(exc)}"
                 break
         complete_pages = reported_total is not None and received_rows >= reported_total and error is None
         truncated = reported_total is not None and received_rows < reported_total

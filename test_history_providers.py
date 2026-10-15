@@ -7,7 +7,7 @@ import sys
 import time
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 from history_providers import (CircuitBreaker, HistoryNotCurrent,
                                ProviderUnavailable, ProviderBusy, SourceRouter,
@@ -25,6 +25,13 @@ def combined(day='2026-10-14'):
 
 
 class ProviderTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch('history_providers.MarketRequestBudget', return_value=MagicMock())
+        self.budget_class = patcher.start()
+        self.budget_class.return_value.status.return_value = {}
+        self.budget_class.return_value.initialize.return_value = {}
+        self.addCleanup(patcher.stop)
+
     def router(self, root=None):
         if root is None:
             tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=tmp.name
@@ -158,7 +165,7 @@ class ProviderTests(unittest.TestCase):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
             self.assertEqual(run.call_count,2)
-            self.assertEqual(run.call_args.kwargs['timeout'],6)
+            self.assertEqual(run.call_args.kwargs['timeout'],30)
 
     def test_baostock_worker_no_stdout_protocol_noise(self):
         router=self.router();router._bao_stream=False
@@ -177,12 +184,12 @@ class ProviderTests(unittest.TestCase):
 
     def test_baostock_login_logout_and_flags(self):
         sdk=Mock();sdk.login.return_value.error_code='0'
-        with patch.dict('sys.modules',{'baostock':sdk}), patch('history_providers._bao_query',side_effect=[[],[]]) as query:
+        with patch('history_providers._install_bao_budget'), patch.dict('sys.modules',{'baostock':sdk}), patch('history_providers._bao_query',side_effect=[[],[]]) as query:
             self.assertEqual(_baostock_worker('sh600036','2026-10-13','2026-10-14','qfq'),[])
             self.assertEqual([c.args[-1] for c in query.call_args_list],['3','2'])
             sdk.logout.assert_called_once()
         sdk.reset_mock()
-        with patch.dict('sys.modules',{'baostock':sdk}), patch('history_providers._bao_query',side_effect=ValueError):
+        with patch('history_providers._install_bao_budget'), patch.dict('sys.modules',{'baostock':sdk}), patch('history_providers._bao_query',side_effect=ValueError):
             with self.assertRaises(ValueError):
                 _baostock_worker('sh600036','2026-10-13','2026-10-14','qfq')
             sdk.logout.assert_called_once()
@@ -223,7 +230,7 @@ class ProviderTests(unittest.TestCase):
         sdk=Mock();sdk.login.return_value.error_code='10001011'
         sdk.login.return_value.error_msg='private response must not escape'
         out=io.StringIO()
-        with patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',out),patch('sys.stdin',io.StringIO('')):
+        with patch('history_providers._install_bao_budget'),patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',out),patch('sys.stdin',io.StringIO('')):
             self.assertEqual(_baostock_stream(),1)
         message=json.loads(out.getvalue())
         self.assertEqual(message,{'id':None,'phase':'login','error':'sdk_error_10001011','asset_error':False})
@@ -264,7 +271,7 @@ class ProviderTests(unittest.TestCase):
                 def idle(*args):
                     with self.assertRaises(ProviderBusy):_acquire_worker_lease()
                     return ([],[],[])
-                with patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',io.StringIO()),patch('history_providers.select.select',side_effect=idle):
+                with patch('history_providers._install_bao_budget'),patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',io.StringIO()),patch('history_providers.select.select',side_effect=idle):
                     self.assertEqual(_baostock_stream(),0)
                 sdk.logout.assert_called_once()
                 after=_acquire_worker_lease();after.close()
@@ -327,6 +334,7 @@ class CircuitTests(unittest.TestCase):
 
 
 class StreamWorkerTests(unittest.TestCase):
+    setUp = ProviderTests.setUp
     def router(self):
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         with patch.dict('os.environ', {}, clear=True), patch('history_providers.importlib.util.find_spec', return_value=None):
@@ -421,3 +429,99 @@ class StreamWorkerTests(unittest.TestCase):
                     router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
             self.assertIsNone(router._bao_process)
         finally:router.close()
+
+class BulkAndAdmissionTests(unittest.TestCase):
+    setUp = ProviderTests.setUp
+    router = ProviderTests.router
+    def fixture(self, day='20261014', code='600036.SH', factor=2):
+        return dict(raw(day), ts_code=code), dict(ts_code=code, trade_date=day, adj_factor=factor)
+
+    def test_daily_batches_paginate_to_empty_and_reuse_across_routers(self):
+        with tempfile.TemporaryDirectory() as root:
+            router=self.router(root); router._token='test'
+            r,f=self.fixture()
+            router._tushare_api=Mock(side_effect=[[r],[],[f],[]])
+            result=router.prepare_trade_days(['2026-10-14'])
+            self.assertEqual(result['downloaded'],['2026-10-14'])
+            self.assertEqual([c.args[1]['offset'] for c in router._tushare_api.call_args_list],[0,1,0,1])
+            other=self.router(root); other._token='test';other._tushare_api=Mock()
+            self.assertEqual(other.prepare_trade_days(['2026-10-14'])['ready'],['2026-10-14'])
+            self.assertEqual(other._tushare('sh600036','2026-10-14','2026-10-14','qfq')[0]['raw_close'],10)
+            other._tushare_api.assert_not_called()
+            # Complete batch proves absence; never query that asset again.
+            self.assertEqual(other._tushare('sh600999','2026-10-14','2026-10-14','qfq'),[])
+            other._tushare_api.assert_not_called()
+
+    def test_partial_batch_not_published_and_failure_cooldown_survives_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            router=self.router(root);router._token='test';r,_=self.fixture()
+            router._tushare_api=Mock(side_effect=[[r],[],[]])
+            self.assertEqual(router.prepare_trade_days(['2026-10-14'])['ready'],[])
+            self.assertFalse(router._daily_cache_path('2026-10-14').exists())
+            other=self.router(root);other._token='test';other._tushare_api=Mock()
+            self.assertEqual(other.prepare_trade_days(['2026-10-14'])['errors'],{'2026-10-14':'rate_wait'})
+            other._tushare_api.assert_not_called()
+
+    def test_ignored_offset_is_rejected(self):
+        router=self.router();r,_=self.fixture();router._tushare_api=Mock(return_value=[r])
+        with self.assertRaisesRegex(ProviderUnavailable,'query_incomplete'):
+            router._tushare_day_pages('daily','2026-10-14','ts_code,trade_date')
+        self.assertEqual(router._tushare_api.call_count,2)
+
+    def test_wrong_day_duplicate_or_bad_factor_rejects_entire_batch(self):
+        router=self.router();r,f=self.fixture()
+        for rows,factors in (([r,r],[f]),([r],[dict(f,trade_date='20261013')]),([r],[dict(f,adj_factor=0)])):
+            with self.subTest(rows=rows,factors=factors),self.assertRaises((ProviderUnavailable,ValueError)):
+                router._validate_daily_batch(dict(version=1,complete=True,date='2026-10-14',daily=rows,adj_factor=factors),'2026-10-14')
+
+    def test_batch_slice_rebases_qfq_at_last_available_date(self):
+        router=self.router();router._token='test'
+        fixtures={d:self.fixture(d.replace('-',''),factor=f) for d,f in [('2026-10-13',1),('2026-10-14',2)]}
+        router._tushare_api=Mock(side_effect=[x for d in fixtures for x in ([fixtures[d][0]],[],[fixtures[d][1]],[])])
+        self.assertEqual(len(router.prepare_trade_days(fixtures)['ready']),2)
+        bars=router._tushare('sh600036','2026-10-13','2026-10-14','qfq')
+        self.assertEqual([b['close'] for b in bars],[5,10])
+        self.assertEqual([b['raw_close'] for b in bars],[10,10])
+
+    def test_unconfigured_holidays_and_future_dates_never_request(self):
+        router=self.router();router._tushare_api=Mock()
+        self.assertEqual(router.prepare_trade_days(['2026-10-14'])['ready'],[])
+        router._token='test'
+        router.prepare_trade_days(['2026-10-01','2099-01-01'])
+        router._tushare_api.assert_not_called()
+
+    def test_http_admission_denial_does_not_send_or_trip_source(self):
+        from market_request_budget import RequestBudgetExceeded
+        router=self.router();router._token='test';router.session=Mock()
+        router._budget.request.side_effect=RequestBudgetExceeded('daily_limit','tushare',100)
+        router.download('sh600036','2026-10-14','2026-10-14')
+        router.session.post.assert_not_called()
+        self.assertEqual(router.circuit.status()['tushare']['failures'],0)
+        self.assertEqual(router.status()['failure_diagnostics']['tushare']['last_error_code'],'daily_limit')
+
+    def test_sdk_packet_wrapper_counts_login_query_page_and_logout_boundary(self):
+        import types
+        from history_providers import _install_bao_budget
+        package=types.ModuleType('baostock');package.__path__=[]
+        util=types.ModuleType('baostock.util');util.__path__=[]
+        transport=types.ModuleType('baostock.util.socketutil');transport.send_msg=Mock(return_value='ok')
+        wire=transport.send_msg
+        with tempfile.TemporaryDirectory() as root,patch.dict('os.environ',{'QUANT_MARKET_BASE_DIR':root}),patch.dict('sys.modules',{'baostock':package,'baostock.util':util,'baostock.util.socketutil':transport}):
+            _install_bao_budget()
+            for packet in ('login','query','page','logout'):
+                self.assertEqual(transport.send_msg(packet),'ok')
+            self.assertEqual(self.budget_class.return_value.request.call_count,4)
+            self.assertEqual(wire.call_count,4)
+            # Installing twice must not double-count requests.
+            _install_bao_budget();transport.send_msg('query')
+            self.assertEqual(self.budget_class.return_value.request.call_count,5)
+
+    def test_sdk_unknown_daily_usage_denies_before_login_socket(self):
+        import types
+        package=types.ModuleType('baostock');package.__path__=[];package.login=Mock()
+        util=types.ModuleType('baostock.util');util.__path__=[]
+        transport=types.ModuleType('baostock.util.socketutil');transport.send_msg=Mock()
+        self.budget_class.return_value.initialize.return_value={'reason':'untracked_prior_usage'}
+        with patch.dict('sys.modules',{'baostock':package,'baostock.util':util,'baostock.util.socketutil':transport}),self.assertRaisesRegex(ProviderBusy,'untracked_prior_usage'):
+            _baostock_worker('sh600036','2026-10-14','2026-10-14','qfq')
+        package.login.assert_not_called();transport.send_msg.assert_not_called()

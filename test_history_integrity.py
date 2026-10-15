@@ -30,6 +30,7 @@ def raw_bar(date, close=10):
 def feed(tmp_path):
     instance = HistoricalDataFeed(tmp_path)
     instance.industry_file = tmp_path / "industry_map_manual.json"
+    instance._sources.request = Mock(side_effect=lambda provider, callback: callback())
     # A network call from these tests is always an error.
     instance.session.get = Mock(side_effect=AssertionError("offline tests must not use network"))
     return instance
@@ -618,3 +619,53 @@ def test_serial_sdk_never_creates_a_parallel_local_wait_queue(feed):
     feed.fetch_stock_kline=fetch
     feed.fetch_universe_klines(['sh600036','sh600519','sh600000'],'2026-10-14','2026-10-14',max_workers=6)
     assert peak[0]==1
+
+
+def test_concurrent_feeds_share_completed_download(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    first, second = HistoricalDataFeed(tmp_path), HistoricalDataFeed(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    def download(*args):
+        entered.set()
+        assert release.wait(3)
+        return "测试", [raw_bar("2026-10-14")], "test_provider", []
+    first._download = Mock(side_effect=download)
+    second._download = Mock(side_effect=AssertionError("duplicate download"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(first.fetch_stock_kline, "sh600519", "2026-10-14", "2026-10-14")
+        assert entered.wait(3)
+        b = pool.submit(second.fetch_stock_kline, "sh600519", "2026-10-14", "2026-10-14")
+        release.set()
+        assert a.result()[2] == b.result()[2]
+    assert first._download.call_count == 1
+    assert second._download.call_count == 0
+
+
+def test_failed_adjusted_download_does_not_request_useless_raw(feed):
+    feed._eastmoney = Mock(return_value=("测试", []))
+    feed._tencent = Mock(return_value=("测试", [], ["failed"]))
+    _, bars, _, _ = feed._download_legacy("sh600519", "2026-10-13", "2026-10-14", "qfq")
+    assert bars == []
+    assert feed._tencent.call_count == 1
+    assert feed._tencent.call_args.args[-1] == "qfq"
+
+
+def test_bulk_incremental_warms_shared_dates_once_and_skips_fresh_cache(feed):
+    bars = incremental_fixture(feed)
+    feed._sources.status = Mock(return_value={"tushare": {"configured": True}})
+    feed._sources.prepare_trade_days = Mock()
+    mock_download(feed, bars[-5:]+[raw_bar("2026-10-08", 17)])
+    feed.fetch_universe_klines(["sh600519", "sh600519"], bars[0]["date"], "2026-10-08")
+    feed._sources.prepare_trade_days.assert_called_once_with(feed._session_dates(bars[-5]["date"], "2026-10-08"))
+    feed._sources.prepare_trade_days.reset_mock()
+    feed.fetch_universe_klines(["sh600519"], bars[0]["date"], "2026-10-08")
+    feed._sources.prepare_trade_days.assert_not_called()
+
+
+def test_public_history_and_industry_requests_share_admission(feed):
+    response = Mock()
+    feed.session.get = Mock(return_value=response)
+    assert feed._history_get("eastmoney", "https://example.invalid", {}) is response
+    assert feed._sources.request.call_args.args[0] == "eastmoney"
+    assert feed.session.get.call_count == 1

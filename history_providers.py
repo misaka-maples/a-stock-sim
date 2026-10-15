@@ -26,6 +26,8 @@ import time
 import tempfile
 import select
 import requests
+from market_request_budget import (MarketRequestBudget, RequestBudgetExceeded,
+                                   RequestQueueBusy, RequestBudgetUnavailable)
 
 
 class ProviderUnavailable(ValueError):
@@ -41,7 +43,8 @@ class ProviderBusy(ProviderUnavailable):
 
 
 ASSET_ERROR_CODES = frozenset({"invalid_number", "invalid_ohlc", "invalid_raw_ohlc", "negative_activity", "raw_adjusted_dates_mismatch", "missing_adjustment_factor", "empty_history", "stale_history"})
-SAFE_ERROR_CODES = ASSET_ERROR_CODES | frozenset({"busy", "circuit_open", "provider_error", "api_rejected", "invalid_payload", "invalid_symbol", "invalid_request", "out_of_range", "query_failed", "query_incomplete", "login_failed", "worker_failed", "worker_write_failed", "worker_timeout", "worker_closed", "worker_response_too_large", "worker_protocol_noise", "invalid_worker_result", "provider_restricted", "provider_state_unavailable"})
+SAFE_ERROR_CODES = ASSET_ERROR_CODES | frozenset({"busy", "circuit_open", "provider_error", "api_rejected", "invalid_payload", "invalid_symbol", "invalid_request", "out_of_range", "query_failed", "query_incomplete", "login_failed", "worker_failed", "worker_write_failed", "worker_timeout", "worker_closed", "worker_response_too_large", "worker_protocol_noise", "invalid_worker_result", "provider_restricted", "provider_state_unavailable", "daily_limit", "untracked_prior_usage", "queue_busy", "rate_wait", "invalid_state", "state_unavailable"})
+LOCAL_ADMISSION_CODES = frozenset({"busy", "daily_limit", "untracked_prior_usage", "queue_busy", "rate_wait", "invalid_state", "state_unavailable", "provider_restricted", "provider_state_unavailable"})
 SAFE_EXCEPTION_NAMES = frozenset({"RuntimeError", "ValueError", "TypeError", "KeyError", "AttributeError", "TimeoutExpired", "Timeout", "ReadTimeout", "ConnectTimeout", "ConnectionError", "HTTPError", "OSError", "JSONDecodeError", "BrokenPipeError", "BlockingIOError"})
 
 
@@ -227,21 +230,67 @@ def _acquire_worker_lease():
     return handle
 
 
+def _install_bao_budget():
+    """Instrument the SDK packet boundary, including login/logout and pages."""
+    import baostock.util.socketutil as transport
+    budget = MarketRequestBudget()
+    try:
+        state = budget.initialize("baostock")
+    except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+        raise ProviderBusy(exc.code) from None
+    if state.get("reason") in ("untracked_prior_usage", "daily_limit"):
+        raise ProviderBusy(state["reason"])
+    # Parent and one-shot workers both enforce the durable provider freeze
+    # before sdk.login() can even create a socket.
+    base = Path(os.environ.get("QUANT_MARKET_BASE_DIR", str(Path(__file__).resolve().parent)))
+    state_path = base / "data/private/market_provider_state.json"
+    if state_path.exists():
+        try:
+            until = float(json.loads(state_path.read_text()).get("baostock", {}).get("blocked_until", 0))
+            if not math.isfinite(until):
+                raise ValueError
+        except (OSError, ValueError, TypeError, AttributeError):
+            raise ProviderBusy("provider_state_unavailable") from None
+        if until > time.time():
+            raise ProviderBusy("provider_restricted")
+    original = transport.send_msg
+    if getattr(original, "_quant_budgeted", False) is True:
+        return
+    def guarded(message):
+        try:
+            with budget.request("baostock"):
+                response = original(message)
+                if response is None:
+                    raise ProviderUnavailable("query_failed")
+                return response
+        except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+            raise ProviderBusy(exc.code) from None
+    guarded._quant_budgeted = True
+    transport.send_msg = guarded
+
+
 def _baostock_worker(symbol, start, end, adjustment):
     # Run only inside the isolated worker. SDK prints login and remote errors;
     # swallow these entirely, emitting only the JSON normalized data protocol.
     import baostock as sdk
+    _install_bao_budget()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         login = sdk.login()
         if login.error_code != "0":
             raise ProviderUnavailable(_sdk_error_code(login.error_code, "login_failed"))
+        may_logout = True
         try:
             code = symbol[:2] + "." + symbol[2:]
             raw = _bao_query(sdk, code, start, end, "3")
             adjusted = _bao_query(sdk, code, start, end, "2") if adjustment == "qfq" else raw
             return normalize_baostock(raw, adjusted, adjustment)
+        except ProviderUnavailable as exc:
+            if str(exc) == "sdk_error_10001011":
+                may_logout = False
+            raise
         finally:
-            sdk.logout()
+            if may_logout:
+                sdk.logout()
 
 
 def _baostock_stream():
@@ -255,6 +304,7 @@ def _baostock_stream():
             lease = _acquire_worker_lease()
             with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
                 import baostock as sdk
+                _install_bao_budget()
                 login = sdk.login()
                 if login.error_code != "0":
                     # Startup happens before reading a request. Emit a bounded,
@@ -290,6 +340,8 @@ def _baostock_stream():
                     protocol.flush()
                 except Exception as exc:
                     code = _safe_error_code(exc)
+                    if code == "sdk_error_10001011":
+                        logged_in = False
                     protocol.write(json.dumps({"id": request_id, "error": code, "asset_error": code in ASSET_ERROR_CODES}) + "\n")
                     protocol.flush()
                     # Failed SDK protocol state must not contaminate next call.
@@ -328,6 +380,8 @@ class SourceRouter:
             except (OSError, ValueError, TypeError, AttributeError):
                 pass
         self._bao_available = importlib.util.find_spec("baostock") is not None
+        self._budget = MarketRequestBudget()
+        self._daily_memory = {}
         self._bao_stream = baostock_stream
         self._bao_process = None
         self._bao_request_id = 0
@@ -348,7 +402,7 @@ class SourceRouter:
         if restriction.get("retry_after_seconds", 0):
             current = circuits.setdefault("baostock", {"failures": 0, "last_error": None})
             current.update(state="open", retry_after_seconds=max(current.get("retry_after_seconds", 0), restriction["retry_after_seconds"]), blocked_until=restriction["blocked_until"], last_error_code="sdk_error_10001011")
-        return {"tushare": {"configured": bool(self._token)}, "baostock": dict(installed=self._bao_available, **restriction), "circuits": circuits, "failure_diagnostics": diagnostics}
+        return {"tushare": {"configured": bool(self._token)}, "baostock": dict(installed=self._bao_available, **restriction), "circuits": circuits, "failure_diagnostics": diagnostics, "request_budget": self._budget_status()}
 
     def _bao_restriction(self):
         try:
@@ -403,6 +457,7 @@ class SourceRouter:
     def _worker_env(self):
         env = dict(os.environ)
         env["QUANT_BAO_LEASE_PATH"] = str(self._bao_lease_path)
+        env["QUANT_MARKET_BASE_DIR"] = str(self.base_dir)
         return env
 
     def _record_failure(self, provider, symbol, exc):
@@ -414,9 +469,30 @@ class SourceRouter:
             info["counts_by_code"][code] = info["counts_by_code"].get(code, 0) + 1
         return code
 
+    def request(self, provider, callback):
+        """Admit one HTTP request; local limits never count as source failures."""
+        try:
+            with self._budget.request(provider):
+                return callback()
+        except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+            raise ProviderBusy(exc.code) from None
+
+    def _budget_status(self):
+        result = {}
+        for provider in ("tushare", "baostock", "eastmoney", "tencent"):
+            try:
+                result[provider] = self._budget.status(provider)
+            except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+                result[provider] = {"reason": exc.code, "retry_after": exc.retry_after}
+        return result
+
     def _tushare_api(self, api, params, fields):
-        response = self.session.post("https://api.tushare.pro", json={"api_name": api, "token": self._token, "params": params, "fields": fields}, timeout=self.timeout)
-        response.raise_for_status()
+        try:
+            with self._budget.request("tushare"):
+                response = self.session.post("https://api.tushare.pro", json={"api_name": api, "token": self._token, "params": params, "fields": fields}, timeout=self.timeout)
+                response.raise_for_status()
+        except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+            raise ProviderBusy(exc.code) from None
         data = response.json()
         if data.get("code") != 0 or not isinstance(data.get("data"), dict):
             raise ProviderUnavailable("api_rejected")
@@ -425,7 +501,167 @@ class SourceRouter:
             raise ProviderUnavailable("invalid_payload")
         return [dict(zip(payload["fields"], row)) for row in payload["items"]]
 
+    def _daily_cache_path(self, day):
+        return self.base_dir / "data/history_cache/tushare_daily" / (_day(day).replace("-", "") + ".json")
+
+    @staticmethod
+    def _validate_daily_batch(payload, day):
+        if not isinstance(payload, dict) or payload.get("version") != 1 or payload.get("complete") is not True or payload.get("date") != day:
+            raise ProviderUnavailable("invalid_payload")
+        rows, factors = payload.get("daily"), payload.get("adj_factor")
+        if not isinstance(rows, list) or not rows or not isinstance(factors, list):
+            raise ProviderUnavailable("invalid_payload")
+        daily_codes, factor_codes = set(), set()
+        for data, codes in ((rows, daily_codes), (factors, factor_codes)):
+            for row in data:
+                code = row.get("ts_code")
+                if not isinstance(code, str) or not re.fullmatch(r"\d{6}\.(?:SH|SZ|BJ)", code) or _day(row.get("trade_date")) != day or code in codes:
+                    raise ProviderUnavailable("invalid_payload")
+                codes.add(code)
+        if not daily_codes.issubset(factor_codes):
+            raise HistoryNotCurrent("missing_adjustment_factor")
+        # Check every record before publishing an all-market cache. An invalid
+        # instrument must never silently leave a partially populated batch.
+        factors_by_code = {r["ts_code"]: r for r in factors}
+        for row in rows:
+            normalize_tushare([row], [factors_by_code[row["ts_code"]]])
+        return payload
+
+    def _read_daily_batch(self, day):
+        try:
+            path = self._daily_cache_path(day)
+            signature = (path.stat().st_mtime_ns, path.stat().st_size)
+            cached = self._daily_memory.get(day)
+            if cached and cached[0] == signature:
+                return cached[1]
+            payload = self._validate_daily_batch(json.loads(path.read_text()), day)
+            if len(self._daily_memory) >= 12:
+                self._daily_memory.pop(next(iter(self._daily_memory)))
+            payload["_daily_by_code"] = {r["ts_code"]: r for r in payload["daily"]}
+            payload["_factor_by_code"] = {r["ts_code"]: r for r in payload["adj_factor"]}
+            self._daily_memory[day] = (signature, payload)
+            return payload
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def _tushare_day_pages(self, api, day, fields):
+        rows, seen, offset, limit = [], set(), 0, 5000
+        for _ in range(20):
+            page = self._tushare_api(api, {"trade_date": day.replace("-", ""), "limit": limit, "offset": offset}, fields)
+            if not isinstance(page, list) or len(page) > limit:
+                raise ProviderUnavailable("invalid_payload")
+            for row in page:
+                key = (row.get("ts_code"), row.get("trade_date"))
+                if key in seen:
+                    # API ignored offset, or returned a repeated/truncated page.
+                    raise ProviderUnavailable("query_incomplete")
+                seen.add(key)
+            rows.extend(page)
+            if not page:
+                return rows
+            offset += len(page)
+        raise ProviderUnavailable("query_incomplete")
+
+    def _prepare_trade_day(self, day):
+        path = self._daily_cache_path(day)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_suffix(".lock"), "a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ProviderBusy("busy") from None
+            existing = self._read_daily_batch(day)
+            if existing is not None:
+                return existing, False
+            failure_path = path.with_suffix(".failure.json")
+            try:
+                failure = json.loads(failure_path.read_text())
+                retry_until = float(failure["retry_until"])
+            except (OSError, ValueError, KeyError, TypeError):
+                retry_until = 0
+            if retry_until > time.time():
+                raise ProviderBusy("rate_wait")
+            try:
+                rows = self._tushare_day_pages("daily", day, "ts_code,trade_date,open,high,low,close,pre_close,vol,amount")
+                factors = self._tushare_day_pages("adj_factor", day, "ts_code,trade_date,adj_factor")
+                payload = self._validate_daily_batch({"version": 1, "complete": True, "date": day, "daily": rows, "adj_factor": factors}, day)
+            except ProviderBusy:
+                raise
+            except ProviderUnavailable as exc:
+                with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as tmp:
+                    json.dump({"retry_until": time.time()+3600, "code": _safe_error_code(exc)}, tmp)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                    failure_temp = tmp.name
+                os.replace(failure_temp, failure_path)
+                raise
+            tempname = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as tmp:
+                    tempname = tmp.name
+                    json.dump(payload, tmp, allow_nan=False)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tempname, path)
+                failure_path.unlink(missing_ok=True)
+            finally:
+                if tempname and os.path.exists(tempname):
+                    os.unlink(tempname)
+            return payload, True
+
+    def prepare_trade_days(self, days):
+        """Fetch complete all-stock daily/factor batches once per trading day.
+
+        Call once before an incremental universe refresh, never for full-history
+        bootstrap. Unconfigured Tushare makes no requests. Errors remain explicit
+        so callers may fall back without treating a partial batch as complete.
+        """
+        from trade_calendar import is_trading_day
+        result = {"configured": bool(self._token), "ready": [], "downloaded": [], "errors": {}}
+        if not self._token:
+            return result
+        for day in sorted({_day(day) for day in days}):
+            now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
+            if not is_trading_day(day) or day > now.date().isoformat() or (day == now.date().isoformat() and now.time() < dt.time(18, 0)):
+                continue
+            try:
+                _, downloaded = self.circuit.call("tushare", lambda: self._prepare_trade_day(day))
+                result["ready"].append(day)
+                if downloaded:
+                    result["downloaded"].append(day)
+            except ProviderUnavailable as exc:
+                result["errors"][day] = _safe_error_code(exc)
+                # Never repeat a denied/failed all-market operation for every
+                # remaining date in the same pass.
+                break
+        return result
+
+    def cached_tushare(self, symbol, start, end, adjustment="qfq"):
+        """Return normalized per-symbol slice, or None if any day is uncached."""
+        from trade_calendar import is_trading_day
+        code = symbol[2:] + "." + symbol[:2].upper()
+        rows, factors = [], []
+        left, last = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+        # Do not scan years of filesystem entries during first-time bootstrap.
+        if (last - left).days > 45:
+            return None
+        while left <= last:
+            day = left.isoformat()
+            if is_trading_day(day):
+                batch = self._read_daily_batch(day)
+                if batch is None:
+                    return None
+                if code in batch["_daily_by_code"]:
+                    rows.append(batch["_daily_by_code"][code])
+                if code in batch["_factor_by_code"]:
+                    factors.append(batch["_factor_by_code"][code])
+            left += dt.timedelta(days=1)
+        return normalize_tushare(rows, factors, adjustment)
+
     def _tushare(self, symbol, start, end, adjustment):
+        cached = None if symbol in ("sh000300", "sh000001", "sz399001", "sz399006") else self.cached_tushare(symbol, start, end, adjustment)
+        if cached is not None:
+            return cached
         code = symbol[2:] + "." + symbol[:2].upper()
         # Paginate time windows under the daily API row limit; exact factor-date
         # validation rejects permissions failures and truncation rather than
@@ -485,15 +721,15 @@ class SourceRouter:
     def _baostock_once(self, symbol, start, end, adjustment):
         """Bounded one-shot protocol retained for standalone diagnostics."""
         command = [sys.executable, str(Path(__file__).resolve()), "--baostock-worker", symbol, start, end, adjustment]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, check=False, env=self._worker_env())
+        result = subprocess.run(command, capture_output=True, text=True, timeout=max(self.timeout, 30) if self.timeout >= 6 else self.timeout, check=False, env=self._worker_env())
         if result.returncode:
             try:
                 code = json.loads(result.stdout).get("error")
             except (ValueError, TypeError, AttributeError):
                 code = None
             if isinstance(code, str):
-                if code == "busy":
-                    raise ProviderBusy("busy")
+                if code in LOCAL_ADMISSION_CODES:
+                    raise ProviderBusy(code)
                 if code in ASSET_ERROR_CODES:
                     raise HistoryNotCurrent(code)
                 if code in SAFE_ERROR_CODES or re.fullmatch(r"sdk_error_-?\d{1,8}", code):
@@ -505,6 +741,14 @@ class SourceRouter:
         return payload
 
     def _baostock(self, symbol, start, end, adjustment):
+        # Persist a first-day unknown-usage guard without connecting. All
+        # callers share this same per-user ledger across project checkouts.
+        try:
+            admission = self._budget.initialize("baostock")
+        except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
+            raise ProviderBusy(exc.code) from None
+        if admission.get("reason") in ("untracked_prior_usage", "daily_limit"):
+            raise ProviderBusy(admission["reason"])
         # A documented provider restriction survives process/service restarts.
         if self._bao_restriction()["retry_after_seconds"]:
             raise ProviderUnavailable("provider_restricted")
@@ -514,7 +758,7 @@ class SourceRouter:
         try:
             if not self._bao_stream:
                 return self._baostock_once(symbol, start, end, adjustment)
-            deadline = time.monotonic() + self.timeout
+            deadline = time.monotonic() + (max(self.timeout, 30) if self.timeout >= 6 else self.timeout)
             if self._bao_process is None or self._bao_process.poll() is not None:
                 self._stop_bao_worker()
                 command = [sys.executable, "-u", str(Path(__file__).resolve()), "--baostock-stream"]
@@ -557,8 +801,8 @@ class SourceRouter:
                             code = payload["error"]
                             if code in ASSET_ERROR_CODES and payload.get("asset_error") is True:
                                 raise HistoryNotCurrent(code)
-                            if code == "busy":
-                                raise ProviderBusy("busy")
+                            if code in LOCAL_ADMISSION_CODES:
+                                raise ProviderBusy(code)
                             if isinstance(code, str) and (code in SAFE_ERROR_CODES or re.fullmatch(r"sdk_error_-?\d{1,8}", code)):
                                 raise ProviderUnavailable(code)
                             raise ProviderUnavailable("invalid_worker_result")
