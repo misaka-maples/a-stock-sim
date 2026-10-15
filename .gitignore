@@ -11,6 +11,7 @@ server.pid
 sim_account.json
 sim_account.json*
 sim_test.json
+history_refresh_retries.json
 data/
 research_smoke_*.json
 *.cache

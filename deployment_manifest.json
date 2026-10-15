@@ -1,5 +1,5 @@
 {
-  "baseline_commit": "8a637e850cc31405a80dbd15d3e2fa6d8bc372ab",
+  "baseline_commit": "e9521e941ec2d95bd507623059367d98b745b102",
   "backup": "/home/openarmx/quant_backups/before_request_budget_20261015/project.tgz",
   "validation": {
     "local_python": "3.13",
@@ -15,7 +15,7 @@
     "remote_skip_note": "6 optional network/market tests and13NodeUIchecks; UI passed locally"
   },
   "files": {
-    ".gitignore": "ecde54f7f5a2234bb1514bd6bb575ed9f8d272752b4acbc9a4c647d2e034dcaf",
+    ".gitignore": "f6371fe2338326eb316ad6ec8f5cab67aaaf0314ba860e9563b2515fd94f0a64",
     "README.md": "864a5f4ef71e88350c6782d70dc953a4b86a90096a3a4537df8101f5ba4b7ca5",
     "api_auth.py": "f0ac3a30828be6aaa1fc8f8f470d0014f8338e87d9bfb9bf6eb0c3b3a7380bb1",
     "backtest.py": "75c6aec7866623b3ef8672acef5fb0d077648e78878f60fcac6be3881b50e249",
