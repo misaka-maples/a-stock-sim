@@ -5,6 +5,13 @@ from strategy_rules import MomentumConfig, entry_guard_reason
 
 
 class EntryGuardTests(unittest.TestCase):
+    def test_stop_loss_mode_is_explicit_and_defaults_to_intraday(self):
+        self.assertEqual(MomentumConfig().stop_loss_mode, "intraday")
+        self.assertEqual(MomentumConfig(stop_loss_mode="daily_close").stop_loss_mode, "daily_close")
+        for mode in ("", "realtime", None, True):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                MomentumConfig(stop_loss_mode=mode)
+
     def setUp(self):
         self.config = MomentumConfig()
         self.signal = {"as_of": "2026-10-13", "raw_signal_price": 10.0,

@@ -56,6 +56,7 @@ class DailyMomentumStrategy:
         self.state.setdefault("exit_signal_dates", {})
         self.state.setdefault("pending_entries", {})
         self.state.setdefault("entry_rejections", [])
+        self.state.setdefault("exit_rejections", {})
         self.history_cache = {}
         self.latest_candidates = []
         self.data_status = {"status": "not_loaded", "requested": len(self.watchlist), "loaded": 0}
@@ -588,7 +589,7 @@ class DailyMomentumStrategy:
             sig = holding_signal(self.history_cache.get(sym, []), as_of)
             if not sig:
                 continue  # Missing history cannot authorize a fabricated exit.
-            reason = exit_reason(sig["raw_signal_price"], pos["cost_price"], sig, self.config,
+            reason = exit_reason(sig["raw_signal_price"], self._position_cost(pos), sig, self.config,
                                  current_adjusted_price=sig["signal_price"])
             held_days = sessions_between(buy_day, as_of)
             if (not reason and new_risk_valid and sym in self._entry_eligible and rebalance
@@ -646,14 +647,85 @@ class DailyMomentumStrategy:
             del records[:-20]
         self.data_status["entry_rejections"] = [dict(row) for row in records]
 
+    @staticmethod
+    def _position_cost(pos):
+        shares = pos.get("total_shares", 0)
+        basis = pos.get("cost_basis_cents")
+        if isinstance(basis, (int, float)) and not isinstance(basis, bool) and shares > 0:
+            return basis / 100 / shares
+        return pos.get("cost_price", 0)
+
+    @staticmethod
+    def _live_stop_quote(quote, now, symbol=None):
+        try:
+            identity = str(quote.get("symbol") or quote.get("code") or "")
+            if symbol and identity not in (symbol, symbol[-6:]):
+                return None
+            timestamp = _timestamp(quote.get("time"))
+            price = quote.get("current")
+            if (quote.get("fresh") is False or timestamp.date() != now.date()
+                    or not is_trading_time(timestamp) or not 0 <= (now-timestamp).total_seconds() <= 120
+                    or isinstance(price, bool) or not isinstance(price, (int, float))
+                    or not math.isfinite(price) or price <= 0):
+                return None
+            return float(price)
+        except (TypeError, ValueError):
+            return None
+
+    def risk_status(self, quotes=None, now=None):
+        """Read-only risk explanation; never plans, saves, or places orders."""
+        now = now or dt.datetime.now(BEIJING)
+        quotes = quotes or {}
+        as_of = last_completed_trading_day(now)
+        rows = []
+        for sym, pos in list(self.account.positions.items()):
+            quote = quotes.get(sym, {})
+            cost = self._position_cost(pos)
+            price = self._live_stop_quote(quote, now, sym)
+            reason = self.state.get("pending_exits", {}).get(sym)
+            signal_date = self.state.get("exit_signal_dates", {}).get(sym)
+            buy_day = min((lot["date"] for lot in pos.get("buy_lots", [])), default=now.date().isoformat())
+            daily = holding_signal(self.history_cache.get(sym, []), as_of) if buy_day <= as_of else None
+            if not reason and daily:
+                reason = exit_reason(daily["raw_signal_price"], cost, daily, self.config,
+                                     current_adjusted_price=daily["signal_price"])
+                if reason:
+                    signal_date = as_of
+            if (not reason and self.config.stop_loss_mode == "intraday" and price is not None
+                    and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct):
+                reason, signal_date = "盘中硬止损信号", now.date().isoformat()
+            blocked = ""
+            if reason:
+                if not is_trading_time(now):
+                    blocked = "非连续交易时段，等待下一可交易时段"
+                elif self.account.strict_t1 and pos.get("available_shares", 0) <= 0:
+                    blocked = "T+1限制：暂无可卖股份"
+                elif price is None:
+                    blocked = "缺少当日120秒内有效行情"
+                elif quote.get("suspended") or quote.get("is_suspended"):
+                    blocked = "停牌标的不能成交"
+                elif not quote.get("bids"):
+                    blocked = "缺少有效买盘，等待可成交报价"
+                else:
+                    blocked = self.state.get("exit_rejections", {}).get(sym, {}).get("reason", "")
+                status = "blocked" if blocked else "pending"
+            else:
+                status = "armed" if price is not None else "awaiting_quote"
+            rows.append(dict(symbol=sym, stop_loss_mode=self.config.stop_loss_mode,
+                             stop_price=cost*(1+self.config.stop_loss_pct/100), stop_loss_pct=self.config.stop_loss_pct,
+                             current=price, time=quote.get("time"), status=status, reason=reason or "",
+                             triggered=bool(reason), signal_date=signal_date, blocked_reason=blocked,
+                             quote_status="fresh" if price is not None else "stale" if quote else "unavailable",
+                             quote_time=_timestamp(quote["time"]).isoformat() if price is not None else None,
+                             available_shares=pos.get("available_shares", 0)))
+        return rows
+
     def on_tick(self, quotes, now=None):
         now = now or dt.datetime.now(BEIJING)
         self.prepare(now)
         if not is_trading_time(now):
             return
         as_of = previous_trading_day(now.date())
-        if self._history_date != as_of:
-            return
         execution_day = now.date().isoformat()
         def valid_past_date(value, cutoff):
             try:
@@ -667,8 +739,21 @@ class DailyMomentumStrategy:
                                    if valid_past_date(date, execution_day)}
         self.account.update_t1_available_shares(today_str=execution_day)
         with self._history_lock:
-            if self.state.get("planned_as_of") != as_of or self.state.get("planned_revision") != self._history_revision:
+            if self._history_date == as_of and (self.state.get("planned_as_of") != as_of or self.state.get("planned_revision") != self._history_revision):
                 self._plan(as_of, execution_day)
+        if self.config.stop_loss_mode == "intraday":
+            changed = False
+            for sym, pos in self.account.positions.items():
+                price = self._live_stop_quote(quotes.get(sym, {}), now, sym)
+                cost = self._position_cost(pos)
+                if price is not None and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct:
+                    if sym not in self.state["pending_exits"]:
+                        self.state["pending_exits"][sym] = "盘中硬止损信号"
+                        self.state["exit_signal_dates"][sym] = execution_day
+                        self.state["pending_entries"].pop(sym, None)
+                        changed = True
+            if changed:
+                self.account.save()
         self.account.bind_execution_quotes(quotes, now=now)
         self.account.participation_rate = self.config.participation_rate
         # Risk exits are retried while there is available depth; partial fills retain intent.
@@ -689,9 +774,16 @@ class DailyMomentumStrategy:
                     self.state["pending_exits"].pop(symbol, None)
                     self.state["exit_signal_dates"].pop(symbol, None)
                     self.state["pending_entries"].pop(symbol, None)
+            timing = "实时触发执行" if reason == "盘中硬止损信号" else "收盘信号，随后交易日执行"
             result = self.account.execute_sell(sym, q.get("current", 0), avail,
-                        reason=f"{self.name}: {signal_date}收盘{reason}，随后交易日执行",
+                        reason=f"{self.name}: {signal_date}{'收盘' if reason != '盘中硬止损信号' else ''}{reason}，{timing}",
                         state_update=commit_sale)
+            if not result.get("success"):
+                self.state["exit_rejections"][sym] = dict(reason=result.get("reason") or result.get("message") or "成交未完成", time=now.isoformat())
+            else:
+                self.state["exit_rejections"].pop(sym, None)
+        if self._history_date != as_of:
+            return  # Missing history blocks entries, never existing risk exits.
         total = self.account.get_summary()["total_equity"]
         weights = {s: p.get("market_value", 0) / total for s, p in self.account.positions.items()} if total > 0 else {}
         for sym, intent in list(self.state["pending_entries"].items()):

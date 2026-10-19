@@ -693,5 +693,42 @@ class TestServerAPI(unittest.TestCase):
         self.assertEqual(observed[0][symbol]["time"], "20260922100001")
 
 
+    def test_position_risk_and_quote_time_are_read_only(self):
+        self.assertTrue(self.order().json()["success"])
+        before = copy.deepcopy((self.ctx.account.positions, self.ctx.account.strategy_state, self.ctx.account.trades))
+        disk = Path(self.ctx.account.save_path).read_bytes()
+        row = self.client.get("/api/positions").json()[0]
+        self.assertEqual(row["risk"]["stop_loss_mode"], "intraday")
+        self.assertAlmostEqual(row["risk"]["stop_price"], row["cost_basis_cents"]/100/row["total_shares"]*.94)
+        self.assertEqual(row["quote_status"], "fresh")
+        self.assertEqual(row["quote_time"], NOW.isoformat())
+        self.assertEqual(before, (self.ctx.account.positions, self.ctx.account.strategy_state, self.ctx.account.trades))
+        self.assertEqual(disk, Path(self.ctx.account.save_path).read_bytes())
+        self.ctx.last_quotes["sz002594"].update(time="20260921150000", fresh=False)
+        stale = self.client.get("/api/positions").json()[0]
+        self.assertEqual(stale["quote_status"], "stale")
+        self.assertEqual(stale["risk"]["status"], "awaiting_quote")
+
+    def test_paused_strategy_position_does_not_imply_automatic_execution(self):
+        self.assertTrue(self.order().json()["success"])
+        self.ctx.strategy_active = False
+        row = self.client.get("/api/positions").json()[0]
+        self.assertEqual(row["risk"]["status"], "paused")
+        self.assertIn("不会自动下单", row["risk"]["blocked_reason"])
+        self.ctx.strategy_active = True
+        self.ctx.account._persistence_error = "simulated disk full"
+        row = self.client.get("/api/positions").json()[0]
+        self.assertEqual(row["risk"]["status"], "unavailable")
+        self.assertIn("持久化异常", row["risk"]["blocked_reason"])
+
+    def test_stop_loss_mode_validation_and_roundtrip(self):
+        bad = self.client.post("/api/strategy/config", json={"stop_loss_mode": "unknown"})
+        self.assertEqual(bad.status_code, 422)
+        response = self.client.post("/api/strategy/config", json={"stop_loss_mode": "daily_close"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.ctx.strategy.config.stop_loss_mode, "daily_close")
+        self.assertIn("收盘确认止损", self.client.get("/api/status").json()["signal_schedule"])
+
+
 if __name__ == "__main__":
     unittest.main()

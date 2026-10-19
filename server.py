@@ -19,7 +19,7 @@ import uuid
 import copy
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 
@@ -487,6 +487,7 @@ class StrategyToggleRequest(BaseModel):
 
 
 class MomentumParameters(BaseModel):
+    stop_loss_mode: Optional[Literal["intraday", "daily_close"]] = None
     max_stock_weight: Optional[float] = Field(None, gt=0, le=1)
     max_positions: Optional[int] = Field(None, ge=1, le=50)
     risk_per_trade: Optional[float] = Field(None, ge=0, le=.1)
@@ -527,6 +528,7 @@ class AccountResetRequest(BaseModel):
 
 
 class BacktestRequest(BaseModel):
+    stop_loss_mode: Literal["intraday", "daily_close"] = "intraday"
     start_date: str = Field("2024-01-01", description="回测起始日期 (YYYY-MM-DD)")
     end_date: Optional[str] = Field(None, description="默认上一完整交易日")
     initial_cash: float = Field(100000.0, description="初始本金")
@@ -604,8 +606,29 @@ def get_performance():
 @app.get("/api/positions")
 def get_positions():
     """获取当前所有持仓标的明细"""
+    now = datetime.datetime.now(BEIJING)
     with ctx.lock:
-        return list(ctx.account.positions.values())
+        risks = (ctx.strategy.risk_status(ctx.last_quotes, now=now)
+                 if hasattr(ctx.strategy, "risk_status") else [])
+        by_symbol = {row["symbol"]: row for row in risks}
+        result = []
+        for symbol, position in ctx.account.positions.items():
+            row = copy.deepcopy(position)
+            quote = ctx.last_quotes.get(symbol, {})
+            stamp = _quote_timestamp(quote)
+            age = (now-stamp).total_seconds() if stamp else -1
+            fresh = bool(stamp and stamp.date() == now.date() and 0 <= age <= 120
+                         and quote.get("fresh") is not False)
+            risk = dict(by_symbol.get(symbol, {"status": "unavailable", "reason": "当前策略未提供风险状态"}))
+            if not ctx.strategy_active:
+                risk.update(status="paused", blocked_reason="自动策略已暂停，不会自动下单")
+            elif getattr(ctx.account, "_persistence_error", None):
+                risk.update(status="unavailable", blocked_reason="账户持久化异常，已停止自动成交")
+            row.update(risk=risk,
+                       quote_time=stamp.isoformat() if stamp else None,
+                       quote_status="fresh" if fresh else "stale" if stamp else "unavailable")
+            result.append(row)
+        return result
 
 
 @app.get("/api/quotes")
@@ -727,7 +750,10 @@ def get_status():
             "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None,
             "data_quality": quality,
             "strategy_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
-            "signal_schedule": "完整日线信号，下一交易日按实际有效盘口撮合" if hasattr(ctx.strategy, "config") else "旧版实验策略"
+            "signal_schedule": (("盘中报价触发硬止损；MA20与排名使用完整日线信号，下一交易日执行"
+                                 if getattr(ctx.strategy.config, "stop_loss_mode", "daily_close") == "intraday"
+                                 else "收盘确认止损、MA20与排名信号，下一交易日执行")
+                                if hasattr(ctx.strategy, "config") else "旧版实验策略")
         }
 
 
@@ -958,7 +984,7 @@ def list_strategies():
         current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         current_display = getattr(ctx.strategy, "display_name", current_id)
         catalog = [
-            ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；完整收盘信号在下一交易日执行。"),
+            ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；支持盘中硬止损，日线轮动信号下一交易日执行。"),
             ("Momentum_Rotation", "基础日线动量", "基础动量对照组；使用相同的数据、成交和风险框架。"),
             ("Minervini_SEPA", "趋势收缩突破实验", "借鉴SEPA思路的简化技术规则，尚未统一为日线研究模型。"),
             ("TurtleBreakout", "唐奇安通道突破实验", "20日高点突破、10日低点退出的技术规则。"),
@@ -1359,7 +1385,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             aliases = {"stop_loss": "stop_loss_pct"}
             for key in ("stop_loss", "max_positions", "max_stock_weight", "risk_per_trade",
                         "max_sector_weight", "risk_adjusted", "market_filter", "max_entry_gap_down_pct",
-                        "max_entry_gap_up_pct", "max_entry_intraday_drop_pct", "entry_require_ma20"):
+                        "max_entry_gap_up_pct", "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode"):
                 if key in supplied:
                     values[aliases.get(key, key)] = getattr(req, key)
             parameters = asdict(MomentumConfig.from_dict(values))
@@ -1392,7 +1418,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             ignored += sorted(supplied & {"stop_loss", "max_positions", "max_stock_weight",
                                           "risk_per_trade", "max_sector_weight", "risk_adjusted", "market_filter",
                                           "max_entry_gap_down_pct", "max_entry_gap_up_pct",
-                                          "max_entry_intraday_drop_pct", "entry_require_ma20"})
+                                          "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode"})
         arguments = dict(
             start_date=req.start_date,
             end_date=req.end_date or last_completed_trading_day(),
@@ -1411,7 +1437,7 @@ def run_backtest_endpoint(req: BacktestRequest):
         res = dict(res)
         limitations = (["当前/固定股票池与当前行业分类不代表历史时点，结果仅供研究",
                         "未计现金分红、送股、拆并股及退市回收事件",
-                        "前一完整日收盘信号，次日原始开盘价与全日成交量容量近似；与实时盘口不同",
+                        "日线MA与排名信号次日执行；盘中止损仅按日线OHLC近似，不能精确还原逐笔触发或盘口成交",
                         "从指定初始现金开始，不复刻当前账户的历史持仓与待成交订单"] if momentum else
                        ["旧版实验策略与实时执行规则存在差异，结果仅供研究"])
         if momentum and main_board_mapped < len(main_board_symbols):

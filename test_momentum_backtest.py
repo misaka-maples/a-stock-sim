@@ -36,7 +36,7 @@ def fixture_data(count=190, symbols=("sh600096",)):
 
 def engine(data, dates, start=130, end=135, **kwargs):
     config = kwargs.pop("config", MomentumConfig(max_positions=1, max_stock_weight=.5,
-                                                risk_per_trade=0, volatility_target=0,
+                                                risk_per_trade=0, volatility_target=0, stop_loss_mode="daily_close",
                                                 max_sector_weight=1, rebalance_every=1,
                                                 min_holding_days=0, cooldown_days=0))
     return MomentumBacktestEngine(start_date=dates[start], end_date=dates[end],
@@ -339,3 +339,104 @@ def test_backtest_gap_down_rejection_uses_same_shared_rule():
     set_price(bars[130],previous,opening=round(previous*.96,2))
     result=engine(data,dates,end=130).run()
     assert not result['fills'] and result['rejections'][0]['reason']=='entry_gap_down'
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_intraday_stop_uses_threshold_or_worse_gap_not_future_close(gap):
+    data, dates = fixture_data()
+    obj = engine(data, dates, end=131)
+    obj.config.stop_loss_mode = "intraday"
+    initial = engine(copy.deepcopy(data), dates, end=130).run()
+    cost = initial["open_positions"]["sh600096"]["cost_price"]
+    stop = cost * .94
+    bar = data["stocks"]["sh600096"]["bars"][131]
+    opening = stop-.2 if gap else 23.9
+    set_price(bar, 23.9, opening=opening)
+    bar["raw_low"] = bar["low"] = stop-.3
+    result = obj.run()
+    sell = next(f for f in result["fills"] if f["side"] == "SELL")
+    assert sell["date"] == sell["signal_date"] == dates[131]
+    assert sell["fill_basis"] == ("raw_open_gap" if gap else "ohlc_stop_threshold")
+    assert sell["price"] == pytest.approx(round(min(opening, stop)*.999, 2))
+    assert "intraday_stop_ohlc_approximation" in " ".join(result["warnings"])
+    changed = copy.deepcopy(data)
+    changed["stocks"]["sh600096"]["bars"][131]["raw_close"] = stop+.1
+    assert engine(changed, dates, end=131, config=obj.config).run()["fills"] == result["fills"]
+
+
+def test_same_day_stop_intent_survives_t1_and_rebound():
+    data, dates = fixture_data()
+    bar = data["stocks"]["sh600096"]["bars"][130]
+    bar["raw_low"] = bar["low"] = 22.
+    obj = engine(data, dates, end=130)
+    obj.config.stop_loss_mode = "intraday"
+    day_one = obj.run()
+    assert [f["side"] for f in day_one["fills"]] == ["BUY"]
+    assert day_one["pending_exits"]["sh600096"]["signal_date"] == dates[130]
+    obj.end_date = dates[131]
+    result = obj.run()
+    sell = next(f for f in result["fills"] if f["side"] == "SELL")
+    assert sell["date"] == dates[131] and sell["signal_date"] == dates[130]
+    assert sell["fill_basis"] == "raw_open"
+    assert sell["price"] > day_one["pending_exits"]["sh600096"]["stop_price"]
+
+
+def test_intraday_partial_stop_capacity_is_shared_and_rebound_does_not_cancel():
+    data, dates = fixture_data()
+    bars = data["stocks"]["sh600096"]["bars"]
+    bars[131]["raw_low"] = bars[131]["low"] = 22.
+    bars[131]["volume"] = 20
+    bars[132]["volume"] = 20
+    obj = engine(data, dates, end=132)
+    obj.config.stop_loss_mode = "intraday"
+    result = obj.run()
+    sells = [f for f in result["fills"] if f["side"] == "SELL"]
+    assert [(f["date"], f["shares"]) for f in sells] == [(dates[131],100), (dates[132],100)]
+    assert all(f["signal_date"] == dates[131] for f in sells)
+    assert "sh600096" in result["pending_exits"]
+    assert result["summary"]["total_fees"] == pytest.approx(round(sum(f["fees"] for f in result["fills"]),2))
+
+
+def test_pending_intraday_stop_does_not_fill_missing_or_limit_down_bar():
+    data, dates = fixture_data()
+    bars = data["stocks"]["sh600096"]["bars"]
+    bars[130]["raw_low"] = bars[130]["low"] = 22.
+    price = round(bars[130]["raw_close"]*.9,2)
+    for key in ("open", "close", "high", "low"):
+        bars[131][key] = bars[131]["raw_"+key] = price
+    bars[131]["raw_pre_close"] = bars[130]["raw_close"]
+    del bars[132]
+    obj = engine(data, dates, end=132)
+    obj.config.stop_loss_mode = "intraday"
+    result = obj.run()
+    assert [f["side"] for f in result["fills"]] == ["BUY"]
+    assert "sh600096" in result["pending_exits"]
+    assert any(r["reason"] == "missing_daily_bar" for r in result["rejections"])
+
+
+def test_intraday_sale_proceeds_cannot_fund_an_earlier_opening_buy():
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    config = MomentumConfig(max_positions=2, max_stock_weight=.8, max_sector_weight=1,
+                            risk_per_trade=0, volatility_target=0, rebalance_every=1,
+                            stop_loss_mode="intraday")
+    intervals = {"sh600096": [{}], "sh600036": [{"start": dates[130]}]}
+    baseline = engine(copy.deepcopy(data), dates, end=131, config=config,
+                      universe_intervals=intervals).run()
+    data["stocks"]["sh600096"]["bars"][131]["raw_low"] = 22.
+    changed = engine(data, dates, end=131, config=config,
+                     universe_intervals=intervals).run()
+    opening_buys = lambda result: [f for f in result["fills"] if f["side"] == "BUY"]
+    assert len(opening_buys(baseline)) == 2
+    assert opening_buys(changed) == opening_buys(baseline)
+    assert any(f["side"] == "SELL" and f["date"] == dates[131] for f in changed["fills"])
+
+
+def test_intraday_stop_can_execute_same_day_only_when_t1_explicitly_disabled():
+    data, dates = fixture_data()
+    data["stocks"]["sh600096"]["bars"][130]["raw_low"] = 22.
+    obj = engine(data, dates, end=130, strict_t1=False)
+    obj.config.stop_loss_mode = "intraday"
+    result = obj.run()
+    assert [f["side"] for f in result["fills"]] == ["BUY", "SELL"]
+    assert result["trades"][0]["holding_days"] == 0
+    assert not result["pending_exits"]

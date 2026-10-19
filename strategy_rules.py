@@ -15,6 +15,7 @@ class MomentumConfig:
     max_positions: int = 6
     max_stock_weight: float = 0.20
     stop_loss_pct: float = -6.0
+    stop_loss_mode: str = "intraday"
     risk_per_trade: float = 0.01
     max_sector_weight: float = 0.35
     volatility_target: float = 0.25
@@ -37,6 +38,8 @@ class MomentumConfig:
     entry_require_ma20: bool = True
 
     def __post_init__(self):
+        if self.stop_loss_mode not in ("intraday", "daily_close"):
+            raise ValueError("stop_loss_mode 必须为 intraday 或 daily_close")
         if not isinstance(self.entry_require_ma20, bool):
             raise ValueError("entry_require_ma20 必须为布尔值")
         for name in ("max_entry_gap_down_pct", "max_entry_gap_up_pct", "max_entry_intraday_drop_pct"):
@@ -178,9 +181,9 @@ def evaluate_momentum(bars, as_of, config):
         return None
 
 
-def exit_reason(current_price, cost_price, signal, config, current_adjusted_price=None):
+def exit_reason(current_price, cost_price, signal, config, current_adjusted_price=None, *, include_stop=True):
     """Daily signal exit; call with the completed day's raw close and cost."""
-    if cost_price > 0 and (current_price / cost_price - 1) * 100 <= config.stop_loss_pct:
+    if include_stop and cost_price > 0 and (current_price / cost_price - 1) * 100 <= config.stop_loss_pct:
         return "硬止损信号"
     adjusted = current_adjusted_price
     if adjusted is None and signal:

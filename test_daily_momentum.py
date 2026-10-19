@@ -66,7 +66,7 @@ def account(tmp_path, clock):
 def prepared(account, symbols=None, feed=None, now=NOW, **config):
     config = {**dict(max_positions=3, max_stock_weight=.2, max_sector_weight=1.,
                     risk_per_trade=0, volatility_target=0, rebalance_every=1,
-                    min_holding_days=0), **config}
+                    min_holding_days=0, stop_loss_mode="daily_close"), **config}
     s = MomentumRotationProStrategy(account, symbols or [SYMBOL], feed=feed or StubFeed(),
                                     industry_map={}, **config)
     s.prepare(now=now, synchronous=True)
@@ -181,6 +181,108 @@ def test_intraday_drop_without_completed_close_exit_cannot_trigger_daily_stop(ac
     tick(s, {SYMBOL: market_quote(current=11.4)}, clock)
     assert [t["side"] for t in account.trades] == ["BUY"]
     assert not s.state["pending_exits"]
+
+
+def test_intraday_stop_independent_of_history_and_ranking(account, clock):
+    seed_position(account, clock, shares=300, price=12.58)
+    s = prepared(account, stop_loss_mode="intraday", min_holding_days=99, cooldown_days=99)
+    s.prepare = Mock()
+    s._history_date = None
+    s.history_cache = {}
+    tick(s, {SYMBOL: market_quote(current=11.4)}, clock)
+    assert SYMBOL not in account.positions
+    assert "盘中硬止损" in account.trades[-1]["reason"]
+
+
+@pytest.mark.parametrize("changes", [dict(time="20260921100000"), dict(time="20260922095759"),
+                                     dict(time="20260922100001"), dict(fresh=False), dict(current=float("nan")),
+                                     dict(symbol="sh600001")])
+def test_intraday_stop_rejects_unverified_quote(account, clock, changes):
+    seed_position(account, clock, shares=300, price=12.58)
+    s = prepared(account, stop_loss_mode="intraday")
+    quote = market_quote(current=11.4)
+    quote.update(changes)
+    s.on_tick({SYMBOL: quote}, now=NOW)
+    assert not s.state["pending_exits"]
+    assert len(account.trades) == 1
+
+
+def test_intraday_stop_blocked_intent_survives_restart_and_rebound(account, clock):
+    seed_position(account, clock, shares=300, price=12.58)
+    s = prepared(account, stop_loss_mode="intraday")
+    tick(s, {SYMBOL: market_quote(current=11.4, bids=[])}, clock)
+    assert SYMBOL in s.state["pending_exits"]
+    assert s.risk_status({SYMBOL: market_quote(current=11.4, bids=[])}, NOW)[0]["blocked_reason"]
+    restored = SimAccount(save_path=str(account.save_path))
+    r = prepared(restored, stop_loss_mode="intraday")
+    later = NOW + dt.timedelta(seconds=3)
+    tick(r, {SYMBOL: market_quote(current=12.6, now=later)}, clock, now=later)
+    assert SYMBOL not in restored.positions
+
+
+def test_intraday_stop_records_t1_intent_without_same_day_sale(account, clock):
+    seed_position(account, clock, shares=300, price=12.58, buy_day="2026-09-22")
+    s = prepared(account, stop_loss_mode="intraday")
+    tick(s, {SYMBOL: market_quote(current=11.4)}, clock)
+    assert SYMBOL in s.state["pending_exits"]
+    assert len(account.trades) == 1
+    assert "T+1" in s.risk_status({SYMBOL: market_quote(current=11.4)}, NOW)[0]["blocked_reason"]
+
+
+def test_risk_status_does_not_apply_yesterday_close_to_todays_new_position(account, clock):
+    seed_position(account, clock, shares=300, price=14., buy_day="2026-09-22")
+    s = prepared(account, stop_loss_mode="daily_close")
+    row = s.risk_status({SYMBOL: market_quote(current=14.)}, NOW)[0]
+    assert not row["triggered"] and not row["signal_date"]
+
+
+def test_intraday_intent_save_failure_stops_sale_and_later_retry(account, clock, monkeypatch):
+    from sim_trader import AccountPersistenceError
+    seed_position(account, clock, shares=300, price=12.58)
+    s = prepared(account, stop_loss_mode="intraday")
+    s.prepare = Mock()
+    s._history_date = None
+    monkeypatch.setattr("sim_trader.os.replace", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(AccountPersistenceError):
+        s.on_tick({SYMBOL: market_quote(current=11.4)}, now=NOW)
+    assert len(account.trades) == 1 and account._persistence_error
+    s.on_tick({SYMBOL: market_quote(current=11.4)}, now=NOW)
+    assert len(account.trades) == 1
+    assert "写盘故障" in s.state["exit_rejections"][SYMBOL]["reason"]
+
+
+def test_risk_status_before_open_is_read_only_and_explains_daily_trigger(account, clock):
+    seed_position(account, clock, shares=300, price=14.)
+    s = prepared(account)
+    before = account.save_path.read_bytes()
+    state = copy.deepcopy(s.state)
+    preopen = NOW.replace(hour=8, minute=54)
+    row = s.risk_status({SYMBOL: market_quote(current=11.4)}, preopen)[0]
+    assert row["triggered"] and row["signal_date"] == "2026-09-21"
+    assert "非连续交易" in row["blocked_reason"]
+    assert account.save_path.read_bytes() == before and s.state == state
+
+
+def test_pending_daily_exit_executes_even_before_history_date_published(account, clock):
+    seed_position(account, clock, shares=300, price=14.)
+    s = prepared(account)
+    s.state["pending_exits"][SYMBOL] = "硬止损信号"
+    s.state["exit_signal_dates"][SYMBOL] = "2026-09-21"
+    s.prepare = Mock()
+    s._history_date = None
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert SYMBOL not in account.positions
+
+
+def test_intraday_stop_uses_exact_cost_basis_instead_of_display_rounding(account, clock):
+    seed_position(account, clock, shares=300, price=12.58)
+    s = prepared(account, stop_loss_mode="intraday")
+    account.positions[SYMBOL]["cost_price"] = 11.0  # stale rounded display must not change risk basis
+    row = s.risk_status({SYMBOL: market_quote(current=11.4)}, NOW)[0]
+    exact = account.positions[SYMBOL]["cost_basis_cents"] / 100 / 300
+    assert row["stop_price"] == exact * .94
+    tick(s, {SYMBOL: market_quote(current=11.4)}, clock)
+    assert SYMBOL not in account.positions
 
 
 def test_blocked_daily_exit_and_partial_sale_preserve_order_intent(account, clock):
@@ -409,6 +511,7 @@ def test_trade_callbacks_see_atomically_committed_partial_intent_and_cooldown(ac
     # Yesterday's close now breaches the cost stop; clear the full partial
     # position and ensure callback readers already see its cooldown.
     account.positions[SYMBOL]["cost_price"] = 14.
+    account.positions[SYMBOL]["cost_basis_cents"] = 14 * 100 * account.positions[SYMBOL]["total_shares"]
     s.state.pop("planned_as_of", None)
     def on_sell(trade, acc):
         stored = json.loads(acc.save_path.read_text())["strategy_state"][s.name]

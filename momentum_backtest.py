@@ -1,4 +1,4 @@
-"""Dated daily momentum research: completed-day decisions, next-open fills.
+"""Dated daily momentum research: next-open signals and optional OHLC stops.
 
 Raw prices account for cash and holdings; adjusted bars only supply indicators.
 The daily-open/whole-day-volume model is an approximation to the live arrival
@@ -127,6 +127,8 @@ class MomentumBacktestEngine:
         warnings = ["daily_open_approximation: signals use previous close; fills use next raw open",
                     "capacity_approximation: daily total volume limits fills, not opening-auction depth",
                     "corporate_actions_not_accounted: cash dividends, splits and delisting recoveries require an event feed"]
+        if self.config.stop_loss_mode == "intraday":
+            warnings.append("intraday_stop_ohlc_approximation: existing holdings stop at raw open on gaps or threshold minus slippage on low crossing; daily OHLC cannot prove tick order, depth or exact fills; T+1 and unfilled stop intents persist")
         if any(not _main_board(s) for s in self.symbols):
             warnings.append("non_main_board_excluded: ranking and execution both use Shanghai/Shenzhen main-board stocks only")
         warnings.append("historical_risk_status_unverified: dated ST/price-limit metadata takes precedence; current names are only a conservative fallback")
@@ -250,50 +252,65 @@ class MomentumBacktestEngine:
                     if reason:
                         pending_exits.setdefault(symbol, dict(reason=reason, signal_date=as_of))
             consumed = {}
-            for symbol, order in list(pending_exits.items()):
-                pos = positions.get(symbol)
-                if not pos:
-                    pending_exits.pop(symbol, None)
-                    continue
-                if self.strict_t1 and pos["buy_date"] >= date:
-                    continue
-                bar = stocks[symbol]["by_date"].get(date)
-                if not bar:
-                    rejections.append(dict(date=date, symbol=symbol, side="SELL", reason="missing_daily_bar"))
-                    continue
-                bar = execution_bar(symbol, bar)
-                previous = stocks[symbol]["by_date"].get(as_of, {})
-                pre_close = bar.get("raw_pre_close") or previous.get("raw_close") or pos["last_price"]
-                result = match_daily("SELL", pos["shares"], bar, pre_close,
-                                     participation_rate=self.config.participation_rate,
-                                     slippage_rate=self.slippage_rate, consumed_shares=consumed.get((symbol, "SELL"), 0))
-                if not result.get("success") or not result.get("shares"):
-                    rejections.append(dict(date=date, symbol=symbol, side="SELL", reason=result.get("reason")))
-                    continue
-                shares, price = int(result["shares"]), float(result["price"])
-                consumed[(symbol, "SELL")] = consumed.get((symbol, "SELL"), 0) + shares
-                amount, fee = shares * price, self._fees("SELL", shares * price)
-                allocated_buy_fees = pos["remaining_buy_fees"] * shares / pos["shares"]
-                buy_amount = shares * pos["buy_price"]
-                pnl = amount - fee - buy_amount - allocated_buy_fees
-                cash += amount - fee
-                day_notional += amount
-                total_fees += fee
-                trades.append(dict(symbol=symbol, name=pos["name"], buy_date=pos["buy_date"],
-                                   buy_price=pos["buy_price"], sell_date=date, sell_price=price,
-                                   shares=shares, buy_amount=round(buy_amount, 2), sell_amount=round(amount, 2),
-                                   net_pnl=round(pnl, 2), pnl_pct=round(pnl / buy_amount * 100, 2),
-                                   fees=round(fee + allocated_buy_fees, 2), holding_days=index-pos["buy_index"],
-                                   reason=order["reason"], signal_date=order["signal_date"], status=result.get("status")))
-                fills.append(dict(date=date, symbol=symbol, side="SELL", price=price, shares=shares,
-                                  fees=fee, signal_date=order["signal_date"], status=result.get("status")))
-                pos["remaining_buy_fees"] -= allocated_buy_fees
-                pos["shares"] -= shares
-                if pos["shares"] == 0:
-                    positions.pop(symbol)
-                    pending_exits.pop(symbol)
-                    cooldown[symbol] = index + self.config.cooldown_days
+            def execute_exits(intraday=False):
+                nonlocal cash, day_notional, total_fees
+                for symbol, order in list(pending_exits.items()):
+                    if intraday and order.get("trigger_date") != date:
+                        continue  # Prior intents already attempted at this open.
+                    pos = positions.get(symbol)
+                    if not pos:
+                        pending_exits.pop(symbol, None)
+                        continue
+                    if self.strict_t1 and pos["buy_date"] >= date:
+                        continue
+                    bar = stocks[symbol]["by_date"].get(date)
+                    if not bar:
+                        rejections.append(dict(date=date, symbol=symbol, side="SELL", reason="missing_daily_bar"))
+                        continue
+                    bar = execution_bar(symbol, bar)
+                    fill_basis = "raw_open"
+                    if intraday and order.get("trigger_date") == date:
+                        # Only a newly observed low crossing may use a same-day
+                        # stop threshold; old unfilled intents execute at next open.
+                        stop = order["stop_price"]
+                        reference = min(float(bar["raw_open"]), stop)
+                        fill_basis = "raw_open_gap" if float(bar["raw_open"]) <= stop else "ohlc_stop_threshold"
+                        bar = dict(bar, raw_open=reference)
+                    previous = stocks[symbol]["by_date"].get(as_of, {})
+                    pre_close = bar.get("raw_pre_close") or previous.get("raw_close") or pos["last_price"]
+                    result = match_daily("SELL", pos["shares"], bar, pre_close,
+                                         participation_rate=self.config.participation_rate,
+                                         slippage_rate=self.slippage_rate, consumed_shares=consumed.get((symbol, "SELL"), 0))
+                    if not result.get("success") or not result.get("shares"):
+                        rejections.append(dict(date=date, symbol=symbol, side="SELL", reason=result.get("reason")))
+                        continue
+                    shares, price = int(result["shares"]), float(result["price"])
+                    consumed[(symbol, "SELL")] = consumed.get((symbol, "SELL"), 0) + shares
+                    amount, fee = shares * price, self._fees("SELL", shares * price)
+                    allocated_buy_fees = pos["remaining_buy_fees"] * shares / pos["shares"]
+                    buy_amount = shares * pos["buy_price"]
+                    pnl = amount - fee - buy_amount - allocated_buy_fees
+                    cash += amount - fee
+                    day_notional += amount
+                    total_fees += fee
+                    trades.append(dict(symbol=symbol, name=pos["name"], buy_date=pos["buy_date"],
+                                       buy_price=pos["buy_price"], sell_date=date, sell_price=price,
+                                       shares=shares, buy_amount=round(buy_amount, 2), sell_amount=round(amount, 2),
+                                       net_pnl=round(pnl, 2), pnl_pct=round(pnl / buy_amount * 100, 2),
+                                       fees=round(fee + allocated_buy_fees, 2), holding_days=index-pos["buy_index"],
+                                       reason=order["reason"], signal_date=order["signal_date"], status=result.get("status"),
+                                       execution_phase="intraday_stop" if intraday else "open", fill_basis=fill_basis))
+                    fills.append(dict(date=date, symbol=symbol, side="SELL", price=price, shares=shares,
+                                      fees=fee, signal_date=order["signal_date"], status=result.get("status"),
+                                      execution_phase="intraday_stop" if intraday else "open", fill_basis=fill_basis))
+                    pos["remaining_buy_fees"] -= allocated_buy_fees
+                    pos["shares"] -= shares
+                    if pos["shares"] == 0:
+                        positions.pop(symbol)
+                        pending_exits.pop(symbol)
+                        cooldown[symbol] = index + self.config.cooldown_days
 
+            execute_exits()
             # Establish positions only at scheduled rotations, after exits.
             if rebalance and market_ok:
                 for symbol in ranking:
@@ -395,6 +412,21 @@ class MomentumBacktestEngine:
                     fills.append(dict(date=date, symbol=symbol, side="BUY", shares=shares, price=price,
                                       fees=fee, signal_date=as_of, status=result.get("status")))
 
+            # Run low-crossing stops only after all opening decisions. Their
+            # proceeds must never finance an earlier opening buy. A same-day
+            # acquisition can trigger an intent, but T+1 delays its execution.
+            if self.config.stop_loss_mode == "intraday":
+                for symbol, pos in positions.items():
+                    bar = stocks[symbol]["by_date"].get(date)
+                    if not bar:
+                        continue
+                    stop = pos["cost_price"] * (1 + self.config.stop_loss_pct / 100)
+                    if float(bar["raw_low"]) <= stop:
+                        pending_exits.setdefault(symbol, dict(
+                            reason="盘中成本止损信号", signal_date=date,
+                            trigger_date=date, stop_price=stop))
+                execute_exits(intraday=True)
+
             for symbol, pos in positions.items():
                 bar = stocks[symbol]["by_date"].get(date)
                 if bar:
@@ -470,4 +502,6 @@ class MomentumBacktestEngine:
                     trades=trades, fills=fills, rejections=rejections,
                     open_positions={s: dict(p) for s, p in positions.items()},
                     warnings=list(dict.fromkeys(warnings)), data_coverage=data_coverage,
-                    execution_model="previous_close_signal_next_raw_open; daily_capacity_approximation")
+                    pending_exits={s: dict(order) for s, order in pending_exits.items()},
+                    execution_model="previous_close_signal_next_raw_open; daily_capacity_approximation"
+                    + ("; intraday_stop_ohlc_approximation" if self.config.stop_loss_mode == "intraday" else ""))

@@ -631,7 +631,7 @@
     </div>
     <div class="metric-card">
       <div class="title">可用现金</div>
-      <div id="cash" class="value">¥0.00</div>
+      <div id="cashPrimary" class="value">¥0.00</div>
       <div class="sub">随时可委托买入</div>
       <div class="title">今日收益 / 收益率</div>
       <div id="todayPnl" class="value">¥0.00</div>
@@ -640,7 +640,7 @@
     <div class="metric-card">
       <div class="title">持仓总市值</div>
       <div id="marketValue" class="value">¥0.00</div>
-      <div id="posCount" class="sub">持仓标的: 0 只</div>
+      <div id="positionCountPrimary" class="sub">持仓标的: 0 只</div>
     </div>
     <div class="metric-card">
       <div class="title">累计浮盈 / 收益率</div>
@@ -1165,6 +1165,8 @@
           <div class="panel-title">📦 当前持仓 (T+1锁仓管理)</div>
           <span style="font-size:12px; color:var(--text-muted)">A股真实交易规费已计入成本</span>
         </div>
+        <p style="font-size:12px;color:var(--text-muted);padding:0 16px;">盘中硬止损达到阈值时尝试卖出；日线均线与轮动信号次日执行。T+1、跌停、停牌或盘口不足可能阻塞成交，触发-6%不保证成交亏损恰为-6%。</p>
+        <div id="positionsRefreshState" role="status" style="font-size:12px;color:var(--text-muted);padding:0 16px;"></div>
         <div class="table-responsive">
           <table>
             <thead>
@@ -1174,14 +1176,15 @@
                 <th class="text-right">总持仓</th>
                 <th class="text-right">可用(T+1)</th>
                 <th class="text-right">成本价</th>
-                <th class="text-right">最新市价</th>
+                <th class="text-right">估值价格 / 行情时间</th>
                 <th class="text-right">持仓市值</th>
                 <th class="text-right">浮动盈亏</th>
+                <th>止损 / 退出状态</th>
                 <th class="text-center">操作</th>
               </tr>
             </thead>
             <tbody id="positionsTbody">
-              <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
+              <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1468,27 +1471,31 @@
     let currentInitialCash = 100000;
 
     async function fetchData() {
-      try {
-        const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = await Promise.all([
-          apiFetch('/api/summary').then(r => r.json()),
-          apiFetch('/api/positions').then(r => r.json()),
-          apiFetch('/api/quotes').then(r => r.json()),
-          apiFetch('/api/trades').then(r => r.json()),
-          apiFetch('/api/status').then(r => r.json()),
-          apiFetch('/api/performance').then(r => r.json()).catch(() => null)
-        ]);
-
-        const summaryData = (perfRes && perfRes.summary) ? perfRes.summary : sumRes;
-        renderSummary(summaryData);
-        renderPositions(posRes);
-        renderQuotes(quoteRes);
-        renderTrades(tradeRes);
-        renderStatus(statusRes);
-        if (perfRes) {
-          renderPerformance(perfRes);
-        }
-      } catch (err) {
-        console.error("刷新数据失败:", err);
+      const names = ['资产', '持仓', '行情', '成交记录', '策略状态', '绩效'];
+      const paths = ['/api/summary', '/api/positions', '/api/quotes', '/api/trades', '/api/status', '/api/performance'];
+      const results = await Promise.allSettled(paths.map(async path => {
+        const response = await apiFetch(path);
+        if (response.ok === false) throw new Error('HTTP ' + response.status);
+        return response.json();
+      }));
+      const values = results.map(result => result.status === 'fulfilled' ? result.value : null);
+      const [sumRes, posRes, quoteRes, tradeRes, statusRes, perfRes] = values;
+      const failed = results.flatMap((result, index) => result.status === 'rejected' ? [names[index]] : []);
+      const apply = (index, render, value) => {
+        if (results[index].status !== 'fulfilled') return;
+        try { render(value); } catch (err) { failed.push(names[index]); console.error('刷新' + names[index] + '失败:', err); }
+      };
+      if (perfRes && perfRes.summary) apply(5, renderSummary, perfRes.summary);
+      else apply(0, renderSummary, sumRes);
+      apply(1, renderPositions, posRes);
+      apply(2, renderQuotes, quoteRes);
+      apply(3, renderTrades, tradeRes);
+      apply(4, renderStatus, statusRes);
+      apply(5, renderPerformance, perfRes);
+      const state = document.getElementById('positionsRefreshState');
+      if (state) {
+        state.textContent = failed.length ? '刷新失败：' + [...new Set(failed)].join('、') + '；对应区域可能仍为旧数据，等待重试。' : '持仓与风控状态最近刷新：' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
+        state.style.color = failed.length ? 'var(--accent-orange, #f59e0b)' : 'var(--text-muted)';
       }
     }
 
@@ -1535,10 +1542,10 @@
       if (document.getElementById('marketValue')) {
         document.getElementById('marketValue').innerText = `¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       }
-      document.querySelectorAll('#cash').forEach(el => {
+      document.querySelectorAll('#cash, #cashPrimary').forEach(el => {
         el.innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       });
-      document.querySelectorAll('#posCount').forEach(el => {
+      document.querySelectorAll('#posCount, #positionCountPrimary').forEach(el => {
         el.innerText = `持仓市值: ¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})} (${s.position_count||0}只)`;
       });
     }
@@ -1819,33 +1826,41 @@
       });
     }
 
+    function positionEscape(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
     function renderPositions(positions) {
       const tbody = document.getElementById('positionsTbody');
-      if (!positions || positions.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center" style="color:var(--text-muted); padding: 24px;">当前账户为空仓状态</td></tr>';
+      if (!Array.isArray(positions)) throw new Error('持仓响应格式无效');
+      if (positions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center" style="color:var(--text-muted); padding: 24px;">当前账户为空仓状态</td></tr>';
         return;
       }
-      let html = '';
-      positions.forEach(p => {
-        const isUp = p.unrealized_pnl >= 0;
-        const colorClass = isUp ? 'up' : 'down';
-        html += `
-          <tr>
-            <td style="color:var(--accent-blue)">${p.symbol}</td>
-            <td style="font-weight:600">${p.name}</td>
-            <td class="text-right">${p.total_shares.toLocaleString()}</td>
-            <td class="text-right">${p.available_shares.toLocaleString()}</td>
-            <td class="text-right">¥${p.cost_price.toFixed(2)}</td>
-            <td class="text-right">¥${p.last_price.toFixed(2)}</td>
-            <td class="text-right">¥${p.market_value.toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
-            <td class="text-right ${colorClass}">${isUp ? '+' : ''}¥${p.unrealized_pnl.toFixed(2)} (${isUp ? '+' : ''}${p.pnl_pct.toFixed(2)}%)</td>
-            <td class="text-center">
-              <button class="btn btn-sell" onclick="quickSell('${p.symbol}', ${p.available_shares})">卖出</button>
-            </td>
-          </tr>
-        `;
-      });
-      tbody.innerHTML = html;
+      const n = (value, digits=2) => Number.isFinite(Number(value)) && value != null ? Number(value).toLocaleString('zh-CN', {minimumFractionDigits:digits, maximumFractionDigits:digits}) : '--';
+      const statuses = {healthy:'未触发', watching:'监控中', armed:'未触发', triggered:'已触发，等待卖出', pending:'已触发，待执行退出', blocked:'已触发，卖出受阻', awaiting_quote:'等待有效行情', paused:'策略已暂停', waiting:'等待执行', disabled:'策略未启用', unavailable:'风控状态暂不可用', safe:'未触发'};
+      const quoteLabels = {fresh:'有效报价', stale:'过期报价，仅供估值', unavailable:'缓存估值，时间未核验', previous_close:'昨收估值'};
+      tbody.innerHTML = positions.map(p => {
+        const isUp = Number(p.unrealized_pnl) >= 0;
+        const risk = p.risk || {};
+        const mode = risk.stop_loss_mode === 'intraday' ? '盘中硬止损' : risk.stop_loss_mode === 'daily_close' ? '收盘确认，次日执行' : '止损模式未提供';
+        const riskLabel = statuses[risk.status] || (risk.status || '风控状态暂不可用');
+        const details = [mode, risk.stop_price != null ? '止损参考价 ¥' + n(risk.stop_price) : '', risk.triggered ? '已触发' : '', risk.reason, risk.blocked_reason, risk.signal_date ? '信号日 ' + risk.signal_date : ''].filter(Boolean);
+        const symbol = String(p.symbol || '');
+        const sellable = /^[a-z]{2}\d{6}$/.test(symbol) && Number(p.available_shares) > 0;
+        return `<tr>
+          <td style="color:var(--accent-blue)">${positionEscape(symbol)}</td>
+          <td style="font-weight:600">${positionEscape(p.name)}</td>
+          <td class="text-right">${n(p.total_shares,0)}</td>
+          <td class="text-right">${n(p.available_shares,0)}</td>
+          <td class="text-right">¥${n(p.cost_price)}</td>
+          <td class="text-right">¥${n(p.last_price)}<div style="font-size:11px;color:var(--text-muted)">${positionEscape(quoteLabels[p.quote_status] || '缓存估值，时间未核验')}<br>${positionEscape(p.quote_time || '行情时间未知')}</div></td>
+          <td class="text-right">¥${n(p.market_value)}</td>
+          <td class="text-right ${isUp ? 'up' : 'down'}">${isUp ? '+' : ''}¥${n(p.unrealized_pnl)} (${isUp ? '+' : ''}${n(p.pnl_pct)}%)</td>
+          <td style="max-width:250px;font-size:12px"><strong>${positionEscape(riskLabel)}</strong><div style="color:var(--text-muted)">${details.map(positionEscape).join('<br>')}</div></td>
+          <td class="text-center"><button class="btn btn-sell" ${sellable ? `onclick="quickSell('${symbol}', ${Math.floor(Number(p.available_shares))})"` : 'disabled'}>卖出</button></td>
+        </tr>`;
+      }).join('');
     }
 
     // Dedicated stock search uses text nodes for every provider-controlled value.
@@ -3127,6 +3142,8 @@
         control.value = String(value);
       }
       document.getElementById('modalEntryRequireMA20').checked = parameters.entry_require_ma20 ?? true;
+      const modeControl = document.getElementById('modalStopLossMode');
+      if (modeControl) modeControl.value = parameters.stop_loss_mode || 'intraday';
     }
 
     function buildStrategySwitchPayload() {
@@ -3139,6 +3156,8 @@
       const payload = { strategy_id:selectedStrategyId, max_stock_weight:number('modalMaxWeight'),
         max_positions:number('modalMaxPositions'), stop_loss:number('modalStopLoss') };
       if (selectedStrategyId.startsWith('Momentum_Rotation')) {
+        const modeControl = document.getElementById('modalStopLossMode');
+        if (modeControl) payload.stop_loss_mode = modeControl.value;
         Object.assign(payload, {
           max_entry_gap_down_pct:number('modalEntryGapDown'), max_entry_gap_up_pct:number('modalEntryGapUp'),
           max_entry_intraday_drop_pct:number('modalEntryIntradayDrop'),
@@ -3161,7 +3180,7 @@
         });
         const data = await res.json();
         if (data.success) {
-          alert(`✅ 策略切换成功！\n\n系统当前自动模拟交易策略已立即更换为：\n${data.strategy_name}\n\n现有账户资产与持仓已得到安全保护。`);
+          alert(`✅ 策略切换成功！\n\n系统当前自动模拟交易策略已更换为：\n${data.strategy_name}\n\n账户及持仓记录保留，后续按新参数执行风控。`);
           closeStrategyModal();
           fetchData();
         } else {
@@ -3644,7 +3663,7 @@
       </div>
 
       <p style="font-size:13px; color:var(--text-muted); margin-bottom:16px; line-height:1.5;">
-        切换策略后系统将立即按新逻辑执行全市场选股扫描与持仓生命线风控。现有持仓与账户本金将受到无损保护，无需重启服务器。
+        切换策略后按新参数执行选股与持仓风控，现有账户及持仓记录保留。风控条件满足时可能自动卖出，无需重启服务器。
       </p>
 
       <!-- 策略列表选项容器 -->
@@ -3669,11 +3688,18 @@
             <input type="number" id="modalMaxPositions" class="form-control" value="3" min="1" max="5" style="width:100%; padding:6px 10px; font-size:12px;">
           </div>
           <div>
-            <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">防守硬止损线</label>
+            <label style="font-size:11px; color:var(--text-muted); display:block; margin-bottom:4px;">止损阈值（含买入规费成本）</label>
             <select id="modalStopLoss" class="form-control" style="width:100%; padding:6px 10px; font-size:12px;">
               <option value="-5.0">-5.0%</option>
-              <option value="-6.0" selected>-6.0% (推荐防洗盘)</option>
+              <option value="-6.0" selected>-6.0%</option>
               <option value="-8.0">-8.0% (宽幅防守)</option>
+            </select>
+          </div>
+          <div>
+            <label for="modalStopLossMode" style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">止损执行模式</label>
+            <select id="modalStopLossMode" class="form-control">
+              <option value="intraday">盘中硬止损（有效行情达阈值尝试卖出）</option>
+              <option value="daily_close">收盘确认，次日可交易时执行</option>
             </select>
           </div>
           <div>
