@@ -135,6 +135,23 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("market_status", result.json())
         self.assertIn("strategy_active", result.json())
 
+    def test_get_history_status(self):
+        result = self.client.get("/api/history/status")
+        self.assertEqual(result.status_code, 200)
+        data = result.json()
+        self.assertIn("data_quality", data)
+        self.assertIn("unavailable_symbols", data)
+        self.assertIn("quotes_summary", data)
+
+    def test_history_refresh(self):
+        result = self.client.post("/api/history/refresh")
+        self.assertEqual(result.status_code, 200)
+        data = result.json()
+        self.assertTrue(data.get("success"))
+        thread = getattr(self.ctx.strategy, "_history_thread", None)
+        if thread and thread.is_alive():
+            thread.join(timeout=5)
+
     def test_strategy_toggle(self):
         for active in (False, True):
             result = self.client.post("/api/strategy/toggle", json={"active": active})

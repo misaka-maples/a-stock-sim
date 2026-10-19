@@ -477,6 +477,111 @@
       }
     }
 
+    /* 策略数据基准与接口监控看板样式 */
+    .data-monitor-panel {
+      margin-bottom: 20px;
+    }
+    .data-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    .data-status-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 110px;
+    }
+    .data-status-card .label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .data-status-card .val {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .data-status-card .desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+    .provider-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .provider-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .provider-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+      padding-bottom: 8px;
+    }
+    .provider-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .progress-bar-bg {
+      width: 100%;
+      height: 6px;
+      background: #334155;
+      border-radius: 9999px;
+      overflow: hidden;
+      margin: 4px 0;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.3s ease;
+    }
+    .progress-bar-fill.normal { background: linear-gradient(90deg, #10b981, #38bdf8); }
+    .progress-bar-fill.warning { background: linear-gradient(90deg, #f59e0b, #ef4444); }
+    .progress-bar-fill.danger { background: #ef4444; }
+    .diag-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .diag-pill {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(51, 65, 85, 0.45);
+      color: var(--text-muted);
+      border: 1px solid rgba(51, 65, 85, 0.6);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
     @media (max-width: 480px) {
       .bt-form {
         grid-template-columns: 1fr;
@@ -499,6 +604,7 @@
       <span id="marketStatusBadge" class="badge badge-market">检测中...</span>
       <span id="workerBadge" class="badge badge-market">交易服务: 待确认</span>
       <span id="strategyBadge" class="badge badge-strategy-on">策略运行中</span>
+      <span id="dataStatusHeaderBadge" class="badge" style="background:rgba(56,189,248,0.15); color:var(--accent-blue); border:1px solid var(--accent-blue); cursor:pointer; font-weight:600;" onclick="scrollToDataMonitor()" title="点击直达策略数据更新与接口监控看板">📊 策略数据: 载入中...</span>
       <span id="currentStrategyTag" class="badge" style="background:rgba(99,102,241,0.25); color:#a5b4fc; border:1px solid #6366f1; cursor:pointer; font-weight:600;" onclick="openStrategyModal()" title="点击修改更换自动实盘策略">🤖 自动策略: 载入中... ⚙️</span>
       <span id="notifyStatusBadge" class="badge" style="background:rgba(14,165,233,0.2); color:#38bdf8; border:1px solid rgba(14,165,233,0.4); cursor:pointer; font-weight:600;" onclick="openNotifyModal()" title="点击配置微信消息推送">🔔 微信推送: 未开启</span>
       <span id="universeBadge" class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa; border:1px solid rgba(59,130,246,0.3)">全A股监控: 沪深主板 3,485只 (严控10%主板)</span>
@@ -798,6 +904,250 @@
             </thead>
             <tbody id="btTradesTbody">
               <tr><td colspan="11" class="text-center" style="color:var(--text-muted)">无交易记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 📡 策略数据源与历史K线更新看板 -->
+  <div id="dataMonitorPanel" class="panel data-monitor-panel" style="margin-bottom: 20px;">
+    <div class="panel-header" style="flex-wrap: wrap; gap: 12px; align-items: center;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div class="panel-title" style="font-size: 16px; display:flex; align-items:center; gap:8px;">
+          <span>📡 策略数据基准与数据接口监控看板</span>
+        </div>
+        <span id="dmAsOfHeaderBadge" class="badge badge-market">基准日: --</span>
+        <span id="dmHistoryReadyBadge" class="badge">有效历史: --</span>
+        <span id="dmRotationReadyBadge" class="badge">轮动条件: --</span>
+        <span id="dmHoldingReadyBadge" class="badge">持仓历史: --</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <span id="dmNextRetryText" style="font-size: 12px; color: var(--text-muted);">下次自动补数: --</span>
+        <button id="dmRefreshBtn" class="btn btn-primary" onclick="triggerHistoryRefresh()" style="font-size: 12px; padding: 5px 12px; display: flex; align-items: center; gap: 4px;">
+          <span>🔄</span><span>立即检测/追更历史</span>
+        </button>
+        <button id="dmToggleCollapseBtn" class="btn" onclick="toggleDataMonitorCollapse()" style="font-size: 12px; padding: 5px 12px;">
+          收起看板
+        </button>
+      </div>
+    </div>
+
+    <div id="dataMonitorBody">
+      <!-- 4个核心数据基准指标卡片 -->
+      <div class="data-status-grid">
+        <!-- 卡片 1: 策略数据决策基准 -->
+        <div class="data-status-card">
+          <div class="label">
+            <span>策略决策基准日</span>
+            <span id="dmStatusPhaseBadge" class="badge badge-market">--</span>
+          </div>
+          <div class="val" id="dmAsOfDate">--</div>
+          <div class="desc" id="dmAsOfDesc">日线动量策略以此交易日收盘截面作为指标计算基准，盘中结合即时行情撮合</div>
+        </div>
+
+        <!-- 卡片 2: 全市场历史覆盖率 -->
+        <div class="data-status-card">
+          <div class="label">
+            <span>有效历史K线覆盖</span>
+            <span id="dmCoveragePctBadge" style="color:var(--accent-blue); font-weight:600;">--%</span>
+          </div>
+          <div class="val">
+            <span id="dmLoadedRatio">0 / 0</span>
+            <span style="font-size:12px; font-weight:normal; color:var(--text-muted);">只标的</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="dmCoverageProgressBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div class="desc" id="dmUnavailableSummary">不可用: 0 只 (无缓存: 0, 停牌/未更新: 0, 历史过短: 0)</div>
+        </div>
+
+        <!-- 卡片 3: 截面排名与轮动可用性 -->
+        <div class="data-status-card">
+          <div class="label">
+            <span>截面排名与轮动门槛</span>
+            <span id="dmRotationBadge" class="badge">--</span>
+          </div>
+          <div class="val">
+            <span id="dmRankingCoverageVal">--%</span>
+            <span style="font-size:12px; font-weight:normal; color:var(--text-muted);">(门槛 >= 95.0%)</span>
+          </div>
+          <div class="desc" id="dmCandidatesDesc">候选池: 0 只符合条件 · 具备足够有效历史以执行准确轮动</div>
+        </div>
+
+        <!-- 卡片 4: 风控保障与补数调度 -->
+        <div class="data-status-card">
+          <div class="label">
+            <span>关键风控与调度保障</span>
+            <span id="dmBenchmarkBadge" class="badge">沪深300: --</span>
+          </div>
+          <div class="val" style="font-size:16px;">
+            <span id="dmHoldingStatusText" style="color:var(--green-down);">持仓历史: 全部就绪</span>
+          </div>
+          <div class="desc" id="dmScheduleDesc">调度模式: 盘中防冲击补数 · 优先保证持仓止损与关键标的</div>
+        </div>
+      </div>
+
+      <!-- 数据接口状态卡片 Grid (4个数据源) -->
+      <div style="margin-top: 14px; margin-bottom: 8px; font-size: 13px; font-weight: 600; color: #fff; display: flex; align-items: center; justify-content: space-between; flex-wrap:wrap; gap:8px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span>🔌 数据接口获取状态与每日请求配额</span>
+          <span style="font-size:11px; font-weight:normal; color:var(--text-muted);">实时追踪API配额消耗、频控延迟与熔断状态</span>
+        </div>
+        <span id="dmQuotesLiveText" style="font-size:11px; font-weight:normal; color:var(--text-muted);">实时行情撮合: 正常</span>
+      </div>
+
+      <div class="provider-grid">
+        <!-- Provider 1: BaoStock -->
+        <div class="provider-card" id="cardBao">
+          <div class="provider-card-header">
+            <div class="provider-name">
+              <span id="baoStatusDot">🟢</span>
+              <span>BaoStock (证券宝)</span>
+            </div>
+            <span id="baoCircuitBadge" class="badge badge-market">正常</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); display:flex; justify-content:space-between;">
+            <span>今日配额用量</span>
+            <span id="baoQuotaText" style="font-weight:600; color:#fff;">-- / --</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="baoQuotaBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
+            <span>剩余配额: <strong id="baoRemainingText" style="color:#fff">--</strong></span>
+            <span>频控间隔: <strong id="baoIntervalText" style="color:#38bdf8">1.0s</strong></span>
+            <span>失败次数: <strong id="baoFailsText" style="color:#fff">0</strong></span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="baoNote">
+            主力数据源：全市场日K线批量拉取
+          </div>
+        </div>
+
+        <!-- Provider 2: EastMoney -->
+        <div class="provider-card" id="cardEast">
+          <div class="provider-card-header">
+            <div class="provider-name">
+              <span id="eastStatusDot">🟢</span>
+              <span>EastMoney (东方财富)</span>
+            </div>
+            <span id="eastCircuitBadge" class="badge badge-market">正常</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); display:flex; justify-content:space-between;">
+            <span>今日配额用量</span>
+            <span id="eastQuotaText" style="font-weight:600; color:#fff;">-- / --</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="eastQuotaBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
+            <span>剩余配额: <strong id="eastRemainingText" style="color:#fff">--</strong></span>
+            <span>频控间隔: <strong id="eastIntervalText" style="color:#38bdf8">1.0s</strong></span>
+            <span>失败次数: <strong id="eastFailsText" style="color:#fff">0</strong></span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="eastNote">
+            行业分类数据映射与高可靠备用
+          </div>
+        </div>
+
+        <!-- Provider 3: Tencent -->
+        <div class="provider-card" id="cardTencent">
+          <div class="provider-card-header">
+            <div class="provider-name">
+              <span id="tencentStatusDot">🟢</span>
+              <span>Tencent (腾讯财经)</span>
+            </div>
+            <span id="tencentCircuitBadge" class="badge badge-market">正常</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); display:flex; justify-content:space-between;">
+            <span>今日配额用量</span>
+            <span id="tencentQuotaText" style="font-weight:600; color:#fff;">-- / --</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="tencentQuotaBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
+            <span>剩余配额: <strong id="tencentRemainingText" style="color:#fff">--</strong></span>
+            <span>频控间隔: <strong id="tencentIntervalText" style="color:#38bdf8">1.0s</strong></span>
+            <span>失败次数: <strong id="tencentFailsText" style="color:#fff">0</strong></span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="tencentNote">
+            快速前复权K线校验与盘口撮合
+          </div>
+        </div>
+
+        <!-- Provider 4: TuShare -->
+        <div class="provider-card" id="cardTushare">
+          <div class="provider-card-header">
+            <div class="provider-name">
+              <span id="tushareStatusDot">⚪</span>
+              <span>TuShare (专业版)</span>
+            </div>
+            <span id="tushareCircuitBadge" class="badge" style="background:rgba(100,116,139,0.2); color:#94a3b8; border:1px solid #475569;">备用源</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); display:flex; justify-content:space-between;">
+            <span>今日配额用量</span>
+            <span id="tushareQuotaText" style="font-weight:600; color:#fff;">0 / 10,000</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="tushareQuotaBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
+            <span>剩余配额: <strong id="tushareRemainingText" style="color:#fff">10,000</strong></span>
+            <span>Token配置: <strong id="tushareConfigText" style="color:#94a3b8">未配置</strong></span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="tushareNote">
+            可选高精度备用数据源
+          </div>
+        </div>
+      </div>
+
+      <!-- 接口错误诊断分布 -->
+      <div id="diagnosticsBar" style="background: rgba(15,23,42,0.4); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; font-size: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span style="color:var(--text-muted); font-weight:600;">🔍 接口诊断与异常原因分布:</span>
+          <div id="diagPillsContainer" class="diag-pills"></div>
+        </div>
+        <div id="lastErrorSummary" style="color:var(--text-muted); font-size:11px;"></div>
+      </div>
+
+      <!-- 不可用 / 异常历史标的明细区域 -->
+      <div style="border-top: 1px solid var(--border-color); padding-top: 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="font-size:13px; font-weight:600; color:#fff;">⚠️ 不可用 / 缺失历史标的明细</span>
+            <div class="tab-group" id="unavailableFilterGroup">
+              <button class="tab-btn active" onclick="setUnavailableFilter('ALL')">全部 (<span id="countFilterAll">0</span>)</button>
+              <button class="tab-btn" onclick="setUnavailableFilter('no_cache')">无本地缓存 (<span id="countFilterNoCache">0</span>)</button>
+              <button class="tab-btn" onclick="setUnavailableFilter('latest_outdated')">未更新至最新 (<span id="countFilterOutdated">0</span>)</button>
+              <button class="tab-btn" onclick="setUnavailableFilter('short')">K线过短 (<span id="countFilterShort">0</span>)</button>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="text" id="unavailableSearchInput" placeholder="输入代码或名称搜索..." class="form-control" style="width:180px; padding:4px 8px; font-size:12px;" oninput="onUnavailableSearch(this.value)">
+            <button id="toggleUnavailableTableBtn" class="btn" style="font-size:12px; padding:4px 10px;" onclick="toggleUnavailableTable()">
+              展开明细表 (<span id="btnUnavailableTotal">0</span>)
+            </button>
+          </div>
+        </div>
+
+        <!-- 标的明细表格 -->
+        <div id="unavailableTableWrapper" style="display:none; max-height:280px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px;">
+          <table>
+            <thead style="position:sticky; top:0; background:var(--card-bg); z-index:2;">
+              <tr>
+                <th>标的代码</th>
+                <th>股票名称</th>
+                <th>不可用分类</th>
+                <th>最后收盘日期</th>
+                <th class="text-right">已有K线数</th>
+                <th>诊断说明 / 接口反馈</th>
+                <th class="text-center">快速操作</th>
+              </tr>
+            </thead>
+            <tbody id="unavailableTbody">
+              <tr><td colspan="7" class="text-center" style="color:var(--text-muted)">正在读取不可用标的列表...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1779,6 +2129,7 @@
           coverageBadge.title = `持仓历史：${quality.holding_history_ready ? '已准备' : '待核验'}；下一批约 ${quality.next_failed_retry_seconds ?? '--'} 秒。
 源状态：${JSON.stringify(quality.source_health || {})}`;
         }
+        renderDataMonitor(st);
         renderEntryRejections(quality.entry_rejections || []);
         if (backtestContext) {
           backtestContext.current_strategy_id = st.strategy_id;
@@ -1786,6 +2137,403 @@
           backtestContext.current_pool_count = st.universe_count;
           updateBacktestControls();
         }
+      }
+    }
+
+    // ==============================================================================
+    // 策略数据基准与数据接口监控逻辑 (Data Monitor & History Update)
+    // ==============================================================================
+    let dataMonitorCollapsed = false;
+    let unavailableTableExpanded = false;
+    let unavailableFilter = 'ALL';
+    let unavailableSearchQuery = '';
+    let cachedUnavailableList = [];
+
+    function scrollToDataMonitor() {
+      const el = document.getElementById('dataMonitorPanel');
+      if (el) {
+        if (dataMonitorCollapsed) toggleDataMonitorCollapse();
+        el.scrollIntoView({behavior: 'smooth', block: 'start'});
+      }
+    }
+
+    function toggleDataMonitorCollapse() {
+      dataMonitorCollapsed = !dataMonitorCollapsed;
+      const body = document.getElementById('dataMonitorBody');
+      const btn = document.getElementById('dmToggleCollapseBtn');
+      if (body) body.style.display = dataMonitorCollapsed ? 'none' : 'block';
+      if (btn) btn.innerText = dataMonitorCollapsed ? '展开看板' : '收起看板';
+    }
+
+    function toggleUnavailableTable() {
+      unavailableTableExpanded = !unavailableTableExpanded;
+      const wrapper = document.getElementById('unavailableTableWrapper');
+      const btn = document.getElementById('toggleUnavailableTableBtn');
+      if (wrapper) wrapper.style.display = unavailableTableExpanded ? 'block' : 'none';
+      if (btn) btn.innerText = unavailableTableExpanded ? '收起明细表' : `展开明细表 (${cachedUnavailableList.length || 0})`;
+      if (unavailableTableExpanded && (!cachedUnavailableList || cachedUnavailableList.length === 0)) {
+        loadDetailedHistoryStatus();
+      }
+    }
+
+    async function triggerHistoryRefresh() {
+      const btn = document.getElementById('dmRefreshBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳</span><span>正在检测更新...</span>';
+      }
+      try {
+        const res = await apiFetch('/api/history/refresh', {method: 'POST'}).then(r => r.json());
+        showToast(res.message || '已触发历史数据后台检测与更新');
+        await loadDetailedHistoryStatus();
+        await fetchData();
+      } catch (err) {
+        showToast('触发补更失败: ' + err.message, true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>🔄</span><span>立即检测/追更历史</span>';
+        }
+      }
+    }
+
+    async function loadDetailedHistoryStatus() {
+      try {
+        const data = await apiFetch('/api/history/status').then(r => r.json());
+        if (data.unavailable_symbols) {
+          cachedUnavailableList = data.unavailable_symbols;
+          renderUnavailableTable();
+        }
+      } catch (err) {
+        console.warn('获取不可用标的明细失败:', err);
+      }
+    }
+
+    function setUnavailableFilter(reason) {
+      unavailableFilter = reason;
+      const group = document.getElementById('unavailableFilterGroup');
+      if (group) {
+        const buttons = group.querySelectorAll('button');
+        buttons.forEach(b => {
+          if ((reason === 'ALL' && b.innerText.includes('全部')) ||
+              (reason !== 'ALL' && b.getAttribute('onclick')?.includes(reason))) {
+            b.className = 'tab-btn active';
+          } else {
+            b.className = 'tab-btn';
+          }
+        });
+      }
+      renderUnavailableTable();
+    }
+
+    function onUnavailableSearch(q) {
+      unavailableSearchQuery = (q || '').trim().toLowerCase();
+      renderUnavailableTable();
+    }
+
+    function renderUnavailableTable() {
+      const tbody = document.getElementById('unavailableTbody');
+      if (!tbody) return;
+
+      let list = cachedUnavailableList || [];
+      if (unavailableFilter !== 'ALL') {
+        list = list.filter(item => item.reason === unavailableFilter);
+      }
+      if (unavailableSearchQuery) {
+        list = list.filter(item =>
+          (item.symbol && item.symbol.toLowerCase().includes(unavailableSearchQuery)) ||
+          (item.name && item.name.toLowerCase().includes(unavailableSearchQuery))
+        );
+      }
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding:16px;">无匹配的不可用标的记录</td></tr>';
+        return;
+      }
+
+      const reasonLabels = {
+        no_cache: '<span class="badge" style="background:rgba(100,116,139,0.2); color:#94a3b8; border:1px solid #475569;">无本地缓存</span>',
+        latest_outdated: '<span class="badge" style="background:rgba(245,158,11,0.2); color:#fbbf24; border:1px solid #d97706;">未更新至最新</span>',
+        short: '<span class="badge" style="background:rgba(239,68,68,0.2); color:#f87171; border:1px solid #dc2626;">K线过短(次新)</span>'
+      };
+
+      tbody.innerHTML = list.slice(0, 300).map(item => `
+        <tr>
+          <td style="font-family:monospace; font-weight:600; color:var(--accent-blue);">${item.symbol || '--'}</td>
+          <td style="font-weight:500;">${item.name || item.symbol || '--'}</td>
+          <td>${reasonLabels[item.reason] || `<span class="badge badge-market">${item.reason || '--'}</span>`}</td>
+          <td style="font-family:monospace; font-size:12px;">${item.last_date || '无记录'}</td>
+          <td class="text-right" style="font-family:monospace; font-size:12px;">${item.actual_bars !== undefined ? item.actual_bars : '--'}</td>
+          <td style="font-size:12px; color:var(--text-muted); max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${item.error || ''}">${item.error || '等待数据拉取'}</td>
+          <td class="text-center">
+            <button class="btn" style="padding:2px 6px; font-size:11px;" onclick="searchStockDirect('${item.symbol}')">查报价</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function searchStockDirect(sym) {
+      const code = (sym || '').replace(/^(sh|sz|bj)/i, '');
+      const input = document.getElementById('stockSearchInput');
+      if (input) {
+        input.value = code;
+        const panel = document.getElementById('stockSearchPanel');
+        if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'center'});
+        if (typeof searchStocks === 'function') {
+          await searchStocks();
+        }
+      }
+    }
+
+    function renderDataMonitor(st) {
+      if (!st) return;
+      const quality = st.data_quality || {};
+      const sh = quality.source_health || {};
+      const budgets = sh.request_budget || {};
+      const circuits = sh.circuits || {};
+      const diag = sh.failure_diagnostics || {};
+      const phases = {loading:'日线准备中', ready:'日线就绪', partial:'部分日线可用', failed:'日线不可用', not_loaded:'等待日线'};
+
+      // 1. 顶部 Header 状态药丸
+      const headerBadge = document.getElementById('dataStatusHeaderBadge');
+      if (headerBadge) {
+        const statusDesc = quality.refreshing ? '正在追更中' : (phases[quality.status] || quality.status || '准备中');
+        const cov = quality.ranking_coverage !== undefined ? `${(quality.ranking_coverage * 100).toFixed(1)}%` : '--';
+        headerBadge.innerText = `📊 策略数据: ${quality.as_of || '待获取'} (${statusDesc} · 覆盖${cov})`;
+        if (quality.status === 'ready' || (quality.status === 'partial' && quality.rotation_ready)) {
+          headerBadge.className = 'badge badge-strategy-on';
+        } else if (quality.status === 'failed') {
+          headerBadge.className = 'badge badge-strategy-off';
+        } else {
+          headerBadge.className = 'badge badge-market';
+        }
+      }
+
+      // 2. 看板标题行小指标
+      const asOfHeader = document.getElementById('dmAsOfHeaderBadge');
+      if (asOfHeader) asOfHeader.innerText = `基准日: ${quality.as_of || '待获取'}`;
+
+      const historyReadyHeader = document.getElementById('dmHistoryReadyBadge');
+      if (historyReadyHeader) {
+        const loaded = quality.loaded || 0;
+        const req = quality.requested || 1;
+        const pct = ((loaded / req) * 100).toFixed(1);
+        historyReadyHeader.innerText = `有效历史: ${loaded}/${req} (${pct}%)`;
+        historyReadyHeader.className = 'badge ' + (loaded >= req * 0.95 ? 'badge-strategy-on' : 'badge-market');
+      }
+
+      const rotHeader = document.getElementById('dmRotationReadyBadge');
+      if (rotHeader) {
+        rotHeader.innerText = quality.rotation_ready ? '轮动: 🟢 就绪' : '轮动: 🔴 暂停';
+        rotHeader.className = 'badge ' + (quality.rotation_ready ? 'badge-strategy-on' : 'badge-strategy-off');
+      }
+
+      const holdHeader = document.getElementById('dmHoldingReadyBadge');
+      if (holdHeader) {
+        const holdOk = Boolean(quality.holding_history_ready);
+        const missingHeld = quality.missing_holding_symbols || [];
+        holdHeader.innerText = holdOk ? '持仓: 🟢 全部就绪' : (missingHeld.length ? `持仓: 🔴 缺失${missingHeld.length}只` : '持仓: 🟡 待核验');
+        holdHeader.className = 'badge ' + (holdOk ? 'badge-strategy-on' : 'badge-strategy-off');
+      }
+
+      // 3. 卡片 1: 策略数据决策基准
+      const asOfDateEl = document.getElementById('dmAsOfDate');
+      if (asOfDateEl) asOfDateEl.innerText = quality.as_of || '待获取';
+
+      const phaseBadge = document.getElementById('dmStatusPhaseBadge');
+      if (phaseBadge) {
+        const pDesc = quality.refreshing ? '正在追更' : (phases[quality.status] || quality.status || '--');
+        phaseBadge.innerText = pDesc;
+        phaseBadge.className = 'badge ' + (quality.status === 'ready' ? 'badge-strategy-on' : quality.refreshing ? 'badge-market' : 'badge-strategy-off');
+      }
+
+      // 4. 卡片 2: 全市场历史覆盖
+      const loadedRatioEl = document.getElementById('dmLoadedRatio');
+      if (loadedRatioEl) loadedRatioEl.innerText = `${(quality.loaded || 0).toLocaleString()} / ${(quality.requested || 0).toLocaleString()}`;
+
+      const covRatio = quality.requested ? (quality.loaded / quality.requested) * 100 : 0;
+      const covPctBadge = document.getElementById('dmCoveragePctBadge');
+      if (covPctBadge) covPctBadge.innerText = `${covRatio.toFixed(1)}%`;
+
+      const covBar = document.getElementById('dmCoverageProgressBar');
+      if (covBar) {
+        covBar.style.width = `${Math.min(100, Math.max(0, covRatio)).toFixed(1)}%`;
+        covBar.className = 'progress-bar-fill ' + (covRatio >= 95 ? 'normal' : covRatio >= 80 ? 'warning' : 'danger');
+      }
+
+      const rc = quality.unavailable_reason_counts || {};
+      const unavailEl = document.getElementById('dmUnavailableSummary');
+      if (unavailEl) {
+        unavailEl.innerText = `不可用 ${quality.unavailable || 0} 只 (无缓存: ${rc.no_cache || 0}, 未更新至最新: ${rc.latest_outdated || 0}, K线过短: ${rc.short || 0})`;
+      }
+
+      const countAll = document.getElementById('countFilterAll');
+      if (countAll) countAll.innerText = quality.unavailable || 0;
+      const countNoCache = document.getElementById('countFilterNoCache');
+      if (countNoCache) countNoCache.innerText = rc.no_cache || 0;
+      const countOutdated = document.getElementById('countFilterOutdated');
+      if (countOutdated) countOutdated.innerText = rc.latest_outdated || 0;
+      const countShort = document.getElementById('countFilterShort');
+      if (countShort) countShort.innerText = rc.short || 0;
+      const btnUnavail = document.getElementById('btnUnavailableTotal');
+      if (btnUnavail) btnUnavail.innerText = quality.unavailable || 0;
+
+      // 5. 卡片 3: 截面排名与轮动可用性
+      const rankVal = document.getElementById('dmRankingCoverageVal');
+      if (rankVal) rankVal.innerText = quality.ranking_coverage !== undefined ? `${(quality.ranking_coverage * 100).toFixed(1)}%` : '--%';
+
+      const rotBadge = document.getElementById('dmRotationBadge');
+      if (rotBadge) {
+        rotBadge.innerText = quality.rotation_ready ? '🟢 满足轮动条件' : '🔴 覆盖不足，暂停轮动';
+        rotBadge.className = 'badge ' + (quality.rotation_ready ? 'badge-strategy-on' : 'badge-strategy-off');
+      }
+
+      const candDesc = document.getElementById('dmCandidatesDesc');
+      if (candDesc) {
+        candDesc.innerText = `候选池: ${st.candidate_count ?? st.radar_count ?? 0} 只符合条件 · ${quality.rotation_ready ? '历史数据充足，允许自动执行截面轮动与调仓' : '有效数据不足，已暂停换仓以防错误信号'}`;
+      }
+
+      // 6. 卡片 4: 风控保障与调度模式
+      const bmBadge = document.getElementById('dmBenchmarkBadge');
+      if (bmBadge) {
+        bmBadge.innerText = `沪深300: ${quality.benchmark_available ? '🟢 正常有效' : '🔴 缺失'}`;
+        bmBadge.className = 'badge ' + (quality.benchmark_available ? 'badge-strategy-on' : 'badge-strategy-off');
+      }
+
+      const holdStatusEl = document.getElementById('dmHoldingStatusText');
+      if (holdStatusEl) {
+        const ok = Boolean(quality.holding_history_ready);
+        const missingHeld = quality.missing_holding_symbols || [];
+        if (ok) {
+          holdStatusEl.innerText = '持仓历史: 全部就绪 (风控已激活)';
+          holdStatusEl.style.color = 'var(--green-down)';
+        } else if (missingHeld.length) {
+          holdStatusEl.innerText = `持仓历史: 缺失 [${missingHeld.join(', ')}]`;
+          holdStatusEl.style.color = 'var(--red-up)';
+        } else {
+          holdStatusEl.innerText = '持仓历史: 待核验';
+          holdStatusEl.style.color = 'var(--text-muted)';
+        }
+      }
+
+      const schedEl = document.getElementById('dmScheduleDesc');
+      if (schedEl) {
+        const modeStr = quality.update_mode === 'holding_and_missing_only' ? '盘中低频防冲击 (优先持仓与缺失)' : '收盘全量追更模式';
+        const winStr = quality.next_full_update_window ? quality.next_full_update_window.slice(11, 16) : '16:30';
+        schedEl.innerText = `调度: ${modeStr} · 盘后追更窗口: ${winStr} · 行业覆盖: ${quality.industry_coverage || 0}只`;
+      }
+
+      const retryEl = document.getElementById('dmNextRetryText');
+      if (retryEl) {
+        retryEl.innerText = `下次自动补数: 约 ${quality.next_failed_retry_seconds ?? '--'} 秒`;
+      }
+
+      // 7. 实时行情状态
+      const quotesLiveEl = document.getElementById('dmQuotesLiveText');
+      if (quotesLiveEl) {
+        quotesLiveEl.innerText = `实时行情撮合: 正常 (最后轮询: ${st.last_step_time ? st.last_step_time.slice(11, 19) : '--'}, 异常标的: ${st.invalid_quote_count || 0}只)`;
+      }
+
+      // 8. 数据接口卡片渲染
+      function updateProviderCard(prefix, budgetName) {
+        const b = budgets[budgetName] || {};
+        const c = circuits[budgetName] || {};
+        const isBao = budgetName === 'baostock';
+        const isTushare = budgetName === 'tushare';
+
+        const dot = document.getElementById(`${prefix}StatusDot`);
+        const badge = document.getElementById(`${prefix}CircuitBadge`);
+        const quotaText = document.getElementById(`${prefix}QuotaText`);
+        const quotaBar = document.getElementById(`${prefix}QuotaBar`);
+        const remainingText = document.getElementById(`${prefix}RemainingText`);
+        const intervalText = document.getElementById(`${prefix}IntervalText`);
+        const failsText = document.getElementById(`${prefix}FailsText`);
+        const note = document.getElementById(`${prefix}Note`);
+
+        if (isTushare) {
+          const cfg = sh.tushare?.configured;
+          if (dot) dot.innerText = cfg ? '🟢' : '⚪';
+          if (badge) {
+            badge.innerText = cfg ? '已配置' : '备用源';
+            badge.className = 'badge ' + (cfg ? 'badge-strategy-on' : 'badge-market');
+          }
+          const cfgText = document.getElementById('tushareConfigText');
+          if (cfgText) cfgText.innerText = cfg ? '已就绪' : '未配置';
+          if (quotaText) quotaText.innerText = `${(b.used || 0).toLocaleString()} / ${(b.daily_limit || 10000).toLocaleString()}`;
+          if (remainingText) remainingText.innerText = (b.remaining || 10000).toLocaleString();
+          return;
+        }
+
+        const isCircuitOpen = c.state === 'open';
+        const interval = b.interval || 1.0;
+        const isRateLimited = interval > 5;
+
+        if (dot) dot.innerText = isCircuitOpen ? '🔴' : isRateLimited ? '🟡' : '🟢';
+        if (badge) {
+          badge.innerText = isCircuitOpen ? `熔断 (${c.retry_after_seconds || 0}s)` : isRateLimited ? '自适应退避' : '正常';
+          badge.className = 'badge ' + (isCircuitOpen ? 'badge-strategy-off' : isRateLimited ? 'badge-market' : 'badge-strategy-on');
+        }
+
+        const used = b.used || 0;
+        const limit = b.daily_limit || (isBao ? 40000 : 10000);
+        if (quotaText) quotaText.innerText = `${used.toLocaleString()} / ${limit.toLocaleString()}`;
+
+        if (quotaBar) {
+          const pct = Math.min(100, Math.max(0, (used / limit) * 100));
+          quotaBar.style.width = `${pct.toFixed(1)}%`;
+          quotaBar.className = 'progress-bar-fill ' + (pct >= 90 ? 'danger' : pct >= 70 ? 'warning' : 'normal');
+        }
+
+        if (remainingText) remainingText.innerText = (b.remaining !== undefined ? b.remaining : (limit - used)).toLocaleString();
+        if (intervalText) intervalText.innerText = `${interval.toFixed(1)}s`;
+        if (failsText) failsText.innerText = b.failures || 0;
+
+        if (note && b.reason) {
+          note.innerText = `提示: ${b.reason}`;
+        }
+      }
+
+      updateProviderCard('bao', 'baostock');
+      updateProviderCard('east', 'eastmoney');
+      updateProviderCard('tencent', 'tencent');
+      updateProviderCard('tushare', 'tushare');
+
+      // 9. 接口诊断药丸
+      const diagContainer = document.getElementById('diagPillsContainer');
+      if (diagContainer) {
+        const counts = diag.baostock?.counts_by_code || {};
+        const labels = {
+          untracked_prior_usage: '未追踪早前用量',
+          empty_history: '历史无数据/停牌',
+          invalid_number: '数字解析异常',
+          stale_history: '历史K线陈旧'
+        };
+        const keys = Object.keys(counts);
+        if (keys.length === 0) {
+          diagContainer.innerHTML = '<span class="diag-pill" style="color:var(--green-down)">🟢 暂无历史接口异常</span>';
+        } else {
+          diagContainer.innerHTML = keys.map(k => `
+            <span class="diag-pill" title="${k}">
+              <strong>${labels[k] || k}</strong>: <span style="color:#fff">${counts[k]}</span>
+            </span>
+          `).join('');
+        }
+      }
+
+      const lastErr = document.getElementById('lastErrorSummary');
+      if (lastErr) {
+        const lastSym = diag.baostock?.last_failed_symbol;
+        const lastCode = diag.baostock?.last_error_code;
+        if (lastSym || lastCode) {
+          lastErr.innerText = `最近接口反馈: ${lastCode || '--'} (${lastSym || '--'})`;
+        } else {
+          lastErr.innerText = '';
+        }
+      }
+
+      // 10. 首次自动加载不可用标的明细（若尚未加载）
+      if ((!cachedUnavailableList || cachedUnavailableList.length === 0) && (quality.unavailable || 0) > 0) {
+        loadDetailedHistoryStatus();
       }
     }
 

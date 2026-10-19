@@ -231,6 +231,7 @@ class DailyMomentumStrategy:
         self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
         self.data_status["ranking_coverage"] = self._ranking_coverage()
         self.data_status["rotation_ready"] = self._ranking_coverage() >= .95
+        self.data_status["holding_history_ready"] = all(sym in eligible for sym in self.account.positions)
 
     def _ranking_coverage(self):
         # Known sufficiently long series are expected to update as a group.

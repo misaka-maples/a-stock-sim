@@ -689,6 +689,11 @@ def get_status():
             quality["next_failed_retry_seconds"] = max(0, round(ctx.strategy._next_failed_retry-time.monotonic()))
         if hasattr(ctx.strategy, "_source_health"):
             quality["source_health"] = ctx.strategy._source_health()
+        held_pos = list(ctx.account.positions) if ctx.account else []
+        eligible_set = getattr(ctx.strategy, "_entry_eligible", set()) if ctx.strategy else set()
+        missing_held = [s for s in held_pos if s not in eligible_set]
+        quality["holding_history_ready"] = (len(missing_held) == 0)
+        quality["missing_holding_symbols"] = missing_held
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
@@ -724,6 +729,71 @@ def get_status():
             "strategy_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
             "signal_schedule": "完整日线信号，下一交易日按实际有效盘口撮合" if hasattr(ctx.strategy, "config") else "旧版实验策略"
         }
+
+
+@app.get("/api/history/status")
+def get_history_status():
+    """获取策略基于的历史数据更新情况、接口状态及不可用标的明细"""
+    now = datetime.datetime.now(BEIJING)
+    with ctx.lock:
+        strategy = ctx.strategy
+        quality = dict(getattr(strategy, "data_status", {}))
+        if hasattr(strategy, "_next_failed_retry"):
+            quality["next_failed_retry_seconds"] = max(0, round(strategy._next_failed_retry - time.monotonic()))
+        if hasattr(strategy, "_source_health"):
+            quality["source_health"] = strategy._source_health()
+        held_pos = list(ctx.account.positions) if ctx.account else []
+        eligible_set = getattr(strategy, "_entry_eligible", set()) if strategy else set()
+        missing_held = [s for s in held_pos if s not in eligible_set]
+        quality["holding_history_ready"] = (len(missing_held) == 0)
+        quality["missing_holding_symbols"] = missing_held
+
+        unavailable_symbols = []
+        if strategy and hasattr(strategy, "_history_errors"):
+            stock_names = getattr(strategy, "_stock_names", {}) or {}
+            for sym, err in strategy._history_errors.items():
+                item = dict(err)
+                item["name"] = stock_names.get(sym, sym)
+                unavailable_symbols.append(item)
+
+        quotes_count = len(ctx.last_quotes)
+        return {
+            "strategy_id": getattr(strategy, "name", "Momentum_Rotation"),
+            "strategy_name": getattr(strategy, "display_name", getattr(strategy, "name", "Momentum_Rotation")),
+            "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "market_status": MarketFeed.get_market_status(now),
+            "is_trading_time": MarketFeed.is_trading_time(now),
+            "data_quality": quality,
+            "unavailable_symbols": unavailable_symbols,
+            "quotes_summary": {
+                "active_quotes": quotes_count,
+                "invalid_quotes": ctx.invalid_quote_count,
+                "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None
+            }
+        }
+
+
+@app.post("/api/history/refresh")
+def refresh_history():
+    """手动触发策略历史数据检测与后台更新"""
+    now = datetime.datetime.now(BEIJING)
+    with ctx.lock:
+        strategy = ctx.strategy
+    if not strategy or not hasattr(strategy, "prepare"):
+        raise HTTPException(400, "当前策略不支持历史数据更新")
+
+    with getattr(strategy, "_history_lock", threading.Lock()):
+        strategy._last_attempt = 0
+        strategy._next_failed_retry = 0
+        if hasattr(strategy, "_symbol_retry_due"):
+            strategy._symbol_retry_due.clear()
+        if hasattr(strategy, "_next_industry_retry"):
+            strategy._next_industry_retry = 0
+        if hasattr(strategy, "_next_nonholding_refresh"):
+            strategy._next_nonholding_refresh = 0
+
+    strategy.prepare(now, synchronous=False)
+    return {"success": True, "message": "已触发历史数据后台检测与更新", "refreshing": True}
 
 
 @app.get("/api/universe")
