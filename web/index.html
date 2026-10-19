@@ -973,7 +973,9 @@
             <span id="dmRankingCoverageVal">--%</span>
             <span style="font-size:12px; font-weight:normal; color:var(--text-muted);">(门槛 >= 95.0%)</span>
           </div>
-          <div class="desc" id="dmCandidatesDesc">候选池: 0 只符合条件 · 具备足够有效历史以执行准确轮动</div>
+          <div class="desc" id="dmCandidatesDesc">候选池: 0 只符合条件 · 候选不等于买单，等待执行状态</div>
+          <div class="desc" id="dmAllocationStatus">空位与待买计划: 等待策略状态</div>
+          <div class="desc" id="dmAllocationSchedule">下次排名轮动: 待获取</div>
         </div>
 
         <!-- 卡片 4: 风控保障与补数调度 -->
@@ -2135,7 +2137,7 @@
         document.getElementById('historyCoverageBadge').innerText = `${phases[quality.status] || '历史状态'} · 有效历史 ${quality.loaded || 0}/${quality.requested || 0} · 不可用 ${quality.unavailable || 0} · 截止 ${quality.as_of || '待获取'}`;
         const coverageBadge = document.getElementById('historyCoverageBadge');
         if (quality.ranking_coverage !== undefined) {
-          coverageBadge.innerText += ` · 排名覆盖 ${(quality.ranking_coverage * 100).toFixed(1)}% · ${quality.rotation_ready ? '轮动可用' : '等待追更，暂停排名交易'}`;
+          coverageBadge.innerText += ` · 排名覆盖 ${(quality.ranking_coverage * 100).toFixed(1)}% · ${quality.rotation_ready ? '排名数据达标' : '等待追更，暂停排名交易'}`;
           if (quality.refreshing) coverageBadge.innerText += ' · 正在追更';
           if (quality.update_mode === 'holding_and_missing_only') coverageBadge.innerText += ' · 盘中低频补数';
           const baoBudget = quality.source_health?.request_budget?.baostock;
@@ -2300,8 +2302,28 @@
       }
     }
 
+    function renderAllocationStatus(st) {
+      const allocation = st.allocation_status;
+      const state = document.getElementById('dmAllocationStatus');
+      const schedule = document.getElementById('dmAllocationSchedule');
+      if (!allocation || typeof allocation !== 'object') {
+        if (state) state.innerText = '空位与待买计划: 服务未提供，不能据候选数判断是否买入';
+        if (schedule) { schedule.innerText = '下次排名轮动: 待获取'; schedule.title = ''; }
+        return;
+      }
+      const count = value => Number.isInteger(value) && value >= 0 ? value : '--';
+      const mode = allocation.refill_enabled === true ? '每日检查空位补仓' : allocation.refill_enabled === false ? '空位补仓已关闭' : '补仓设置未知';
+      const reason = allocation.wait_reason || (allocation.can_refill ? '检查通过，仍须满足开仓和成交约束' : '等待策略确认');
+      if (state) state.innerText = `空位 ${count(allocation.vacant_slots)} 个 · 待检查候选 ${count(allocation.pending_entry_count)} 只（最多补空位 ${count(allocation.vacant_slots)} 只） · ${mode} · ${reason}`;
+      if (schedule) {
+        schedule.innerText = `下次排名轮动信号: ${allocation.next_rebalance_signal_date || '待确定'} · 该次轮动最早执行: ${allocation.next_execution_date || '待确定'}`;
+        schedule.title = `上次轮动信号: ${allocation.last_rebalance || '无'} · 当前买入信号: ${allocation.entry_signal_date || '无'}；已有持仓按轮动周期评估，实际成交取决于交易时段、资金、风控和盘口。`;
+      }
+    }
+
     function renderDataMonitor(st) {
       if (!st) return;
+      renderAllocationStatus(st);
       const quality = st.data_quality || {};
       const sh = quality.source_health || {};
       const budgets = sh.request_budget || {};
@@ -2339,7 +2361,7 @@
 
       const rotHeader = document.getElementById('dmRotationReadyBadge');
       if (rotHeader) {
-        rotHeader.innerText = quality.rotation_ready ? '轮动: 🟢 就绪' : '轮动: 🔴 暂停';
+        rotHeader.innerText = quality.rotation_ready ? '排名数据: 🟢 达标' : '排名交易: 🔴 暂停';
         rotHeader.className = 'badge ' + (quality.rotation_ready ? 'badge-strategy-on' : 'badge-strategy-off');
       }
 
@@ -2399,13 +2421,13 @@
 
       const rotBadge = document.getElementById('dmRotationBadge');
       if (rotBadge) {
-        rotBadge.innerText = quality.rotation_ready ? '🟢 满足轮动条件' : '🔴 覆盖不足，暂停轮动';
+        rotBadge.innerText = quality.rotation_ready ? '🟢 排名数据达标' : '🔴 覆盖不足，暂停排名交易';
         rotBadge.className = 'badge ' + (quality.rotation_ready ? 'badge-strategy-on' : 'badge-strategy-off');
       }
 
       const candDesc = document.getElementById('dmCandidatesDesc');
       if (candDesc) {
-        candDesc.innerText = `候选池: ${st.candidate_count ?? st.radar_count ?? 0} 只符合条件 · ${quality.rotation_ready ? '历史数据充足，允许自动执行截面轮动与调仓' : '有效数据不足，已暂停换仓以防错误信号'}`;
+        candDesc.innerText = `候选池: ${st.candidate_count ?? st.radar_count ?? 0} 只符合条件 · ${quality.rotation_ready ? '数据门槛满足，候选不等于买单，须核对补仓／轮动计划' : '有效数据不足，已暂停排名交易'}`;
       }
 
       // 6. 卡片 4: 风控保障与调度模式
@@ -3142,6 +3164,8 @@
         control.value = String(value);
       }
       document.getElementById('modalEntryRequireMA20').checked = parameters.entry_require_ma20 ?? true;
+      const refillControl = document.getElementById('modalRefillVacancies');
+      if (refillControl) refillControl.checked = parameters.refill_vacancies ?? true;
       const modeControl = document.getElementById('modalStopLossMode');
       if (modeControl) modeControl.value = parameters.stop_loss_mode || 'intraday';
     }
@@ -3163,6 +3187,8 @@
           max_entry_intraday_drop_pct:number('modalEntryIntradayDrop'),
           entry_require_ma20:document.getElementById('modalEntryRequireMA20').checked
         });
+        const refillControl = document.getElementById('modalRefillVacancies');
+        if (refillControl) payload.refill_vacancies = refillControl.checked;
       }
       return payload;
     }
@@ -3715,6 +3741,7 @@
             <input type="number" id="modalEntryIntradayDrop" class="form-control" value="3" min="0" max="20" step="0.5">
           </div>
         </div>
+        <label style="display:block; font-size:12px; margin-top:10px;"><input type="checkbox" id="modalRefillVacancies" checked> 每日检查空位补仓（已有持仓按轮动周期评估）</label>
         <label style="display:block; font-size:12px; margin-top:10px;"><input type="checkbox" id="modalEntryRequireMA20" checked> 日线开仓成交价须高于上一完整交易日MA20</label>
         <p style="font-size:11px; color:var(--text-muted); margin:8px 0 0;">这些阈值用于开仓风控，效果需回测验证。百分比填0可关闭对应幅度限制；跌停禁止开仓始终生效。日内跌幅使用决策时已知的价格。</p>
       </div>

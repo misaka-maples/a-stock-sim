@@ -26,6 +26,7 @@ class MomentumConfig:
     alpha_high: float = 0.95
     risk_adjusted: bool = False
     rebalance_every: int = 5
+    refill_vacancies: bool = True
     rank_buffer: int = 3
     min_holding_days: int = 5
     cooldown_days: int = 3
@@ -40,8 +41,9 @@ class MomentumConfig:
     def __post_init__(self):
         if self.stop_loss_mode not in ("intraday", "daily_close"):
             raise ValueError("stop_loss_mode 必须为 intraday 或 daily_close")
-        if not isinstance(self.entry_require_ma20, bool):
-            raise ValueError("entry_require_ma20 必须为布尔值")
+        for name in ("entry_require_ma20", "refill_vacancies"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} 必须为布尔值")
         for name in ("max_entry_gap_down_pct", "max_entry_gap_up_pct", "max_entry_intraday_drop_pct"):
             value = getattr(self, name)
             if (isinstance(value, bool) or not isinstance(value, (int, float))

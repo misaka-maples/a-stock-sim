@@ -730,5 +730,47 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("收盘确认止损", self.client.get("/api/status").json()["signal_schedule"])
 
 
+    def test_daily_refill_configuration_is_strict_and_preserves_false(self):
+        self.assertTrue(self.ctx.strategy.config.refill_vacancies)
+        for invalid in ("false", 0, [], {}):
+            with self.subTest(invalid=invalid):
+                response = self.client.post("/api/strategy/config", json={"refill_vacancies": invalid})
+                self.assertEqual(response.status_code, 400)
+        response = self.client.post("/api/strategy/config", json={"refill_vacancies": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.ctx.strategy.config.refill_vacancies)
+        self.assertFalse(self.client.get("/api/status").json()["allocation_status"]["refill_enabled"])
+
+    def test_allocation_status_read_does_not_mutate_plan_or_account(self):
+        before = copy.deepcopy((self.ctx.account.positions, self.ctx.account.strategy_state, self.ctx.account.trades))
+        result = self.client.get("/api/status").json()["allocation_status"]
+        self.assertEqual(result["vacant_slots"], self.ctx.strategy.config.max_positions)
+        self.assertEqual(before, (self.ctx.account.positions, self.ctx.account.strategy_state, self.ctx.account.trades))
+        self.ctx.strategy_active = False
+        paused = self.client.get("/api/status").json()["allocation_status"]
+        self.assertFalse(paused["can_refill"])
+        self.assertIn("暂停", paused["wait_reason"])
+
+    def test_current_backtest_snapshot_freezes_refill_policy(self):
+        with patch.object(server, "run_backtest", return_value={"summary": {}}) as run:
+            response = self.client.post("/api/backtest/run", json={"strategy_name": "Momentum_Rotation_Pro", "use_current_config": True, "refill_vacancies": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(run.call_args.kwargs["config"]["refill_vacancies"])
+        self.assertIn("refill_vacancies", response.json()["data"]["request_context"]["ignored_params"])
+
+
+    def test_worker_polls_reserve_candidates_beyond_preview_without_bypassing_blocks(self):
+        strategy = self.ctx.strategy
+        strategy.state["pending_entries"] = {
+            "sh600036": {"signal": {}, "blocked_date": None},
+            "sh600519": {"signal": {}, "blocked_date": NOW.date().isoformat()}}
+        with patch.object(strategy, "prepare"), patch.object(strategy, "preview_candidates", return_value=[{"symbol": "sz000001"}]), patch.object(strategy, "on_tick"):
+            server.worker_step(now=NOW)
+        queried = set(self.fetch.call_args.args[0])
+        self.assertIn("sh600036", queried)
+        self.assertIn("sz000001", queried)
+        self.assertNotIn("sh600519", queried)
+
+
 if __name__ == "__main__":
     unittest.main()

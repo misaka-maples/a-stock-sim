@@ -5,6 +5,13 @@ from strategy_rules import MomentumConfig, entry_guard_reason
 
 
 class EntryGuardTests(unittest.TestCase):
+    def test_vacancy_refill_is_enabled_by_default_and_strictly_boolean(self):
+        self.assertIs(MomentumConfig().refill_vacancies, True)
+        self.assertIs(MomentumConfig(refill_vacancies=False).refill_vacancies, False)
+        for value in (0, 1, "true", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MomentumConfig(refill_vacancies=value)
+
     def test_stop_loss_mode_is_explicit_and_defaults_to_intraday(self):
         self.assertEqual(MomentumConfig().stop_loss_mode, "intraday")
         self.assertEqual(MomentumConfig(stop_loss_mode="daily_close").stop_loss_mode, "daily_close")

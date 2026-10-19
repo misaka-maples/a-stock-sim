@@ -38,7 +38,8 @@ def engine(data, dates, start=130, end=135, **kwargs):
     config = kwargs.pop("config", MomentumConfig(max_positions=1, max_stock_weight=.5,
                                                 risk_per_trade=0, volatility_target=0, stop_loss_mode="daily_close",
                                                 max_sector_weight=1, rebalance_every=1,
-                                                min_holding_days=0, cooldown_days=0))
+                                                min_holding_days=0, cooldown_days=0,
+                                                refill_vacancies=False))
     return MomentumBacktestEngine(start_date=dates[start], end_date=dates[end],
                                   symbols=list(data["stocks"]), feed=FixtureFeed(data),
                                   config=config, **kwargs)
@@ -440,3 +441,125 @@ def test_intraday_stop_can_execute_same_day_only_when_t1_explicitly_disabled():
     assert [f["side"] for f in result["fills"]] == ["BUY", "SELL"]
     assert result["trades"][0]["holding_days"] == 0
     assert not result["pending_exits"]
+
+
+def vacancy_config(**overrides):
+    options = dict(max_positions=1, max_stock_weight=.5, risk_per_trade=0,
+                   volatility_target=0, stop_loss_mode="daily_close", max_sector_weight=1,
+                   rebalance_every=5, min_holding_days=0, cooldown_days=0,
+                   refill_vacancies=True)
+    options.update(overrides)
+    return MomentumConfig(**options)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_daily_vacancy_refill_after_completed_open_exit(enabled):
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    bars = data["stocks"]["sh600096"]["bars"]
+    set_price(bars[131], 21.5, opening=23.8)
+    set_price(bars[132], 21.55, opening=21.5)
+    bars[132]["raw_pre_close"] = 21.5
+    config = vacancy_config(refill_vacancies=enabled)
+    result = engine(data, dates, end=132, config=config,
+                    universe_intervals={"sh600096": [{}], "sh600036": [{"start": dates[131]}]}).run()
+    assert [(f["symbol"], f["date"]) for f in result["fills"] if f["side"] == "SELL"] == [("sh600096", dates[132])]
+    replacements = [f for f in result["fills"] if f["side"] == "BUY" and f["date"] == dates[132]]
+    assert len(replacements) == int(enabled)
+    if enabled:
+        assert replacements[0]["symbol"] == "sh600036"
+        assert replacements[0]["signal_date"] == dates[131]
+        assert replacements[0]["entry_reason"] == "vacancy_refill"
+        assert "vacancy_refill_open_only" in " ".join(result["warnings"])
+
+
+def test_partial_pending_exit_does_not_create_refill_slot():
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    bars = data["stocks"]["sh600096"]["bars"]
+    set_price(bars[131], 21.5, opening=23.8)
+    for i in range(132, 136):
+        set_price(bars[i], 21.55, opening=21.5, volume=20)
+        bars[i]["raw_pre_close"] = bars[i-1]["raw_close"]
+    result = engine(data, dates, end=134, config=vacancy_config(),
+                    universe_intervals={"sh600096": [{}], "sh600036": [{"start": dates[131]}]}).run()
+    assert len([f for f in result["fills"] if f["side"] == "BUY"]) == 1
+    assert "sh600096" in result["pending_exits"]
+    assert all(f["status"] == "PARTIALLY_FILLED" for f in result["fills"] if f["side"] == "SELL")
+
+
+def test_refill_keeps_original_five_day_rank_rotation_clock(monkeypatch):
+    import momentum_backtest
+    original = momentum_backtest.evaluate_momentum
+    def ranked(bars, as_of, config):
+        signal = original(bars, as_of, config)
+        if signal:
+            signal["score"] = {20.: 2, 21.: 1, 22.: 3}[bars[0]["raw_close"]]
+        return signal
+    monkeypatch.setattr(momentum_backtest, "evaluate_momentum", ranked)
+    data, dates = fixture_data(symbols=("sh600096", "sh600036", "sh600900"))
+    config = vacancy_config(max_positions=2, max_stock_weight=.4, rank_buffer=0)
+    result = engine(data, dates, end=135, config=config,
+                    universe_intervals={"sh600096": [{}], "sh600036": [{"start": dates[130]}],
+                                        "sh600900": [{"start": dates[134]}]}).run()
+    second = next(f for f in result["fills"] if f["symbol"] == "sh600036" and f["side"] == "BUY")
+    assert second["date"] == dates[131] and second["entry_reason"] == "vacancy_refill"
+    sell = next(t for t in result["trades"] if t["symbol"] == "sh600036")
+    assert sell["sell_date"] == dates[135] and "排名" in sell["reason"]
+
+
+def test_daily_refill_respects_stop_cooldown_on_non_rotation_day():
+    data, dates = fixture_data()
+    bars = data["stocks"]["sh600096"]["bars"]
+    set_price(bars[131], 22.3, opening=23.8)
+    set_price(bars[132], 23.8, opening=22.3)
+    bars[132]["raw_pre_close"] = 22.3
+    for i in range(133, 138):
+        set_price(bars[i], 23.8+(i-132)*.04, opening=23.79+(i-132)*.04)
+        bars[i]["raw_pre_close"] = bars[i-1]["raw_close"]
+    result = engine(data, dates, end=137, config=vacancy_config(cooldown_days=3)).run()
+    assert next(f for f in result["fills"] if f["side"] == "SELL")["date"] == dates[132]
+    assert [f["date"] for f in result["fills"] if f["side"] == "BUY"] == [dates[130], dates[136]]
+
+
+def test_intraday_exit_refills_only_at_next_open_and_never_tops_up():
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    data["stocks"]["sh600096"]["bars"][131]["raw_low"] = 22.
+    result = engine(data, dates, end=132, config=vacancy_config(stop_loss_mode="intraday", cooldown_days=3),
+                    universe_intervals={"sh600096": [{}], "sh600036": [{"start": dates[130]}]}).run()
+    assert [(f["symbol"], f["date"]) for f in result["fills"] if f["side"] == "BUY"] == [
+        ("sh600096", dates[130]), ("sh600036", dates[132])]
+    assert next(f for f in result["fills"] if f["side"] == "SELL")["execution_phase"] == "intraday_stop"
+
+
+def test_non_rotation_refill_preserves_market_filter():
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    data["benchmark"][130]["close"] = 1.
+    result = engine(data, dates, end=131,
+                    config=vacancy_config(max_positions=2, max_stock_weight=.4, market_filter=True),
+                    universe_intervals={"sh600096": [{}], "sh600036": [{"start": dates[130]}]}).run()
+    assert [(f["symbol"], f["date"]) for f in result["fills"] if f["side"] == "BUY"] == [("sh600096", dates[130])]
+
+
+def test_non_rotation_refill_preserves_entry_guard_and_industry_cap():
+    data, dates = fixture_data(symbols=("sh600096", "sh600036"))
+    config = vacancy_config(max_positions=2, max_stock_weight=.4, max_sector_weight=.5)
+    intervals = {"sh600096": [{}], "sh600036": [{"start": dates[130]}]}
+    capped = engine(copy.deepcopy(data), dates, end=131, config=config,
+                    universe_intervals=intervals).run()
+    assert len(capped["fills"]) == 1
+    assert any(r["date"] == dates[131] and r["reason"] == "industry_cap" for r in capped["rejections"])
+    bars = data["stocks"]["sh600036"]["bars"]
+    set_price(bars[131], bars[131]["raw_close"], opening=round(bars[130]["raw_close"]*.96, 2))
+    guarded = engine(data, dates, end=131, config=config, universe_intervals=intervals,
+                     industry_map={"sh600096": "甲", "sh600036": "乙"}).run()
+    assert len(guarded["fills"]) == 1
+    assert any(r["date"] == dates[131] and r["reason"] == "entry_gap_down" for r in guarded["rejections"])
+
+
+def test_partial_buy_remains_one_holding_without_daily_topup():
+    data, dates = fixture_data()
+    data["stocks"]["sh600096"]["bars"][130]["volume"] = 20
+    result = engine(data, dates, end=134, config=vacancy_config()).run()
+    buys = [f for f in result["fills"] if f["side"] == "BUY"]
+    assert len(buys) == 1 and buys[0]["shares"] == 100
+    assert buys[0]["status"] == "PARTIALLY_FILLED"
+    assert result["open_positions"]["sh600096"]["shares"] == 100

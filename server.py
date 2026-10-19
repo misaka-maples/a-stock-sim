@@ -328,6 +328,19 @@ def worker_step(now=None):
             if ctx.strategy is strategy:
                 ctx.radar_candidates = preview
         symbols = [candidate["symbol"] for candidate in preview]
+        with ctx.lock:
+            if ctx.strategy is strategy and ctx.account and len(ctx.account.positions) < getattr(strategy, "max_positions", 0):
+                # Display is capped at 50, but a valid reserve candidate beyond
+                # that cap must still receive quotes. Bound extra polling and
+                # skip candidates already cancelled by today's entry guards.
+                intents = getattr(strategy, "state", {}).get("pending_entries", {})
+                reserves = [symbol for symbol, intent in intents.items()
+                            if symbol not in symbols and symbol not in ctx.account.positions
+                            and intent.get("blocked_date") != now.date().isoformat()
+                            and not (intent.get("target_shares") is not None
+                                     and intent.get("filled_shares", 0) > 0
+                                     and intent["filled_shares"] >= intent["target_shares"])]
+                symbols.extend(reserves[:20])
     is_trading = MarketFeed.is_trading_time(now)
     closing = is_trading_day(now) and now.time() >= datetime.time(15)
     reported = ctx.account.strategy_state.get("__server__", {}).get("closing_report_date") if ctx.account else None
@@ -487,6 +500,7 @@ class StrategyToggleRequest(BaseModel):
 
 
 class MomentumParameters(BaseModel):
+    refill_vacancies: Optional[Any] = None
     stop_loss_mode: Optional[Literal["intraday", "daily_close"]] = None
     max_stock_weight: Optional[float] = Field(None, gt=0, le=1)
     max_positions: Optional[int] = Field(None, ge=1, le=50)
@@ -528,6 +542,7 @@ class AccountResetRequest(BaseModel):
 
 
 class BacktestRequest(BaseModel):
+    refill_vacancies: Optional[Any] = None
     stop_loss_mode: Literal["intraday", "daily_close"] = "intraday"
     start_date: str = Field("2024-01-01", description="回测起始日期 (YYYY-MM-DD)")
     end_date: Optional[str] = Field(None, description="默认上一完整交易日")
@@ -717,6 +732,12 @@ def get_status():
         missing_held = [s for s in held_pos if s not in eligible_set]
         quality["holding_history_ready"] = (len(missing_held) == 0)
         quality["missing_holding_symbols"] = missing_held
+        allocation = (ctx.strategy.allocation_status(now=now)
+                      if hasattr(ctx.strategy, "allocation_status") else {})
+        if allocation and not ctx.strategy_active:
+            allocation.update(can_refill=False, wait_reason="自动策略已暂停，不会自动补仓")
+        elif allocation and not persistence_healthy:
+            allocation.update(can_refill=False, wait_reason="账户持久化异常，已停止自动成交")
         return {
             "running": ctx.running,
             "strategy_active": ctx.strategy_active,
@@ -750,6 +771,7 @@ def get_status():
             "last_step_time": ctx.last_step_time.strftime("%Y-%m-%d %H:%M:%S") if ctx.last_step_time else None,
             "data_quality": quality,
             "strategy_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
+            "allocation_status": allocation,
             "signal_schedule": (("盘中报价触发硬止损；MA20与排名使用完整日线信号，下一交易日执行"
                                  if getattr(ctx.strategy.config, "stop_loss_mode", "daily_close") == "intraday"
                                  else "收盘确认止损、MA20与排名信号，下一交易日执行")
@@ -984,7 +1006,7 @@ def list_strategies():
         current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         current_display = getattr(ctx.strategy, "display_name", current_id)
         catalog = [
-            ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；支持盘中硬止损，日线轮动信号下一交易日执行。"),
+            ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；支持每日空位补仓，已有持仓按周期轮动，日线信号随后交易日执行。"),
             ("Momentum_Rotation", "基础日线动量", "基础动量对照组；使用相同的数据、成交和风险框架。"),
             ("Minervini_SEPA", "趋势收缩突破实验", "借鉴SEPA思路的简化技术规则，尚未统一为日线研究模型。"),
             ("TurtleBreakout", "唐奇安通道突破实验", "20日高点突破、10日低点退出的技术规则。"),
@@ -1385,7 +1407,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             aliases = {"stop_loss": "stop_loss_pct"}
             for key in ("stop_loss", "max_positions", "max_stock_weight", "risk_per_trade",
                         "max_sector_weight", "risk_adjusted", "market_filter", "max_entry_gap_down_pct",
-                        "max_entry_gap_up_pct", "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode"):
+                        "max_entry_gap_up_pct", "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode", "refill_vacancies"):
                 if key in supplied:
                     values[aliases.get(key, key)] = getattr(req, key)
             parameters = asdict(MomentumConfig.from_dict(values))
@@ -1418,7 +1440,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             ignored += sorted(supplied & {"stop_loss", "max_positions", "max_stock_weight",
                                           "risk_per_trade", "max_sector_weight", "risk_adjusted", "market_filter",
                                           "max_entry_gap_down_pct", "max_entry_gap_up_pct",
-                                          "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode"})
+                                          "max_entry_intraday_drop_pct", "entry_require_ma20", "stop_loss_mode", "refill_vacancies"})
         arguments = dict(
             start_date=req.start_date,
             end_date=req.end_date or last_completed_trading_day(),

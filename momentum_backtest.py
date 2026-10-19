@@ -129,6 +129,8 @@ class MomentumBacktestEngine:
                     "corporate_actions_not_accounted: cash dividends, splits and delisting recoveries require an event feed"]
         if self.config.stop_loss_mode == "intraday":
             warnings.append("intraday_stop_ohlc_approximation: existing holdings stop at raw open on gaps or threshold minus slippage on low crossing; daily OHLC cannot prove tick order, depth or exact fills; T+1 and unfilled stop intents persist")
+        if self.config.refill_vacancies:
+            warnings.append("vacancy_refill_open_only: real vacant slots use previous-close candidates at each open, after completed opening exits; partial or pending exits still occupy slots; intraday exits can only be replaced at a later open, unlike live tick execution; existing holdings are never topped up")
         if any(not _main_board(s) for s in self.symbols):
             warnings.append("non_main_board_excluded: ranking and execution both use Shanghai/Shenzhen main-board stocks only")
         warnings.append("historical_risk_status_unverified: dated ST/price-limit metadata takes precedence; current names are only a conservative fallback")
@@ -311,8 +313,10 @@ class MomentumBacktestEngine:
                         cooldown[symbol] = index + self.config.cooldown_days
 
             execute_exits()
-            # Establish positions only at scheduled rotations, after exits.
-            if rebalance and market_ok:
+            # Scheduled rotation controls rank exits, independently of filling
+            # genuinely empty slots. Existing and partially exiting positions
+            # still consume slots; intraday proceeds arrive after these buys.
+            if (rebalance or self.config.refill_vacancies) and market_ok:
                 for symbol in ranking:
                     if len(positions) >= self.config.max_positions:
                         break
@@ -410,7 +414,8 @@ class MomentumBacktestEngine:
                                              buy_date=date, buy_index=index, remaining_buy_fees=fee,
                                              last_price=price)
                     fills.append(dict(date=date, symbol=symbol, side="BUY", shares=shares, price=price,
-                                      fees=fee, signal_date=as_of, status=result.get("status")))
+                                      fees=fee, signal_date=as_of, status=result.get("status"),
+                                      entry_reason="scheduled_rotation" if rebalance else "vacancy_refill"))
 
             # Run low-crossing stops only after all opening decisions. Their
             # proceeds must never finance an earlier opening buy. A same-day
@@ -504,4 +509,5 @@ class MomentumBacktestEngine:
                     warnings=list(dict.fromkeys(warnings)), data_coverage=data_coverage,
                     pending_exits={s: dict(order) for s, order in pending_exits.items()},
                     execution_model="previous_close_signal_next_raw_open; daily_capacity_approximation"
+                    + ("; vacancy_refill_next_open" if self.config.refill_vacancies else "")
                     + ("; intraday_stop_ohlc_approximation" if self.config.stop_loss_mode == "intraday" else ""))

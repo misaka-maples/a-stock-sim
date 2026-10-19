@@ -330,6 +330,85 @@ def test_rank_rotation_waits_for_scheduled_rebalance(account, clock, last_rebala
         assert "排名跌出缓冲区" in account.trades[-1]["reason"]
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_daily_vacancy_refill_does_not_advance_rotation_clock(account, clock, enabled):
+    s = prepared(account, rebalance_every=5, refill_vacancies=enabled)
+    s.state["last_rebalance"] = "2026-09-18"
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert bool(account.positions) is enabled
+    assert s.state["last_rebalance"] == "2026-09-18"
+    assert s.state["planned_policy"] == s._plan_policy()
+
+
+def test_policy_upgrade_recovers_same_day_empty_legacy_plan(account, clock):
+    s = prepared(account, rebalance_every=5)
+    s.state.update(last_rebalance="2026-09-18", planned_as_of="2026-09-21",
+                   planned_revision=s._history_revision, pending_entries={})
+    s.state["cooldown"]["sh600999"] = "2026-09-21"
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert SYMBOL in account.positions
+    assert s.state["last_rebalance"] == "2026-09-18"
+    assert s.state["cooldown"]["sh600999"] == "2026-09-21"
+
+
+@pytest.mark.parametrize("blocked,shares", [(True, 500), (False, 500), (False, 1000)])
+def test_intraday_exit_must_finish_before_same_day_vacancy_refill(account, clock, blocked, shares):
+    other = "sh600001"
+    seed_position(account, clock, shares=shares, price=12.6)
+    s = prepared(account, symbols=[SYMBOL, other], max_positions=1,
+                 rebalance_every=5, stop_loss_mode="intraday")
+    s.state["last_rebalance"] = "2026-09-18"
+    quotes = {SYMBOL: market_quote(current=11.8, bids=[] if blocked else [dict(price=11.8, volume=100)]),
+              other: market_quote(other)}
+    tick(s, quotes, clock)
+    remains = blocked or shares > 500
+    assert (SYMBOL in account.positions) is remains
+    assert (other in account.positions) is not remains
+    assert s.state["last_rebalance"] == "2026-09-18"
+    assert s.state["planned_as_of"] == "2026-09-21"
+    if not remains:
+        assert s.state["cooldown"][SYMBOL] == "2026-09-22"
+        assert SYMBOL not in s.state["pending_entries"]
+        assert [t["side"] for t in account.trades[-2:]] == ["SELL", "BUY"]
+
+
+def test_refill_does_not_top_up_preexisting_position(account, clock):
+    seed_position(account, clock, shares=100)
+    s = prepared(account, rebalance_every=5)
+    s.state["last_rebalance"] = "2026-09-18"
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert account.positions[SYMBOL]["total_shares"] == 100
+    assert SYMBOL not in s.state["pending_entries"]
+
+
+def test_next_session_refill_never_uses_yesterdays_partial_top_up_intent(account, clock):
+    s = prepared(account, rebalance_every=5)
+    s.state["last_rebalance"] = "2026-09-18"
+    tick(s, {SYMBOL: market_quote()}, clock)
+    assert s.state["pending_entries"][SYMBOL]["filled_shares"] == 500
+    tomorrow = NOW+dt.timedelta(days=1)
+    clock[0] = tomorrow
+    s.prepare(now=tomorrow, synchronous=True)
+    tick(s, {SYMBOL: market_quote(now=tomorrow)}, clock, now=tomorrow)
+    assert account.positions[SYMBOL]["total_shares"] == 500
+    assert SYMBOL not in s.state["pending_entries"]
+    assert s.state["planned_as_of"] == "2026-09-22"
+    assert s.state["last_rebalance"] == "2026-09-18"
+
+
+def test_allocation_status_is_read_only_and_shows_unplanned_upgrade(account, clock):
+    s = prepared(account, rebalance_every=5)
+    s.state["last_rebalance"] = "2026-09-18"
+    before = copy.deepcopy(s.state)
+    s.account.save = Mock(side_effect=AssertionError("read-only status must not save"))
+    status = s.allocation_status(NOW)
+    assert s.state == before and not account.trades
+    assert status["vacant_slots"] == 3 and not status["can_refill"]
+    assert "生成补位计划" in status["wait_reason"]
+    assert status["next_rebalance_signal_date"] == "2026-09-28"
+    assert status["next_execution_date"] == "2026-09-29"
+
+
 def test_three_session_cooldown_counts_exchange_sessions(account, clock):
     sold = "2026-09-21"
     # 9/25-9/27 are exchange holidays/weekend, so the fourth session is 9/28.

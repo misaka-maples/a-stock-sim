@@ -34,6 +34,7 @@ def sessions_between(start, end):
 
 
 class DailyMomentumStrategy:
+    PLAN_POLICY_REVISION = 1
     FAILED_RETRY_SECONDS = 900
     FAILED_RETRY_BATCH = 24
     CATCHUP_BATCH = 96
@@ -608,18 +609,20 @@ class DailyMomentumStrategy:
             market_ok = self._benchmark_valid and len(bench) >= 120 and bench[-1]["date"] == as_of and bench[-1]["close"] > sum(b["close"] for b in bench[-120:]) / 120
         if not market_ok:
             entries = {}
-        if rebalance and market_ok and new_risk_valid:
+        if (rebalance or self.config.refill_vacancies) and market_ok and new_risk_valid:
             for candidate in signals:
                 sym = candidate["symbol"]
                 old = previous_entries.get(sym)
                 # Keep partial fills, but publish the new rank order and current
                 # signal. An already held unrelated position is not a new buy.
-                if sym in self.account.positions and old is None:
+                if sym in exits or (sym in self.account.positions and old is None):
                     continue
                 sold = self.state["cooldown"].get(sym)
                 if sold and sessions_between(sold, execution_day) <= self.config.cooldown_days:
                     continue
                 entries[sym] = dict(signal=candidate,
+                                    entry_reason=(old.get("entry_reason") if old else None)
+                                                 or ("scheduled_rotation" if rebalance else "vacancy_refill"),
                                     filled_shares=old.get("filled_shares", 0) if old else 0,
                                     target_shares=old.get("target_shares") if old else None,
                                     blocked_date=old.get("blocked_date") if old else None,
@@ -627,12 +630,96 @@ class DailyMomentumStrategy:
         self.state["pending_entries"] = entries
         self.state["planned_as_of"] = as_of
         self.state["planned_revision"] = self._history_revision
+        self.state["planned_policy"] = self._plan_policy()
         self.state["execution_day"] = execution_day
         if (rebalance and new_risk_valid
                 and (not self.config.market_filter or self._benchmark_valid)):
             self.state["last_rebalance"] = as_of
             self.state["rebalance_as_of"] = as_of
         self.account.save()
+
+    def _plan_policy(self):
+        # Persist the semantics, not the transient history loader revision. This
+        # upgrades an already-planned day's empty queue without resetting risk
+        # exits, cooldowns, or the scheduled rotation clock.
+        return dict(revision=self.PLAN_POLICY_REVISION,
+                    refill_vacancies=self.config.refill_vacancies)
+
+    def allocation_status(self, now=None):
+        """Read-only allocation explanation; no downloads, planning or writes."""
+        now = now or dt.datetime.now(BEIJING)
+        as_of = last_completed_trading_day(now)
+        execution_day = now.date().isoformat()
+        vacant = max(0, self.config.max_positions-len(self.account.positions))
+        last = self.state.get("last_rebalance")
+        try:
+            day = dt.date.fromisoformat(last) if last else dt.date.fromisoformat(as_of)
+            left = self.config.rebalance_every if last else 0
+            while left:
+                day += dt.timedelta(days=1)
+                left -= bool(is_trading_day(day))
+            signal_day = max(day.isoformat(), as_of)
+        except (ValueError, TypeError):
+            signal_day = as_of
+        day = dt.date.fromisoformat(signal_day) + dt.timedelta(days=1)
+        while not is_trading_day(day):
+            day += dt.timedelta(days=1)
+        entries = self.state.get("pending_entries", {})
+        planned = (self.state.get("planned_as_of") == as_of
+                   and self.state.get("planned_revision") == self._history_revision
+                   and self.state.get("planned_policy") == self._plan_policy())
+        pending = sum(1 for sym, entry in entries.items()
+                      if entry.get("blocked_date") != execution_day
+                      and not (entry.get("target_shares") is not None
+                               and entry.get("filled_shares", 0) > 0
+                               and entry["filled_shares"] >= entry["target_shares"])
+                      and sym not in self.state.get("pending_exits", {}))
+        if not planned:
+            pending = 0
+        valid = (self._history_date == as_of and self._new_risk_data_valid()
+                 and self._ranking_coverage() >= .95)
+        market_ok = True
+        if self.config.market_filter:
+            bench = getattr(self, "_benchmark", [])
+            market_ok = (self._benchmark_valid and len(bench) >= 120
+                         and bench[-1]["date"] == as_of
+                         and bench[-1]["close"] > sum(b["close"] for b in bench[-120:])/120)
+        candidates = [entry["signal"] for entry in entries.values()] if planned else self.latest_candidates
+        candidates = [candidate for candidate in candidates
+                      if candidate.get("as_of") == as_of
+                      and candidate["symbol"] not in self.account.positions
+                      and candidate["symbol"] not in self.state.get("pending_exits", {})
+                      and not (entries.get(candidate["symbol"], {}).get("blocked_date") == execution_day)
+                      and not (self.state.get("cooldown", {}).get(candidate["symbol"])
+                               and sessions_between(self.state["cooldown"][candidate["symbol"]], execution_day)
+                               <= self.config.cooldown_days)]
+        if not vacant:
+            reason = "已达持仓数量上限；待卖持仓在实际卖完前仍占仓位"
+        elif not self.config.refill_vacancies:
+            reason = "每日补位已关闭，等待周期轮动"
+        elif not valid:
+            reason = "历史数据或排名覆盖不足，暂停补位，持仓风控继续"
+        elif not market_ok:
+            reason = "市场过滤未通过，暂停新建仓"
+        elif not planned:
+            reason = "等待策略线程根据上一完整交易日生成补位计划"
+        elif not candidates:
+            reason = "暂无满足条件且不在冷却期的候选股票"
+        elif self.account.cash < min(candidate.get("raw_signal_price", math.inf) for candidate in candidates)*100*1.002:
+            reason = "可用现金不足以买入候选股票一手，等待后续检查"
+        elif not is_trading_time(now):
+            reason = "已有日线候选，等待下一可交易时段及有效盘口"
+        else:
+            reason = "按上一完整交易日排名补位，仍需通过盘口、仓位及行业预算检查"
+        return dict(vacant_slots=vacant, pending_entry_count=pending,
+                    refill_enabled=self.config.refill_vacancies,
+                    can_refill=bool(vacant and self.config.refill_vacancies and valid and market_ok
+                                    and planned and candidates
+                                    and self.account.cash >= min(candidate.get("raw_signal_price", math.inf)
+                                                                 for candidate in candidates)*100*1.002),
+                    wait_reason=reason, last_rebalance=last,
+                    next_rebalance_signal_date=signal_day, next_execution_date=day.isoformat(),
+                    entry_signal_date=as_of if self._history_date == as_of else None)
 
     def _reject_entry(self, symbol, intent, execution_day, reason):
         # Unsafe prices cancel the rest of this day's intent, including partial
@@ -739,7 +826,9 @@ class DailyMomentumStrategy:
                                    if valid_past_date(date, execution_day)}
         self.account.update_t1_available_shares(today_str=execution_day)
         with self._history_lock:
-            if self._history_date == as_of and (self.state.get("planned_as_of") != as_of or self.state.get("planned_revision") != self._history_revision):
+            if self._history_date == as_of and (self.state.get("planned_as_of") != as_of
+                    or self.state.get("planned_revision") != self._history_revision
+                    or self.state.get("planned_policy") != self._plan_policy()):
                 self._plan(as_of, execution_day)
         if self.config.stop_loss_mode == "intraday":
             changed = False
@@ -846,7 +935,8 @@ class DailyMomentumStrategy:
             def commit_purchase(trade, account, entry=intent):
                 entry["filled_shares"] += trade["shares"]
             result = self.account.execute_buy(sym, q.get("name", sym), price, remaining,
-                        reason=f"{self.name}: {as_of}收盘动量排名，次日执行",
+                        reason=f"{self.name}: {as_of}收盘动量排名，次日执行，"
+                               + ("空位补仓" if intent.get("entry_reason") == "vacancy_refill" else "周期轮动"),
                         limit_price=(q["pre_close"] * (1+self.config.max_entry_gap_up_pct/100)
                                      if self.config.max_entry_gap_up_pct else None),
                         state_update=commit_purchase, max_position_weight=weight,
