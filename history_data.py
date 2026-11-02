@@ -23,7 +23,7 @@ import threading
 import copy
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 from trade_calendar import BEIJING, get_previous_trading_day, is_trading_day, to_date
 
@@ -131,6 +131,7 @@ def last_completed_trading_day(now=None) -> str:
 
 
 class HistoricalDataFeed:
+    supports_incremental_results = True
     """Validated adjusted indicators and original execution prices with bounded I/O.
 
     Volume is reported in lots (100 shares). A missing daily bar is not filled in:
@@ -323,8 +324,10 @@ class HistoricalDataFeed:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temp_path, target)
+            return True
         except (OSError, ValueError, TypeError):
             metadata["warning"].append("cache_write_failed")
+            return False
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
@@ -640,7 +643,9 @@ class HistoricalDataFeed:
                                         metadata["fetched_at"], warnings)
             cache_meta.update(adjustment=adjustment, update_mode=mode,
                               overlap_validation=overlap_status, adjustment_rebase_ratio=rebase_ratio)
-            self._write_cache(key, adjustment, name, downloaded, cache_meta)
+            if not self._write_cache(key, adjustment, name, downloaded, cache_meta):
+                metadata.update(fresh=False, error="cache_write_failed")
+                metadata["warning"].append("cache_write_failed")
         with self._lock:
             self.metadata[key] = metadata
         return symbol, name, subset
@@ -734,7 +739,7 @@ class HistoricalDataFeed:
 
     def fetch_universe_klines(self, symbols: List[str], start_date: str = "2024-01-01",
                               end_date: Optional[str] = None, max_workers: int = 6,
-                              use_cache: bool = True):
+                              use_cache: bool = True, on_item=None):
         """Every requested symbol is present, including explicit failure entries."""
         # Resolve dynamic end once so one large request never straddles a cutoff.
         start, end = self._dates(start_date, end_date)
@@ -767,9 +772,9 @@ class HistoricalDataFeed:
                     # Other configured sources remain available to each stock.
                     pass
         if source_health.get("baostock", {}).get("installed") and not source_health.get("tushare", {}).get("configured"):
-            # BaoStock is a single serialized SDK session. Parallel callers
-            # would merely time out in its local queue and starve each other.
-            max_workers = 1
+            # Two bounded stages overlap raw SDK I/O with parsing/validation.
+            # The router still serializes the one actual SDK connection.
+            max_workers = min(max_workers, 2)
 
         def fetch_one(symbol):
             try:
@@ -784,9 +789,21 @@ class HistoricalDataFeed:
                 return symbol, {"symbol": symbol, "name": symbol[2:], "bars": [], "by_date": {},
                                 "metadata": metadata, "error": metadata["error"]}
 
-        with ThreadPoolExecutor(max_workers=max(1, min(int(max_workers), self.MAX_WORKERS))) as executor:
-            for symbol, item in executor.map(fetch_one, unique):
-                results[symbol] = item
+        workers = max(1, min(int(max_workers), self.MAX_WORKERS))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            remaining = iter(unique)
+            pending = {executor.submit(fetch_one, sym) for sym in
+                       [next(remaining, None) for _ in range(workers)] if sym is not None}
+            while pending:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    symbol, item = future.result()
+                    results[symbol] = item
+                    if on_item is not None:
+                        on_item(symbol, item)
+                    sym = next(remaining, None)
+                    if sym is not None:
+                        pending.add(executor.submit(fetch_one, sym))
         return results
 
     @staticmethod

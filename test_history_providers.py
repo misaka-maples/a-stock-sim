@@ -245,6 +245,21 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn('private-super-secret',json.dumps(router.status()))
         self.assertEqual(router.status()['failure_diagnostics']['baostock']['last_error_code'],'provider_error')
 
+    def test_stream_raw_protocol_defers_normalization_to_parent(self):
+        sdk = Mock()
+        sdk.login.return_value.error_code = '0'
+        out = io.StringIO()
+        request = {'id': 7, 'args': ['sh600036', '2026-10-13', '2026-10-14', 'qfq'], 'raw_rows': True}
+        inp = io.StringIO(json.dumps(request) + '\n')
+        rows = [{'date': '2026-10-14', 'volume': ''}]
+        with patch('history_providers._install_bao_budget'), patch('history_providers._acquire_worker_lease') as lease, patch.dict('sys.modules', {'baostock': sdk}), patch('sys.stdout', out), patch('sys.stdin', inp), patch('history_providers.select.select', side_effect=[([inp], [], []), ([], [], [])]), patch('history_providers._bao_query', side_effect=[rows, rows]), patch('history_providers.normalize_baostock') as normalize:
+            self.assertEqual(_baostock_stream(), 0)
+            normalize.assert_not_called()
+            lease.return_value.close.assert_called_once()
+        self.assertEqual(json.loads(out.getvalue()), {'id': 7, 'raw_rows': rows, 'adjusted_rows': rows})
+        sdk.login.assert_called_once()
+        sdk.logout.assert_called_once()
+
     def test_stream_login_refusal_emits_sanitized_numeric_code(self):
         sdk=Mock();sdk.login.return_value.error_code='10001011'
         sdk.login.return_value.error_msg='private response must not escape'
@@ -377,6 +392,71 @@ class StreamWorkerTests(unittest.TestCase):
             router.close()
         self.assertIsNotNone(child.poll())
         self.assertIsNone(router._bao_process)
+
+    def test_raw_normalization_overlaps_next_download_on_same_connection(self):
+        child = self.child("import sys,json\nfor line in sys.stdin:\n r=json.loads(line);print(json.dumps({'id':r['id'],'raw_rows':[{'date':r['args'][2]}],'adjusted_rows':[{'date':r['args'][2]}]}),flush=True)")
+        router = self.router()
+        parsing = threading.Event()
+        release = threading.Event()
+        results, errors = [], []
+
+        def normalize(raw_rows, adjusted_rows, adjustment):
+            if threading.current_thread().name == 'first-normalizer':
+                parsing.set()
+                if not release.wait(3):
+                    raise AssertionError('next download was blocked by parsing')
+            return raw_rows
+
+        def first():
+            try:
+                results.append(router._baostock('sh600036','2026-10-13','2026-10-14','qfq'))
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=first, name='first-normalizer')
+        try:
+            with patch('history_providers.subprocess.Popen', return_value=child) as spawn, patch('history_providers.normalize_baostock', side_effect=normalize):
+                thread.start()
+                self.assertTrue(parsing.wait(2))
+                self.assertEqual(router._baostock('sh600519','2026-10-13','2026-10-14','qfq'), [{'date':'2026-10-14'}])
+                self.assertFalse(release.is_set())
+                self.assertEqual(spawn.call_count, 1)
+                release.set()
+                thread.join(3)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(len(results), 1)
+        finally:
+            release.set()
+            if thread.ident is not None:
+                thread.join(3)
+            router.close()
+
+    def test_raw_asset_failure_keeps_healthy_connection_for_next_symbol(self):
+        child = self.child("import sys,json\nfor line in sys.stdin:\n r=json.loads(line); row={'date':r['args'][2],'open':'10','high':'11','low':'9','close':'10','volume':'' if r['id']==1 else '100','amount':'1000'}; print(json.dumps({'id':r['id'],'raw_rows':[row],'adjusted_rows':[row]}),flush=True)")
+        router = self.router()
+        try:
+            with patch('history_providers.subprocess.Popen', return_value=child) as spawn:
+                with self.assertRaisesRegex(HistoryNotCurrent, 'invalid_number'):
+                    router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+                self.assertIs(router._bao_process, child)
+                self.assertIsNone(child.poll())
+                bars = router._baostock('sh600519','2026-10-13','2026-10-14','qfq')
+                self.assertEqual(bars[0]['raw_close'], 10)
+                self.assertEqual(spawn.call_count, 1)
+        finally:
+            router.close()
+
+    def test_malformed_raw_protocol_reaps_worker(self):
+        child = self.child("import sys,json\nfor line in sys.stdin:\n r=json.loads(line);print(json.dumps({'id':r['id'],'raw_rows':[None],'adjusted_rows':[]}),flush=True)")
+        router = self.router()
+        try:
+            with patch('history_providers.subprocess.Popen', return_value=child):
+                with self.assertRaisesRegex(ProviderUnavailable, 'invalid_worker_result'):
+                    router._baostock('sh600036','2026-10-13','2026-10-14','qfq')
+            self.assertIsNone(router._bao_process)
+        finally:
+            router.close()
 
     def test_timeout_kills_reaps_and_next_request_starts_fresh_worker(self):
         hung=self.child("import time;time.sleep(30)")

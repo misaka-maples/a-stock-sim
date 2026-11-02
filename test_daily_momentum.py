@@ -1153,3 +1153,31 @@ def test_legacy_warm_deferral_migrates_but_cold_codes_remain_deferred(account):
     s._history_errors[SYMBOL] = dict(reason="latest_outdated")
     s._record_update_results([SYMBOL], NOW, "2026-09-21")
     assert not s._retry_ready(SYMBOL, NOW.timestamp())
+
+
+def test_validated_partial_batch_published_before_slow_tail(account):
+    entered, release = threading.Event(), threading.Event()
+    class ProgressiveFeed(StubFeed):
+        supports_incremental_results = True
+        def fetch_universe_klines(self, symbols, start_date=None, end_date=None, on_item=None, **kwargs):
+            result = super().fetch_universe_klines(symbols, start_date, end_date)
+            on_item(symbols[0], result[symbols[0]])
+            entered.set()
+            assert release.wait(5)
+            for sym in symbols[1:]: on_item(sym, result[sym])
+            return result
+    s = MomentumRotationProStrategy(account, [SYMBOL, 'sh600001'], feed=ProgressiveFeed(), industry_map={})
+    s.prepare(now=NOW)
+    try:
+        assert entered.wait(2)
+        assert s.data_status['loaded'] == 1
+        assert s.data_status['refreshing']
+        assert s.data_status['batch_progress'] == dict(total=2, completed=1, eligible=1, unavailable=0)
+        assert not s.data_status['rotation_ready']
+        assert not s._new_risk_data_valid()
+    finally:
+        release.set()
+        s._history_thread.join(5)
+    assert s.data_status['loaded'] == 2
+    assert s.data_status['batch_progress']['completed'] == 2
+    assert not s.data_status['refreshing']

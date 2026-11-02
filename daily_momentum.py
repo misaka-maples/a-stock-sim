@@ -97,6 +97,7 @@ class DailyMomentumStrategy:
 
     def _new_risk_data_valid(self):
         return (self._published_generation == self._generation
+                and not self.data_status.get("initial_batch_pending", False)
                 and time.monotonic() < self._history_valid_until
                 and self.data_status.get("status") in ("ready", "partial")
                 and set(self.watchlist+list(self.account.positions)) <= set(self.history_cache))
@@ -478,7 +479,41 @@ class DailyMomentumStrategy:
                 if (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
                     industries = {**self.feed.fetch_industry_map(), **self._industry_overrides}
                     self._next_industry_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
-                fetched = self.feed.fetch_universe_klines(requested, start_date=start, end_date=as_of, max_workers=6) if requested else {}
+                progress = dict(total=len(requested), completed=0, eligible=0, unavailable=0)
+                last_publish = [0.0]
+                progressive_items = dict(self._history_items) if repair else dict(cached)
+
+                def publish_item(sym, item):
+                    with self._history_lock:
+                        if generation != self._generation:
+                            return
+                        previous = progressive_items.get(sym, {})
+                        if not item.get("bars") and previous.get("bars"):
+                            failure = item.get("error") or "repair_returned_no_bars"
+                            item = dict(item, bars=previous["bars"], error=failure,
+                                        metadata=dict(item.get("metadata", {}), fresh=False, error=failure))
+                        progressive_items[sym] = item
+                        progress["completed"] += 1
+                        reason, _, _ = self._history_issue(item, as_of)
+                        progress["unavailable" if reason else "eligible"] += 1
+                        # Publish early and then at most every two seconds or
+                        # eight completions. No slow tail holds back good data.
+                        if (time.monotonic()-last_publish[0] >= 2
+                                or progress["completed"] % 8 == 0
+                                or progress["completed"] == progress["total"]):
+                            self._publish_history(progressive_items, symbols, as_of, generation,
+                                                  industries, benchmark, benchmark_valid, benchmark_ttl,
+                                                  repair=repair)
+                            last_publish[0] = time.monotonic()
+                        initial_pending = not (repair or seeded) and progress["completed"] < progress["total"]
+                        self.data_status.update(refreshing=True, batch_progress=dict(progress),
+                                                initial_batch_pending=initial_pending)
+                        if initial_pending:
+                            self.data_status["rotation_ready"] = False
+
+                options = {"on_item": publish_item} if getattr(self.feed, "supports_incremental_results", False) else {}
+                fetched = self.feed.fetch_universe_klines(requested, start_date=start, end_date=as_of,
+                                                         max_workers=6, **options) if requested else {}
                 data = {**cached, **fetched} if cached else fetched
                 if retry_benchmark:
                     benchmark = self.feed.fetch_benchmark_kline(start_date=start, end_date=as_of)
@@ -507,6 +542,8 @@ class DailyMomentumStrategy:
                                 self._history_errors[sym] = issue
                     self._publish_history(items, symbols, as_of, generation, industries, benchmark,
                                           benchmark_valid, benchmark_ttl, repair=repair)
+                    if options:
+                        self.data_status["batch_progress"] = dict(progress)
                     if not synchronous:
                         now_mono = time.monotonic()
                         self._record_update_results(requested, now, as_of)

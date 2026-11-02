@@ -344,8 +344,11 @@ def _baostock_stream():
                         code = symbol[:2] + "." + symbol[2:]
                         raw = _bao_query(sdk, code, start, end, "3")
                         adjusted = _bao_query(sdk, code, start, end, "2") if adjustment == "qfq" else raw
-                        bars = normalize_baostock(raw, adjusted, adjustment)
-                    protocol.write(json.dumps({"id": request_id, "bars": bars}, allow_nan=False) + "\n")
+                        if request.get("raw_rows") is True:
+                            result = {"raw_rows": raw, "adjusted_rows": adjusted}
+                        else:
+                            result = {"bars": normalize_baostock(raw, adjusted, adjustment)}
+                    protocol.write(json.dumps(dict(id=request_id, **result), allow_nan=False) + "\n")
                     protocol.flush()
                 except Exception as exc:
                     code = _safe_error_code(exc)
@@ -761,8 +764,10 @@ class SourceRouter:
         # A documented provider restriction survives process/service restarts.
         if self._bao_restriction()["retry_after_seconds"]:
             raise ProviderUnavailable("provider_restricted")
-        # Serialize a persistent session, with bounded queueing as well as I/O.
-        if not _BAO_LOCK.acquire(timeout=self.timeout):
+        # Two pipeline callers may overlap normalization, but SDK requests stay
+        # serialized. Allow a queued caller one full network deadline to wait.
+        queue_timeout = max(self.timeout, 30) + 1 if self.timeout >= 6 else self.timeout
+        if not _BAO_LOCK.acquire(timeout=queue_timeout):
             raise ProviderBusy("busy")
         try:
             if not self._bao_stream:
@@ -778,7 +783,7 @@ class SourceRouter:
             process = self._bao_process
             self._bao_request_id += 1
             request_id = self._bao_request_id
-            request = (json.dumps({"id": request_id, "args": [symbol, start, end, adjustment]}) + "\n").encode()
+            request = (json.dumps({"id": request_id, "args": [symbol, start, end, adjustment], "raw_rows": True}) + "\n").encode()
             # Tiny fixed-size request fits PIPE_BUF; never allow a blocking write.
             if os.write(process.stdin.fileno(), request) != len(request):
                 raise ProviderUnavailable("worker_write_failed")
@@ -815,6 +820,15 @@ class SourceRouter:
                             if isinstance(code, str) and (code in SAFE_ERROR_CODES or re.fullmatch(r"sdk_error_-?\d{1,8}", code)):
                                 raise ProviderUnavailable(code)
                             raise ProviderUnavailable("invalid_worker_result")
+                        if "raw_rows" in payload:
+                            # Framing is bounded to 16 MiB above; also bound row
+                            # counts and reject malformed protocol before reuse.
+                            for key in ("raw_rows", "adjusted_rows"):
+                                rows = payload.get(key)
+                                if (not isinstance(rows, list) or len(rows) > 20000
+                                        or any(not isinstance(row, dict) for row in rows)):
+                                    raise ProviderUnavailable("invalid_worker_result")
+                            break
                         if not isinstance(payload.get("bars"), list):
                             raise ProviderUnavailable("invalid_worker_result")
                         return payload["bars"]
@@ -825,6 +839,9 @@ class SourceRouter:
             raise
         finally:
             _BAO_LOCK.release()
+        # CPU parsing/validation must not hold the SDK lease. A malformed asset
+        # is not a broken connection and must not tear down a healthy session.
+        return normalize_baostock(payload["raw_rows"], payload["adjusted_rows"], adjustment)
 
     @staticmethod
     def _validated(provider, callback, start, end):

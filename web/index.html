@@ -2462,7 +2462,10 @@
 
       const retryEl = document.getElementById('dmNextRetryText');
       if (retryEl) {
-        retryEl.innerText = `下次自动补数: 约 ${quality.next_failed_retry_seconds ?? '--'} 秒`;
+        const batch = quality.batch_progress;
+        retryEl.innerText = quality.refreshing
+          ? (batch ? `本批完成 ${batch.completed}/${batch.total} · 可用 ${batch.eligible} · 未达标 ${batch.unavailable}` : '正在准备历史数据')
+          : `下次自动补数: 约 ${quality.next_failed_retry_seconds ?? '--'} 秒`;
       }
 
       // 7. 实时行情状态

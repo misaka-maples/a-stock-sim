@@ -607,7 +607,7 @@ def test_baostock_cache_without_dated_risk_marker_is_refreshed(feed):
     assert feed._download.called and feed.metadata['sh600519']['fresh']
 
 
-def test_serial_sdk_never_creates_a_parallel_local_wait_queue(feed):
+def test_sdk_pipeline_has_only_two_bounded_local_tasks(feed):
     import threading,time
     active=[0];peak=[0];lock=threading.Lock()
     feed._sources.status=Mock(return_value={'baostock':{'installed':True},'tushare':{'configured':False}})
@@ -618,7 +618,7 @@ def test_serial_sdk_never_creates_a_parallel_local_wait_queue(feed):
         return symbol,'测试',[raw_bar('2026-10-14')]
     feed.fetch_stock_kline=fetch
     feed.fetch_universe_klines(['sh600036','sh600519','sh600000'],'2026-10-14','2026-10-14',max_workers=6)
-    assert peak[0]==1
+    assert peak[0]==2
 
 
 def test_concurrent_feeds_share_completed_download(tmp_path):
@@ -669,3 +669,45 @@ def test_public_history_and_industry_requests_share_admission(feed):
     assert feed._history_get("eastmoney", "https://example.invalid", {}) is response
     assert feed._sources.request.call_args.args[0] == "eastmoney"
     assert feed.session.get.call_count == 1
+
+
+def test_pipeline_delivers_fast_result_before_slow_first_symbol(feed):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    slow_started, release, delivered = threading.Event(), threading.Event(), threading.Event()
+    feed._sources.status = Mock(return_value={'baostock': {'installed': True}})
+    def fetch(symbol, *args):
+        if symbol == 'sh600036':
+            slow_started.set()
+            assert release.wait(5)
+        return symbol, '测试', [raw_bar('2026-10-14')]
+    feed.fetch_stock_kline = fetch
+    seen = []
+    def publish(symbol, item):
+        seen.append(symbol)
+        if symbol == 'sh600519': delivered.set()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(feed.fetch_universe_klines, ['sh600036', 'sh600519'],
+                             '2026-10-14', '2026-10-14', on_item=publish)
+        try:
+            assert slow_started.wait(2)
+            assert delivered.wait(2)
+            assert not future.done()
+        finally:
+            release.set()
+        assert len(future.result(timeout=5)) == 2
+    assert seen[0] == 'sh600519'
+
+
+def test_pipeline_write_failure_is_not_published_as_fresh(feed, monkeypatch):
+    mock_download(feed, [raw_bar('2026-10-13')])
+    def fail_replace(*args):
+        raise OSError('disk full')
+    monkeypatch.setattr(history.os, 'replace', fail_replace)
+    seen = []
+    feed.fetch_universe_klines(['sh600519'], '2026-10-13', '2026-10-13',
+                               on_item=lambda symbol, item: seen.append(item))
+    assert len(seen) == 1
+    assert seen[0]['error'] == 'cache_write_failed'
+    assert seen[0]['metadata']['fresh'] is False
+    assert not feed._get_cache_path('sh600519').exists()
