@@ -1,0 +1,3143 @@
+{
+  "sh600001": {
+    "code": "sh600001",
+    "name": "邯郸钢铁",
+    "out_date": "2009-12-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.180998+08:00"
+  },
+  "sh600002": {
+    "code": "sh600002",
+    "name": "齐鲁石化",
+    "out_date": "2006-04-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181009+08:00"
+  },
+  "sh600003": {
+    "code": "sh600003",
+    "name": "ST东北高",
+    "out_date": "2010-02-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181013+08:00"
+  },
+  "sh600005": {
+    "code": "sh600005",
+    "name": "武钢股份",
+    "out_date": "2017-02-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181019+08:00"
+  },
+  "sh600065": {
+    "code": "sh600065",
+    "name": "*ST联谊",
+    "out_date": "2007-12-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181059+08:00"
+  },
+  "sh600068": {
+    "code": "sh600068",
+    "name": "葛洲坝",
+    "out_date": "2021-09-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181065+08:00"
+  },
+  "sh600069": {
+    "code": "sh600069",
+    "name": "退市银鸽",
+    "out_date": "2020-08-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181070+08:00"
+  },
+  "sh600070": {
+    "code": "sh600070",
+    "name": "*ST富润",
+    "out_date": "2025-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181073+08:00"
+  },
+  "sh600074": {
+    "code": "sh600074",
+    "name": "退市保千",
+    "out_date": "2020-06-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181080+08:00"
+  },
+  "sh600077": {
+    "code": "sh600077",
+    "name": "*ST宋都",
+    "out_date": "2023-07-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181086+08:00"
+  },
+  "sh600083": {
+    "code": "sh600083",
+    "name": "*ST博信",
+    "out_date": "2025-03-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181094+08:00"
+  },
+  "sh600086": {
+    "code": "sh600086",
+    "name": "退市金钰",
+    "out_date": "2021-03-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181099+08:00"
+  },
+  "sh600087": {
+    "code": "sh600087",
+    "name": "退市长油",
+    "out_date": "2014-06-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181104+08:00"
+  },
+  "sh600090": {
+    "code": "sh600090",
+    "name": "退市济堂",
+    "out_date": "2022-07-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181109+08:00"
+  },
+  "sh600091": {
+    "code": "sh600091",
+    "name": "退市明科",
+    "out_date": "2022-06-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181113+08:00"
+  },
+  "sh600092": {
+    "code": "sh600092",
+    "name": "S*ST精密",
+    "out_date": "2006-11-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181117+08:00"
+  },
+  "sh600093": {
+    "code": "sh600093",
+    "name": "退市易见",
+    "out_date": "2022-06-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181121+08:00"
+  },
+  "sh600102": {
+    "code": "sh600102",
+    "name": "莱钢股份",
+    "out_date": "2012-02-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181130+08:00"
+  },
+  "sh600112": {
+    "code": "sh600112",
+    "name": "*ST天成",
+    "out_date": "2024-08-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181141+08:00"
+  },
+  "sh600122": {
+    "code": "sh600122",
+    "name": "*ST宏图",
+    "out_date": "2023-06-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181152+08:00"
+  },
+  "sh600139": {
+    "code": "sh600139",
+    "name": "*ST西源",
+    "out_date": "2023-03-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181165+08:00"
+  },
+  "sh600145": {
+    "code": "sh600145",
+    "name": "退市新亿",
+    "out_date": "2022-04-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181171+08:00"
+  },
+  "sh600146": {
+    "code": "sh600146",
+    "name": "退市环球",
+    "out_date": "2022-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181177+08:00"
+  },
+  "sh600175": {
+    "code": "sh600175",
+    "name": "退市美都",
+    "out_date": "2020-08-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181199+08:00"
+  },
+  "sh600181": {
+    "code": "sh600181",
+    "name": "S*ST云大",
+    "out_date": "2007-06-01",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181206+08:00"
+  },
+  "sh600190": {
+    "code": "sh600190",
+    "name": "退市锦港",
+    "out_date": "2025-07-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181216+08:00"
+  },
+  "sh600193": {
+    "code": "sh600193",
+    "name": "退市创兴",
+    "out_date": "2026-07-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181221+08:00"
+  },
+  "sh600200": {
+    "code": "sh600200",
+    "name": "退市苏吴",
+    "out_date": "2025-12-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181230+08:00"
+  },
+  "sh600205": {
+    "code": "sh600205",
+    "name": "S山东铝",
+    "out_date": "2007-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181236+08:00"
+  },
+  "sh600209": {
+    "code": "sh600209",
+    "name": "退市罗顿",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181242+08:00"
+  },
+  "sh600213": {
+    "code": "sh600213",
+    "name": "*ST亚星",
+    "out_date": "2024-10-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181248+08:00"
+  },
+  "sh600220": {
+    "code": "sh600220",
+    "name": "ST阳光",
+    "out_date": "2024-07-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181256+08:00"
+  },
+  "sh600225": {
+    "code": "sh600225",
+    "name": "退市卓朗",
+    "out_date": "2025-03-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181262+08:00"
+  },
+  "sh600240": {
+    "code": "sh600240",
+    "name": "退市华业",
+    "out_date": "2020-02-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181276+08:00"
+  },
+  "sh600242": {
+    "code": "sh600242",
+    "name": "退市中昌",
+    "out_date": "2023-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181281+08:00"
+  },
+  "sh600247": {
+    "code": "sh600247",
+    "name": "*ST成城",
+    "out_date": "2021-03-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181287+08:00"
+  },
+  "sh600253": {
+    "code": "sh600253",
+    "name": "天方药业",
+    "out_date": "2013-07-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181295+08:00"
+  },
+  "sh600260": {
+    "code": "sh600260",
+    "name": "*ST凯乐",
+    "out_date": "2023-02-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181302+08:00"
+  },
+  "sh600263": {
+    "code": "sh600263",
+    "name": "路桥建设",
+    "out_date": "2012-03-01",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181307+08:00"
+  },
+  "sh600270": {
+    "code": "sh600270",
+    "name": "外运发展",
+    "out_date": "2018-12-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181317+08:00"
+  },
+  "sh600275": {
+    "code": "sh600275",
+    "name": "退市昌鱼",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181323+08:00"
+  },
+  "sh600277": {
+    "code": "sh600277",
+    "name": "ST亿利",
+    "out_date": "2024-07-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181328+08:00"
+  },
+  "sh600286": {
+    "code": "sh600286",
+    "name": "S*ST国瓷",
+    "out_date": "2007-05-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181338+08:00"
+  },
+  "sh600290": {
+    "code": "sh600290",
+    "name": "*ST华仪",
+    "out_date": "2024-01-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181358+08:00"
+  },
+  "sh600291": {
+    "code": "sh600291",
+    "name": "退市西水",
+    "out_date": "2022-06-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181362+08:00"
+  },
+  "sh600296": {
+    "code": "sh600296",
+    "name": "S兰铝",
+    "out_date": "2007-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181368+08:00"
+  },
+  "sh600297": {
+    "code": "sh600297",
+    "name": "广汇汽车",
+    "out_date": "2024-08-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181373+08:00"
+  },
+  "sh600306": {
+    "code": "sh600306",
+    "name": "退市商城",
+    "out_date": "2024-06-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181383+08:00"
+  },
+  "sh600311": {
+    "code": "sh600311",
+    "name": "*ST荣华",
+    "out_date": "2023-03-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181390+08:00"
+  },
+  "sh600317": {
+    "code": "sh600317",
+    "name": "营口港",
+    "out_date": "2021-01-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181397+08:00"
+  },
+  "sh600321": {
+    "code": "sh600321",
+    "name": "正源股份",
+    "out_date": "2024-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181403+08:00"
+  },
+  "sh600355": {
+    "code": "sh600355",
+    "name": "*ST精伦",
+    "out_date": "2026-04-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181427+08:00"
+  },
+  "sh600357": {
+    "code": "sh600357",
+    "name": "承德钒钛",
+    "out_date": "2009-12-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181431+08:00"
+  },
+  "sh600385": {
+    "code": "sh600385",
+    "name": "退市金泰",
+    "out_date": "2022-07-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181453+08:00"
+  },
+  "sh600387": {
+    "code": "sh600387",
+    "name": "退市海越",
+    "out_date": "2025-07-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181458+08:00"
+  },
+  "sh600393": {
+    "code": "sh600393",
+    "name": "ST粤泰",
+    "out_date": "2023-07-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181466+08:00"
+  },
+  "sh600401": {
+    "code": "sh600401",
+    "name": "退市海润",
+    "out_date": "2019-07-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181474+08:00"
+  },
+  "sh600421": {
+    "code": "sh600421",
+    "name": "退市华嵘",
+    "out_date": "2026-06-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181486+08:00"
+  },
+  "sh600432": {
+    "code": "sh600432",
+    "name": "退市吉恩",
+    "out_date": "2018-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181495+08:00"
+  },
+  "sh600462": {
+    "code": "sh600462",
+    "name": "退市九有",
+    "out_date": "2025-07-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181510+08:00"
+  },
+  "sh600466": {
+    "code": "sh600466",
+    "name": "*ST蓝光",
+    "out_date": "2023-06-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181515+08:00"
+  },
+  "sh600472": {
+    "code": "sh600472",
+    "name": "包头铝业",
+    "out_date": "2007-12-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181521+08:00"
+  },
+  "sh600485": {
+    "code": "sh600485",
+    "name": "*ST信威",
+    "out_date": "2021-06-01",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181533+08:00"
+  },
+  "sh600532": {
+    "code": "sh600532",
+    "name": "退市未来",
+    "out_date": "2023-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181567+08:00"
+  },
+  "sh600553": {
+    "code": "sh600553",
+    "name": "太行水泥",
+    "out_date": "2011-02-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181583+08:00"
+  },
+  "sh600555": {
+    "code": "sh600555",
+    "name": "退市海创",
+    "out_date": "2022-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181588+08:00"
+  },
+  "sh600565": {
+    "code": "sh600565",
+    "name": "ST迪马",
+    "out_date": "2024-08-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181601+08:00"
+  },
+  "sh600591": {
+    "code": "sh600591",
+    "name": "*ST上航",
+    "out_date": "2010-01-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181622+08:00"
+  },
+  "sh600599": {
+    "code": "sh600599",
+    "name": "退市熊猫",
+    "out_date": "2026-06-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181631+08:00"
+  },
+  "sh600607": {
+    "code": "sh600607",
+    "name": "上实医药",
+    "out_date": "2010-02-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181640+08:00"
+  },
+  "sh600608": {
+    "code": "sh600608",
+    "name": "退市沪科",
+    "out_date": "2026-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181644+08:00"
+  },
+  "sh600614": {
+    "code": "sh600614",
+    "name": "退市鹏起",
+    "out_date": "2021-07-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181651+08:00"
+  },
+  "sh600625": {
+    "code": "sh600625",
+    "name": "PT水仙",
+    "out_date": "2001-04-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181663+08:00"
+  },
+  "sh600627": {
+    "code": "sh600627",
+    "name": "上电股份",
+    "out_date": "2008-11-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181667+08:00"
+  },
+  "sh600631": {
+    "code": "sh600631",
+    "name": "百联股份",
+    "out_date": "2011-08-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181673+08:00"
+  },
+  "sh600632": {
+    "code": "sh600632",
+    "name": "华联商厦",
+    "out_date": "2004-11-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181677+08:00"
+  },
+  "sh600634": {
+    "code": "sh600634",
+    "name": "退市富控",
+    "out_date": "2021-07-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181681+08:00"
+  },
+  "sh600636": {
+    "code": "sh600636",
+    "name": "退市国化",
+    "out_date": "2026-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181686+08:00"
+  },
+  "sh600646": {
+    "code": "sh600646",
+    "name": "ST国嘉",
+    "out_date": "2003-09-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181696+08:00"
+  },
+  "sh600647": {
+    "code": "sh600647",
+    "name": "退市同达",
+    "out_date": "2024-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181700+08:00"
+  },
+  "sh600652": {
+    "code": "sh600652",
+    "name": "退市游久",
+    "out_date": "2022-06-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181707+08:00"
+  },
+  "sh600656": {
+    "code": "sh600656",
+    "name": "退市博元",
+    "out_date": "2016-05-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181713+08:00"
+  },
+  "sh600659": {
+    "code": "sh600659",
+    "name": "*ST花雕",
+    "out_date": "2006-03-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181718+08:00"
+  },
+  "sh600669": {
+    "code": "sh600669",
+    "name": "*ST鞍成",
+    "out_date": "2004-09-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181729+08:00"
+  },
+  "sh600670": {
+    "code": "sh600670",
+    "name": "*ST斯达",
+    "out_date": "2004-09-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181732+08:00"
+  },
+  "sh600672": {
+    "code": "sh600672",
+    "name": "*ST华圣",
+    "out_date": "2005-08-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181738+08:00"
+  },
+  "sh600677": {
+    "code": "sh600677",
+    "name": "*ST航通",
+    "out_date": "2021-03-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181747+08:00"
+  },
+  "sh600680": {
+    "code": "sh600680",
+    "name": "*ST上普",
+    "out_date": "2019-05-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181753+08:00"
+  },
+  "sh600687": {
+    "code": "sh600687",
+    "name": "退市刚泰",
+    "out_date": "2021-03-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181761+08:00"
+  },
+  "sh600695": {
+    "code": "sh600695",
+    "name": "退市绿庭",
+    "out_date": "2022-06-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181770+08:00"
+  },
+  "sh600696": {
+    "code": "sh600696",
+    "name": "退市岩石",
+    "out_date": "2026-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181774+08:00"
+  },
+  "sh600700": {
+    "code": "sh600700",
+    "name": "*ST数码",
+    "out_date": "2005-09-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181781+08:00"
+  },
+  "sh600701": {
+    "code": "sh600701",
+    "name": "退市工新",
+    "out_date": "2021-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181785+08:00"
+  },
+  "sh600705": {
+    "code": "sh600705",
+    "name": "中航产融",
+    "out_date": "2025-05-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181791+08:00"
+  },
+  "sh600709": {
+    "code": "sh600709",
+    "name": "ST生态",
+    "out_date": "2003-05-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181797+08:00"
+  },
+  "sh600723": {
+    "code": "sh600723",
+    "name": "首商股份",
+    "out_date": "2021-10-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181811+08:00"
+  },
+  "sh600747": {
+    "code": "sh600747",
+    "name": "退市大控",
+    "out_date": "2019-12-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181832+08:00"
+  },
+  "sh600752": {
+    "code": "sh600752",
+    "name": "*ST哈慈",
+    "out_date": "2005-09-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181840+08:00"
+  },
+  "sh600762": {
+    "code": "sh600762",
+    "name": "S*ST金荔",
+    "out_date": "2007-11-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181850+08:00"
+  },
+  "sh600766": {
+    "code": "sh600766",
+    "name": "退市园城",
+    "out_date": "2024-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181856+08:00"
+  },
+  "sh600767": {
+    "code": "sh600767",
+    "name": "退市运盛",
+    "out_date": "2023-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181860+08:00"
+  },
+  "sh600772": {
+    "code": "sh600772",
+    "name": "S*ST龙昌",
+    "out_date": "2006-11-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181867+08:00"
+  },
+  "sh600781": {
+    "code": "sh600781",
+    "name": "退市辅仁",
+    "out_date": "2023-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181877+08:00"
+  },
+  "sh600786": {
+    "code": "sh600786",
+    "name": "东方锅炉",
+    "out_date": "2008-03-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181883+08:00"
+  },
+  "sh600788": {
+    "code": "sh600788",
+    "name": "*ST达曼",
+    "out_date": "2005-03-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181888+08:00"
+  },
+  "sh600799": {
+    "code": "sh600799",
+    "name": "*ST龙科",
+    "out_date": "2005-12-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181901+08:00"
+  },
+  "sh600804": {
+    "code": "sh600804",
+    "name": "退市鹏博",
+    "out_date": "2025-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181908+08:00"
+  },
+  "sh600806": {
+    "code": "sh600806",
+    "name": "退市昆机",
+    "out_date": "2018-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181914+08:00"
+  },
+  "sh600811": {
+    "code": "sh600811",
+    "name": "*ST东方",
+    "out_date": "2025-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181921+08:00"
+  },
+  "sh600813": {
+    "code": "sh600813",
+    "name": "ST鞍一工",
+    "out_date": "2002-09-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181926+08:00"
+  },
+  "sh600823": {
+    "code": "sh600823",
+    "name": "*ST世茂",
+    "out_date": "2024-06-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181937+08:00"
+  },
+  "sh600832": {
+    "code": "sh600832",
+    "name": "东方明珠",
+    "out_date": "2015-05-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181946+08:00"
+  },
+  "sh600836": {
+    "code": "sh600836",
+    "name": "*ST易连",
+    "out_date": "2024-07-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181952+08:00"
+  },
+  "sh600837": {
+    "code": "sh600837",
+    "name": "海通证券",
+    "out_date": "2025-03-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181956+08:00"
+  },
+  "sh600840": {
+    "code": "sh600840",
+    "name": "新湖创业",
+    "out_date": "2009-08-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181962+08:00"
+  },
+  "sh600842": {
+    "code": "sh600842",
+    "name": "中西药业",
+    "out_date": "2010-02-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181966+08:00"
+  },
+  "sh600849": {
+    "code": "sh600849",
+    "name": "上药转换",
+    "out_date": "2010-03-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181975+08:00"
+  },
+  "sh600852": {
+    "code": "sh600852",
+    "name": "*ST中川",
+    "out_date": "2005-09-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181981+08:00"
+  },
+  "sh600856": {
+    "code": "sh600856",
+    "name": "退市中天",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.181987+08:00"
+  },
+  "sh600870": {
+    "code": "sh600870",
+    "name": "退市厦华",
+    "out_date": "2022-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182000+08:00"
+  },
+  "sh600878": {
+    "code": "sh600878",
+    "name": "*ST北科",
+    "out_date": "2004-09-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182010+08:00"
+  },
+  "sh600890": {
+    "code": "sh600890",
+    "name": "退市中房",
+    "out_date": "2022-06-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182022+08:00"
+  },
+  "sh600891": {
+    "code": "sh600891",
+    "name": "退市秋林",
+    "out_date": "2021-05-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182026+08:00"
+  },
+  "sh600896": {
+    "code": "sh600896",
+    "name": "退市海医",
+    "out_date": "2022-07-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182033+08:00"
+  },
+  "sh600898": {
+    "code": "sh600898",
+    "name": "*ST美讯",
+    "out_date": "2025-02-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182040+08:00"
+  },
+  "sh600899": {
+    "code": "sh600899",
+    "name": "*ST信联",
+    "out_date": "2005-09-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182044+08:00"
+  },
+  "sh600978": {
+    "code": "sh600978",
+    "name": "*ST宜生",
+    "out_date": "2021-03-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182078+08:00"
+  },
+  "sh600991": {
+    "code": "sh600991",
+    "name": "广汽长丰",
+    "out_date": "2012-03-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182091+08:00"
+  },
+  "sh601028": {
+    "code": "sh601028",
+    "name": "玉龙股份",
+    "out_date": "2025-05-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182114+08:00"
+  },
+  "sh601059": {
+    "code": "sh601059",
+    "name": "信达证券",
+    "out_date": "2026-10-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182121+08:00"
+  },
+  "sh601198": {
+    "code": "sh601198",
+    "name": "东兴证券",
+    "out_date": "2026-10-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182160+08:00"
+  },
+  "sh601258": {
+    "code": "sh601258",
+    "name": "*ST庞大",
+    "out_date": "2023-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182177+08:00"
+  },
+  "sh601268": {
+    "code": "sh601268",
+    "name": "*ST二重",
+    "out_date": "2015-05-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182181+08:00"
+  },
+  "sh601299": {
+    "code": "sh601299",
+    "name": "中国北车",
+    "out_date": "2015-05-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182187+08:00"
+  },
+  "sh601558": {
+    "code": "sh601558",
+    "name": "退市锐电",
+    "out_date": "2020-07-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182210+08:00"
+  },
+  "sh601989": {
+    "code": "sh601989",
+    "name": "中国重工",
+    "out_date": "2025-09-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182286+08:00"
+  },
+  "sh603003": {
+    "code": "sh603003",
+    "name": "退市龙宇",
+    "out_date": "2025-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182298+08:00"
+  },
+  "sh603056": {
+    "code": "sh603056",
+    "name": "德邦股份",
+    "out_date": "2026-03-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182335+08:00"
+  },
+  "sh603133": {
+    "code": "sh603133",
+    "name": "退市碳元",
+    "out_date": "2024-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182389+08:00"
+  },
+  "sh603157": {
+    "code": "sh603157",
+    "name": "退市拉夏",
+    "out_date": "2022-05-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182400+08:00"
+  },
+  "sh603388": {
+    "code": "sh603388",
+    "name": "*ST元成",
+    "out_date": "2025-12-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182536+08:00"
+  },
+  "sh603555": {
+    "code": "sh603555",
+    "name": "ST贵人",
+    "out_date": "2024-03-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182581+08:00"
+  },
+  "sh603603": {
+    "code": "sh603603",
+    "name": "退市博天",
+    "out_date": "2024-04-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182605+08:00"
+  },
+  "sh603963": {
+    "code": "sh603963",
+    "name": "*ST大药",
+    "out_date": "2025-03-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182751+08:00"
+  },
+  "sh603996": {
+    "code": "sh603996",
+    "name": "退市中新",
+    "out_date": "2022-05-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182773+08:00"
+  },
+  "sh605081": {
+    "code": "sh605081",
+    "name": "退市太和",
+    "out_date": "2026-07-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182797+08:00"
+  },
+  "sh688086": {
+    "code": "sh688086",
+    "name": "退市紫晶",
+    "out_date": "2023-07-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.182921+08:00"
+  },
+  "sh688287": {
+    "code": "sh688287",
+    "name": "退市观典",
+    "out_date": "2026-06-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183057+08:00"
+  },
+  "sh688555": {
+    "code": "sh688555",
+    "name": "退市泽达",
+    "out_date": "2023-07-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183192+08:00"
+  },
+  "sz000003": {
+    "code": "sz000003",
+    "name": "PT金田A",
+    "out_date": "2002-06-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183333+08:00"
+  },
+  "sz000004": {
+    "code": "sz000004",
+    "name": "国华退",
+    "out_date": "2026-07-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183337+08:00"
+  },
+  "sz000005": {
+    "code": "sz000005",
+    "name": "ST星源",
+    "out_date": "2024-04-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183341+08:00"
+  },
+  "sz000013": {
+    "code": "sz000013",
+    "name": "*ST石化A",
+    "out_date": "2004-09-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183350+08:00"
+  },
+  "sz000015": {
+    "code": "sz000015",
+    "name": "PT中浩A",
+    "out_date": "2001-10-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183355+08:00"
+  },
+  "sz000016": {
+    "code": "sz000016",
+    "name": "*ST康佳A",
+    "out_date": "2026-10-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183358+08:00"
+  },
+  "sz000018": {
+    "code": "sz000018",
+    "name": "神城A退",
+    "out_date": "2020-01-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183365+08:00"
+  },
+  "sz000022": {
+    "code": "sz000022",
+    "name": "深赤湾A",
+    "out_date": "2018-12-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183371+08:00"
+  },
+  "sz000023": {
+    "code": "sz000023",
+    "name": "*ST深天",
+    "out_date": "2024-09-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183375+08:00"
+  },
+  "sz000024": {
+    "code": "sz000024",
+    "name": "招商地产",
+    "out_date": "2015-12-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183379+08:00"
+  },
+  "sz000033": {
+    "code": "sz000033",
+    "name": "新都退",
+    "out_date": "2017-07-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183389+08:00"
+  },
+  "sz000038": {
+    "code": "sz000038",
+    "name": "大通退",
+    "out_date": "2023-07-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183396+08:00"
+  },
+  "sz000040": {
+    "code": "sz000040",
+    "name": "*ST旭蓝",
+    "out_date": "2025-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183401+08:00"
+  },
+  "sz000043": {
+    "code": "sz000043",
+    "name": "中航善达",
+    "out_date": "2019-12-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183406+08:00"
+  },
+  "sz000046": {
+    "code": "sz000046",
+    "name": "*ST泛海",
+    "out_date": "2024-02-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183412+08:00"
+  },
+  "sz000047": {
+    "code": "sz000047",
+    "name": "ST中侨",
+    "out_date": "2003-05-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183416+08:00"
+  },
+  "sz000150": {
+    "code": "sz000150",
+    "name": "*ST宜康",
+    "out_date": "2023-06-09",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183438+08:00"
+  },
+  "sz000405": {
+    "code": "sz000405",
+    "name": "ST鑫光",
+    "out_date": "2004-03-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183453+08:00"
+  },
+  "sz000406": {
+    "code": "sz000406",
+    "name": "石油大明",
+    "out_date": "2006-04-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183457+08:00"
+  },
+  "sz000412": {
+    "code": "sz000412",
+    "name": "ST五环",
+    "out_date": "2003-09-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183465+08:00"
+  },
+  "sz000413": {
+    "code": "sz000413",
+    "name": "ST旭电",
+    "out_date": "2024-10-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183468+08:00"
+  },
+  "sz000416": {
+    "code": "sz000416",
+    "name": "*ST民控",
+    "out_date": "2024-06-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183473+08:00"
+  },
+  "sz000418": {
+    "code": "sz000418",
+    "name": "小天鹅A",
+    "out_date": "2019-06-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183479+08:00"
+  },
+  "sz000502": {
+    "code": "sz000502",
+    "name": "绿景退",
+    "out_date": "2022-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183493+08:00"
+  },
+  "sz000508": {
+    "code": "sz000508",
+    "name": "琼民源A",
+    "out_date": "1999-07-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183501+08:00"
+  },
+  "sz000511": {
+    "code": "sz000511",
+    "name": "烯碳退",
+    "out_date": "2018-07-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183507+08:00"
+  },
+  "sz000515": {
+    "code": "sz000515",
+    "name": "攀渝钛业",
+    "out_date": "2009-05-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183513+08:00"
+  },
+  "sz000522": {
+    "code": "sz000522",
+    "name": "白云山A",
+    "out_date": "2013-04-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183521+08:00"
+  },
+  "sz000527": {
+    "code": "sz000527",
+    "name": "美的电器",
+    "out_date": "2013-09-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183528+08:00"
+  },
+  "sz000535": {
+    "code": "sz000535",
+    "name": "*ST猴王",
+    "out_date": "2005-09-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183537+08:00"
+  },
+  "sz000540": {
+    "code": "sz000540",
+    "name": "*ST中天",
+    "out_date": "2023-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183545+08:00"
+  },
+  "sz000542": {
+    "code": "sz000542",
+    "name": "TCL通讯",
+    "out_date": "2004-01-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183550+08:00"
+  },
+  "sz000549": {
+    "code": "sz000549",
+    "name": "S湘火炬",
+    "out_date": "2007-04-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183558+08:00"
+  },
+  "sz000556": {
+    "code": "sz000556",
+    "name": "PT南洋",
+    "out_date": "2002-05-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183567+08:00"
+  },
+  "sz000562": {
+    "code": "sz000562",
+    "name": "宏源证券",
+    "out_date": "2015-01-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183576+08:00"
+  },
+  "sz000569": {
+    "code": "sz000569",
+    "name": "长城股份",
+    "out_date": "2009-05-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183584+08:00"
+  },
+  "sz000578": {
+    "code": "sz000578",
+    "name": "盐湖集团",
+    "out_date": "2011-03-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183592+08:00"
+  },
+  "sz000583": {
+    "code": "sz000583",
+    "name": "S*ST托普",
+    "out_date": "2007-05-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183597+08:00"
+  },
+  "sz000584": {
+    "code": "sz000584",
+    "name": "工智退",
+    "out_date": "2025-07-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183601+08:00"
+  },
+  "sz000585": {
+    "code": "sz000585",
+    "name": "东电退",
+    "out_date": "2022-05-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183605+08:00"
+  },
+  "sz000587": {
+    "code": "sz000587",
+    "name": "*ST金洲",
+    "out_date": "2023-04-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183609+08:00"
+  },
+  "sz000588": {
+    "code": "sz000588",
+    "name": "PT粤金曼",
+    "out_date": "2001-06-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183613+08:00"
+  },
+  "sz000594": {
+    "code": "sz000594",
+    "name": "国恒退",
+    "out_date": "2015-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183621+08:00"
+  },
+  "sz000602": {
+    "code": "sz000602",
+    "name": "金马集团",
+    "out_date": "2013-08-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183629+08:00"
+  },
+  "sz000606": {
+    "code": "sz000606",
+    "name": "顺利退",
+    "out_date": "2023-07-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183635+08:00"
+  },
+  "sz000611": {
+    "code": "sz000611",
+    "name": "天首退",
+    "out_date": "2022-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183642+08:00"
+  },
+  "sz000613": {
+    "code": "sz000613",
+    "name": "东海A退",
+    "out_date": "2022-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183648+08:00"
+  },
+  "sz000616": {
+    "code": "sz000616",
+    "name": "*ST海投",
+    "out_date": "2023-08-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183654+08:00"
+  },
+  "sz000618": {
+    "code": "sz000618",
+    "name": "吉林化工",
+    "out_date": "2006-02-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183658+08:00"
+  },
+  "sz000621": {
+    "code": "sz000621",
+    "name": "*ST比特",
+    "out_date": "2004-09-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183664+08:00"
+  },
+  "sz000622": {
+    "code": "sz000622",
+    "name": "恒立退",
+    "out_date": "2025-07-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183668+08:00"
+  },
+  "sz000627": {
+    "code": "sz000627",
+    "name": "*ST天茂",
+    "out_date": "2025-09-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183674+08:00"
+  },
+  "sz000638": {
+    "code": "sz000638",
+    "name": "*ST万方",
+    "out_date": "2026-06-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183685+08:00"
+  },
+  "sz000653": {
+    "code": "sz000653",
+    "name": "ST九州",
+    "out_date": "2002-09-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183694+08:00"
+  },
+  "sz000658": {
+    "code": "sz000658",
+    "name": "ST海洋",
+    "out_date": "2002-09-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183702+08:00"
+  },
+  "sz000660": {
+    "code": "sz000660",
+    "name": "*ST南华",
+    "out_date": "2004-09-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183706+08:00"
+  },
+  "sz000662": {
+    "code": "sz000662",
+    "name": "天夏退",
+    "out_date": "2021-04-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183711+08:00"
+  },
+  "sz000666": {
+    "code": "sz000666",
+    "name": "经纬纺机",
+    "out_date": "2023-10-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183716+08:00"
+  },
+  "sz000667": {
+    "code": "sz000667",
+    "name": "ST美置",
+    "out_date": "2023-07-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183720+08:00"
+  },
+  "sz000671": {
+    "code": "sz000671",
+    "name": "ST阳光城",
+    "out_date": "2023-08-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183726+08:00"
+  },
+  "sz000673": {
+    "code": "sz000673",
+    "name": "当代退",
+    "out_date": "2022-07-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183730+08:00"
+  },
+  "sz000675": {
+    "code": "sz000675",
+    "name": "ST银山",
+    "out_date": "2002-08-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183734+08:00"
+  },
+  "sz000687": {
+    "code": "sz000687",
+    "name": "华讯退",
+    "out_date": "2022-06-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183746+08:00"
+  },
+  "sz000689": {
+    "code": "sz000689",
+    "name": "ST宏业",
+    "out_date": "2002-09-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183751+08:00"
+  },
+  "sz000693": {
+    "code": "sz000693",
+    "name": "华泽退",
+    "out_date": "2019-07-09",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183757+08:00"
+  },
+  "sz000699": {
+    "code": "sz000699",
+    "name": "S*ST佳纸",
+    "out_date": "2007-04-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183763+08:00"
+  },
+  "sz000730": {
+    "code": "sz000730",
+    "name": "*ST环保",
+    "out_date": "2004-09-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183787+08:00"
+  },
+  "sz000732": {
+    "code": "sz000732",
+    "name": "ST泰禾",
+    "out_date": "2023-08-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183791+08:00"
+  },
+  "sz000748": {
+    "code": "sz000748",
+    "name": "长城信息",
+    "out_date": "2017-01-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183800+08:00"
+  },
+  "sz000760": {
+    "code": "sz000760",
+    "name": "斯太退",
+    "out_date": "2021-07-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183810+08:00"
+  },
+  "sz000763": {
+    "code": "sz000763",
+    "name": "锦州石化",
+    "out_date": "2006-01-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183816+08:00"
+  },
+  "sz000765": {
+    "code": "sz000765",
+    "name": "*ST华信",
+    "out_date": "2005-07-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183820+08:00"
+  },
+  "sz000769": {
+    "code": "sz000769",
+    "name": "*ST大菲",
+    "out_date": "2005-09-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183826+08:00"
+  },
+  "sz000780": {
+    "code": "sz000780",
+    "name": "ST平能",
+    "out_date": "2022-01-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183834+08:00"
+  },
+  "sz000787": {
+    "code": "sz000787",
+    "name": "*ST创智",
+    "out_date": "2013-02-08",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183841+08:00"
+  },
+  "sz000805": {
+    "code": "sz000805",
+    "name": "*ST炎黄",
+    "out_date": "2013-03-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183858+08:00"
+  },
+  "sz000806": {
+    "code": "sz000806",
+    "name": "银河退",
+    "out_date": "2023-07-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183862+08:00"
+  },
+  "sz000817": {
+    "code": "sz000817",
+    "name": "辽河油田",
+    "out_date": "2006-01-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183872+08:00"
+  },
+  "sz000827": {
+    "code": "sz000827",
+    "name": "*ST长兴",
+    "out_date": "2005-09-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183882+08:00"
+  },
+  "sz000832": {
+    "code": "sz000832",
+    "name": "*ST龙涤",
+    "out_date": "2006-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183889+08:00"
+  },
+  "sz000835": {
+    "code": "sz000835",
+    "name": "长动退",
+    "out_date": "2022-05-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183894+08:00"
+  },
+  "sz000836": {
+    "code": "sz000836",
+    "name": "ST富通",
+    "out_date": "2024-08-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183897+08:00"
+  },
+  "sz000851": {
+    "code": "sz000851",
+    "name": "*ST高鸿",
+    "out_date": "2025-11-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183906+08:00"
+  },
+  "sz000861": {
+    "code": "sz000861",
+    "name": "海印股份",
+    "out_date": "2024-09-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183913+08:00"
+  },
+  "sz000866": {
+    "code": "sz000866",
+    "name": "扬子石化",
+    "out_date": "2006-04-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183918+08:00"
+  },
+  "sz000916": {
+    "code": "sz000916",
+    "name": "华北高速",
+    "out_date": "2017-12-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183949+08:00"
+  },
+  "sz000918": {
+    "code": "sz000918",
+    "name": "*ST嘉凯",
+    "out_date": "2023-07-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183953+08:00"
+  },
+  "sz000939": {
+    "code": "sz000939",
+    "name": "凯迪退",
+    "out_date": "2020-12-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183970+08:00"
+  },
+  "sz000956": {
+    "code": "sz000956",
+    "name": "中原油气",
+    "out_date": "2006-04-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183980+08:00"
+  },
+  "sz000961": {
+    "code": "sz000961",
+    "name": "ST中南",
+    "out_date": "2024-07-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183987+08:00"
+  },
+  "sz000971": {
+    "code": "sz000971",
+    "name": "*ST高升",
+    "out_date": "2024-07-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.183997+08:00"
+  },
+  "sz000976": {
+    "code": "sz000976",
+    "name": "*ST华铁",
+    "out_date": "2024-08-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184003+08:00"
+  },
+  "sz000979": {
+    "code": "sz000979",
+    "name": "中弘退",
+    "out_date": "2018-12-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184010+08:00"
+  },
+  "sz000982": {
+    "code": "sz000982",
+    "name": "中银绒业",
+    "out_date": "2024-08-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184015+08:00"
+  },
+  "sz000996": {
+    "code": "sz000996",
+    "name": "中期退",
+    "out_date": "2024-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184025+08:00"
+  },
+  "sz002002": {
+    "code": "sz002002",
+    "name": "ST鸿达",
+    "out_date": "2024-03-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184123+08:00"
+  },
+  "sz002013": {
+    "code": "sz002013",
+    "name": "中航机电",
+    "out_date": "2023-03-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184137+08:00"
+  },
+  "sz002018": {
+    "code": "sz002018",
+    "name": "华信退",
+    "out_date": "2019-11-01",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184145+08:00"
+  },
+  "sz002070": {
+    "code": "sz002070",
+    "name": "众和退",
+    "out_date": "2019-07-09",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184187+08:00"
+  },
+  "sz002071": {
+    "code": "sz002071",
+    "name": "长城退",
+    "out_date": "2021-05-07",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184191+08:00"
+  },
+  "sz002087": {
+    "code": "sz002087",
+    "name": "新纺退",
+    "out_date": "2024-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184207+08:00"
+  },
+  "sz002089": {
+    "code": "sz002089",
+    "name": "新海退",
+    "out_date": "2024-04-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184212+08:00"
+  },
+  "sz002113": {
+    "code": "sz002113",
+    "name": "*ST天润",
+    "out_date": "2023-08-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184233+08:00"
+  },
+  "sz002118": {
+    "code": "sz002118",
+    "name": "*ST紫鑫",
+    "out_date": "2023-08-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184239+08:00"
+  },
+  "sz002143": {
+    "code": "sz002143",
+    "name": "印纪退",
+    "out_date": "2019-11-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184261+08:00"
+  },
+  "sz002147": {
+    "code": "sz002147",
+    "name": "新光退",
+    "out_date": "2022-06-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184267+08:00"
+  },
+  "sz002220": {
+    "code": "sz002220",
+    "name": "天宝退",
+    "out_date": "2020-08-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184325+08:00"
+  },
+  "sz002231": {
+    "code": "sz002231",
+    "name": "*ST奥维",
+    "out_date": "2026-03-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184337+08:00"
+  },
+  "sz002260": {
+    "code": "sz002260",
+    "name": "德奥退",
+    "out_date": "2022-06-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184360+08:00"
+  },
+  "sz002280": {
+    "code": "sz002280",
+    "name": "ST联络",
+    "out_date": "2024-08-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184379+08:00"
+  },
+  "sz002288": {
+    "code": "sz002288",
+    "name": "*ST超华",
+    "out_date": "2024-08-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184388+08:00"
+  },
+  "sz002308": {
+    "code": "sz002308",
+    "name": "*ST威创",
+    "out_date": "2024-09-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184406+08:00"
+  },
+  "sz002325": {
+    "code": "sz002325",
+    "name": "*ST洪涛",
+    "out_date": "2024-08-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184424+08:00"
+  },
+  "sz002336": {
+    "code": "sz002336",
+    "name": "人乐退",
+    "out_date": "2025-07-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184435+08:00"
+  },
+  "sz002341": {
+    "code": "sz002341",
+    "name": "ST新纶",
+    "out_date": "2024-08-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184449+08:00"
+  },
+  "sz002359": {
+    "code": "sz002359",
+    "name": "北讯退",
+    "out_date": "2021-07-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184465+08:00"
+  },
+  "sz002411": {
+    "code": "sz002411",
+    "name": "必康退",
+    "out_date": "2023-07-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184507+08:00"
+  },
+  "sz002417": {
+    "code": "sz002417",
+    "name": "深南退",
+    "out_date": "2023-07-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184515+08:00"
+  },
+  "sz002433": {
+    "code": "sz002433",
+    "name": "太安退",
+    "out_date": "2024-07-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184531+08:00"
+  },
+  "sz002435": {
+    "code": "sz002435",
+    "name": "ST长康",
+    "out_date": "2024-08-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184536+08:00"
+  },
+  "sz002447": {
+    "code": "sz002447",
+    "name": "晨鑫退",
+    "out_date": "2022-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184548+08:00"
+  },
+  "sz002450": {
+    "code": "sz002450",
+    "name": "康得退",
+    "out_date": "2021-05-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184554+08:00"
+  },
+  "sz002464": {
+    "code": "sz002464",
+    "name": "众应退",
+    "out_date": "2022-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184567+08:00"
+  },
+  "sz002473": {
+    "code": "sz002473",
+    "name": "圣莱退",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184577+08:00"
+  },
+  "sz002477": {
+    "code": "sz002477",
+    "name": "雏鹰退",
+    "out_date": "2019-10-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184583+08:00"
+  },
+  "sz002499": {
+    "code": "sz002499",
+    "name": "科林退",
+    "out_date": "2023-04-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184602+08:00"
+  },
+  "sz002502": {
+    "code": "sz002502",
+    "name": "ST鼎龙",
+    "out_date": "2024-09-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184608+08:00"
+  },
+  "sz002503": {
+    "code": "sz002503",
+    "name": "*ST搜特",
+    "out_date": "2023-08-11",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184611+08:00"
+  },
+  "sz002504": {
+    "code": "sz002504",
+    "name": "*ST弘高",
+    "out_date": "2023-08-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184615+08:00"
+  },
+  "sz002505": {
+    "code": "sz002505",
+    "name": "鹏都农牧",
+    "out_date": "2024-08-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184619+08:00"
+  },
+  "sz002509": {
+    "code": "sz002509",
+    "name": "天茂退",
+    "out_date": "2020-07-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184625+08:00"
+  },
+  "sz002604": {
+    "code": "sz002604",
+    "name": "龙力退",
+    "out_date": "2020-07-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184698+08:00"
+  },
+  "sz002610": {
+    "code": "sz002610",
+    "name": "ST爱康",
+    "out_date": "2024-08-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184706+08:00"
+  },
+  "sz002618": {
+    "code": "sz002618",
+    "name": "丹邦退",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184715+08:00"
+  },
+  "sz002619": {
+    "code": "sz002619",
+    "name": "*ST艾格",
+    "out_date": "2022-04-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184719+08:00"
+  },
+  "sz002621": {
+    "code": "sz002621",
+    "name": "*ST美吉",
+    "out_date": "2024-08-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184724+08:00"
+  },
+  "sz002665": {
+    "code": "sz002665",
+    "name": "ST航高",
+    "out_date": "2024-08-26",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184759+08:00"
+  },
+  "sz002680": {
+    "code": "sz002680",
+    "name": "长生退",
+    "out_date": "2019-11-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184773+08:00"
+  },
+  "sz002684": {
+    "code": "sz002684",
+    "name": "猛狮退",
+    "out_date": "2022-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184779+08:00"
+  },
+  "sz002699": {
+    "code": "sz002699",
+    "name": "*ST美盛",
+    "out_date": "2024-06-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184793+08:00"
+  },
+  "sz002711": {
+    "code": "sz002711",
+    "name": "欧浦退",
+    "out_date": "2021-07-15",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184805+08:00"
+  },
+  "sz002740": {
+    "code": "sz002740",
+    "name": "*ST爱迪",
+    "out_date": "2024-03-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184831+08:00"
+  },
+  "sz002750": {
+    "code": "sz002750",
+    "name": "龙津退",
+    "out_date": "2025-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184841+08:00"
+  },
+  "sz002751": {
+    "code": "sz002751",
+    "name": "易尚退",
+    "out_date": "2023-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184845+08:00"
+  },
+  "sz002770": {
+    "code": "sz002770",
+    "name": "科迪退",
+    "out_date": "2022-06-23",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184861+08:00"
+  },
+  "sz002776": {
+    "code": "sz002776",
+    "name": "*ST柏龙",
+    "out_date": "2024-01-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184869+08:00"
+  },
+  "sz002781": {
+    "code": "sz002781",
+    "name": "奇信退",
+    "out_date": "2023-07-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184876+08:00"
+  },
+  "sz002808": {
+    "code": "sz002808",
+    "name": "恒久退",
+    "out_date": "2026-07-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184899+08:00"
+  },
+  "sz002898": {
+    "code": "sz002898",
+    "name": "赛隆退",
+    "out_date": "2026-07-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.184964+08:00"
+  },
+  "sz300023": {
+    "code": "sz300023",
+    "name": "宝德退",
+    "out_date": "2022-06-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186537+08:00"
+  },
+  "sz300028": {
+    "code": "sz300028",
+    "name": "金亚退",
+    "out_date": "2020-08-03",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186544+08:00"
+  },
+  "sz300029": {
+    "code": "sz300029",
+    "name": "天龙退",
+    "out_date": "2026-07-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186549+08:00"
+  },
+  "sz300038": {
+    "code": "sz300038",
+    "name": "数知退",
+    "out_date": "2022-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186560+08:00"
+  },
+  "sz300064": {
+    "code": "sz300064",
+    "name": "金刚退",
+    "out_date": "2022-06-27",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186582+08:00"
+  },
+  "sz300089": {
+    "code": "sz300089",
+    "name": "文化退",
+    "out_date": "2023-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186604+08:00"
+  },
+  "sz300090": {
+    "code": "sz300090",
+    "name": "盛运退",
+    "out_date": "2020-08-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186608+08:00"
+  },
+  "sz300104": {
+    "code": "sz300104",
+    "name": "乐视退",
+    "out_date": "2020-07-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186621+08:00"
+  },
+  "sz300108": {
+    "code": "sz300108",
+    "name": "*ST吉药",
+    "out_date": "2025-05-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186628+08:00"
+  },
+  "sz300114": {
+    "code": "sz300114",
+    "name": "中航电测",
+    "out_date": "2025-02-17",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186636+08:00"
+  },
+  "sz300116": {
+    "code": "sz300116",
+    "name": "*ST保力",
+    "out_date": "2024-07-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186640+08:00"
+  },
+  "sz300117": {
+    "code": "sz300117",
+    "name": "*ST嘉寓",
+    "out_date": "2025-04-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186644+08:00"
+  },
+  "sz300156": {
+    "code": "sz300156",
+    "name": "神雾退",
+    "out_date": "2020-08-25",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186676+08:00"
+  },
+  "sz300178": {
+    "code": "sz300178",
+    "name": "腾邦退",
+    "out_date": "2022-06-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186695+08:00"
+  },
+  "sz300186": {
+    "code": "sz300186",
+    "name": "大华农",
+    "out_date": "2015-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186704+08:00"
+  },
+  "sz300202": {
+    "code": "sz300202",
+    "name": "聚龙退",
+    "out_date": "2022-07-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186721+08:00"
+  },
+  "sz300208": {
+    "code": "sz300208",
+    "name": "中程退",
+    "out_date": "2025-07-21",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186729+08:00"
+  },
+  "sz300216": {
+    "code": "sz300216",
+    "name": "千山退",
+    "out_date": "2020-09-16",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186738+08:00"
+  },
+  "sz300262": {
+    "code": "sz300262",
+    "name": "*ST巴安",
+    "out_date": "2024-08-19",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186775+08:00"
+  },
+  "sz300273": {
+    "code": "sz300273",
+    "name": "和佳退",
+    "out_date": "2023-07-06",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186786+08:00"
+  },
+  "sz300280": {
+    "code": "sz300280",
+    "name": "紫天退",
+    "out_date": "2025-10-14",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186794+08:00"
+  },
+  "sz300282": {
+    "code": "sz300282",
+    "name": "三盛退",
+    "out_date": "2024-07-18",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186800+08:00"
+  },
+  "sz300297": {
+    "code": "sz300297",
+    "name": "蓝盾退",
+    "out_date": "2023-07-31",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186814+08:00"
+  },
+  "sz300309": {
+    "code": "sz300309",
+    "name": "吉艾退",
+    "out_date": "2023-05-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186827+08:00"
+  },
+  "sz300312": {
+    "code": "sz300312",
+    "name": "邦讯退",
+    "out_date": "2022-07-04",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186833+08:00"
+  },
+  "sz300325": {
+    "code": "sz300325",
+    "name": "德威退",
+    "out_date": "2022-06-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186845+08:00"
+  },
+  "sz300330": {
+    "code": "sz300330",
+    "name": "计通退",
+    "out_date": "2023-05-24",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186853+08:00"
+  },
+  "sz300336": {
+    "code": "sz300336",
+    "name": "新文退",
+    "out_date": "2023-07-05",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186860+08:00"
+  },
+  "sz300344": {
+    "code": "sz300344",
+    "name": "立方退",
+    "out_date": "2026-04-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186869+08:00"
+  },
+  "sz300356": {
+    "code": "sz300356",
+    "name": "光一退",
+    "out_date": "2023-07-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186882+08:00"
+  },
+  "sz300362": {
+    "code": "sz300362",
+    "name": "天翔退",
+    "out_date": "2021-08-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186888+08:00"
+  },
+  "sz300367": {
+    "code": "sz300367",
+    "name": "网力退",
+    "out_date": "2022-06-30",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186895+08:00"
+  },
+  "sz300372": {
+    "code": "sz300372",
+    "name": "欣泰退",
+    "out_date": "2017-08-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186902+08:00"
+  },
+  "sz300379": {
+    "code": "sz300379",
+    "name": "东通退",
+    "out_date": "2026-01-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186911+08:00"
+  },
+  "sz300391": {
+    "code": "sz300391",
+    "name": "长药退",
+    "out_date": "2026-04-13",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186923+08:00"
+  },
+  "sz300392": {
+    "code": "sz300392",
+    "name": "腾信退",
+    "out_date": "2023-07-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186927+08:00"
+  },
+  "sz300431": {
+    "code": "sz300431",
+    "name": "暴风退",
+    "out_date": "2020-11-10",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.186959+08:00"
+  },
+  "sz300495": {
+    "code": "sz300495",
+    "name": "*ST美尚",
+    "out_date": "2024-09-20",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187008+08:00"
+  },
+  "sz300526": {
+    "code": "sz300526",
+    "name": "中潜退",
+    "out_date": "2023-07-12",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187034+08:00"
+  },
+  "sz300630": {
+    "code": "sz300630",
+    "name": "普利退",
+    "out_date": "2025-05-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187115+08:00"
+  },
+  "sz300742": {
+    "code": "sz300742",
+    "name": "越博退",
+    "out_date": "2024-07-22",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187196+08:00"
+  },
+  "sz300799": {
+    "code": "sz300799",
+    "name": "左江退",
+    "out_date": "2024-07-29",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187241+08:00"
+  },
+  "sz301139": {
+    "code": "sz301139",
+    "name": "元道退",
+    "out_date": "2026-10-28",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:21:01.187478+08:00"
+  },
+  "sh600349": {
+    "code": "sh600349",
+    "name": "富通昭和",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412166+08:00"
+  },
+  "sh603302": {
+    "code": "sh603302",
+    "name": "鑫广绿环",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412181+08:00"
+  },
+  "sh603361": {
+    "code": "sh603361",
+    "name": "浙江国祥",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412188+08:00"
+  },
+  "sz000991": {
+    "code": "sz000991",
+    "name": "通海高科",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412193+08:00"
+  },
+  "sz001235": {
+    "code": "sz001235",
+    "name": "无效里得",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412199+08:00"
+  },
+  "sz002257": {
+    "code": "sz002257",
+    "name": "立立电子",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412203+08:00"
+  },
+  "sz002525": {
+    "code": "sz002525",
+    "name": "胜景山河",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412208+08:00"
+  },
+  "sz002720": {
+    "code": "sz002720",
+    "name": "宏良股份",
+    "out_date": "2026-11-02",
+    "source": "baostock",
+    "status": "0",
+    "type": "1",
+    "checked_at": "2026-11-02T10:34:09.412212+08:00"
+  }
+}

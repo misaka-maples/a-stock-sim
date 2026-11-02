@@ -12,7 +12,8 @@ sim_account.json
 sim_account.json*
 sim_test.json
 history_refresh_retries.json
-data/
+data/*
+!data/delisted_stocks.json
 research_smoke_*.json
 *.cache
 index.html
