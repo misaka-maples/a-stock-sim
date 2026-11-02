@@ -1061,7 +1061,7 @@ def test_failed_large_catchup_backs_off_without_new_data(account):
     assert not s.data_status['rotation_ready']
 
 
-def test_intraday_missing_history_uses_small_batches_and_no_repeat_within_interval(account):
+def test_intraday_missing_history_uses_bounded_recovery_batches_and_no_repeat_within_interval(account):
     class RolloverFeed(StubFeed):
         def peek_universe(self, symbols, **kwargs):
             return {sym: dict(bars=completed_bars("2026-09-18"),
@@ -1070,12 +1070,12 @@ def test_intraday_missing_history_uses_small_batches_and_no_repeat_within_interv
     feed = RolloverFeed()
     s = MomentumRotationProStrategy(account, symbols, feed=feed, industry_map={})
     s.prepare(now=NOW); s._history_thread.join(5)
-    assert len(feed.calls) == 1 and len(feed.calls[0]["symbols"]) == 24
+    assert len(feed.calls) == 1 and len(feed.calls[0]["symbols"]) == 96
     s._next_failed_retry = 0
     s.prepare(now=NOW+dt.timedelta(seconds=30))
     assert len(feed.calls) == 1
     assert s.data_status["update_mode"] == "holding_and_missing_only"
-    assert s.data_status["deferred_history"] >= 76
+    assert s.data_status["deferred_history"] >= 4
 
 
 def test_cold_failure_survives_restart_but_new_holding_bypasses_cooldown(account, clock):
@@ -1117,13 +1117,21 @@ def test_empty_codes_backoff_weekly_after_three_failures(account):
     assert s._retry_records[SYMBOL]["retry_at"] == (NOW+dt.timedelta(days=9)).timestamp()
 
 
-def test_repeated_stale_nonholding_waits_until_next_session_after_close(account):
+def test_repeated_stale_nonholding_retries_with_bounded_backoff(account):
     s = prepared(account, feed=StubFeed({SYMBOL: completed_bars("2026-09-18")}))
     s._record_update_results([SYMBOL], NOW, "2026-09-21")
     assert s._retry_records[SYMBOL]["retry_at"] == NOW.timestamp()+900
     s._record_update_results([SYMBOL], NOW+dt.timedelta(minutes=15), "2026-09-21")
     due = dt.datetime.fromtimestamp(s._retry_records[SYMBOL]["retry_at"], BEIJING)
-    assert due.date() == dt.date(2026, 9, 23) and due.time() == dt.time(16, 30)
+    assert due == NOW+dt.timedelta(minutes=45)
+    for n in range(3, 8):
+        attempt = NOW+dt.timedelta(hours=n)
+        s._record_update_results([SYMBOL], attempt, "2026-09-21")
+        assert s._retry_records[SYMBOL]["retry_at"] == attempt.timestamp()+3600
+    restarted = MomentumRotationProStrategy(account, [SYMBOL], feed=StubFeed(), industry_map={})
+    restarted.history_cache = s.history_cache
+    assert not restarted._retry_ready(SYMBOL, attempt.timestamp()+3599)
+    assert restarted._retry_ready(SYMBOL, attempt.timestamp()+3600)
 
 
 def test_fresh_all_pool_has_no_additional_intraday_downloads(account):
@@ -1133,3 +1141,15 @@ def test_fresh_all_pool_has_no_additional_intraday_downloads(account):
         s._next_failed_retry = 0
         s.prepare(now=NOW+dt.timedelta(minutes=minutes))
     assert len(feed.calls) == 1
+
+
+def test_legacy_warm_deferral_migrates_but_cold_codes_remain_deferred(account):
+    s = prepared(account)
+    future = NOW.timestamp()+86400
+    s._retry_records = {SYMBOL: dict(retry_at=future, failures=2),
+                        "sh600001": dict(retry_at=future, failures=3)}
+    assert s._retry_ready(SYMBOL, NOW.timestamp())
+    assert not s._retry_ready("sh600001", NOW.timestamp())
+    s._history_errors[SYMBOL] = dict(reason="latest_outdated")
+    s._record_update_results([SYMBOL], NOW, "2026-09-21")
+    assert not s._retry_ready(SYMBOL, NOW.timestamp())

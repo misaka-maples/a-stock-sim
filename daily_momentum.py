@@ -40,6 +40,7 @@ class DailyMomentumStrategy:
     CATCHUP_BATCH = 96
     CATCHUP_SECONDS = 5
     HOLDING_RETRY_SECONDS = 60
+    RECOVERY_RETRY_SECONDS = 300
 
     def __init__(self, account, watchlist, name="Momentum_Rotation_Pro", feed=None,
                  industry_map=None, **kwargs):
@@ -255,16 +256,28 @@ class DailyMomentumStrategy:
         local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
         return is_trading_day(local.date()) and dt.time(8, 30) <= local.time() < dt.time(16, 30)
 
+    def _recovering_coverage(self):
+        return bool(self.history_cache) and self._ranking_coverage() < .95
+
+    def _retry_ready(self, sym, now_epoch):
+        record = self._retry_records.get(sym, {})
+        # Old warm-cache records deferred all failures until the next close.
+        # Admit them once through the bounded queue; provider cooldowns still apply.
+        if self.history_cache.get(sym) and record.get("policy_revision") != 2:
+            return True
+        return now_epoch >= record.get("retry_at", 0)
+
     def _select_update_batch(self, symbols, now, catchup=True):
         now_epoch = now.timestamp()
         priority = self._prioritize_updates(symbols)
         held = [sym for sym in priority if sym in self.account.positions]
         others = [sym for sym in priority if sym not in self.account.positions
-                  and now_epoch >= self._retry_records.get(sym, {}).get("retry_at", 0)]
+                  and self._retry_ready(sym, now_epoch)]
         conservative = self._conservative_update_window(now)
         if conservative and time.monotonic() < self._next_nonholding_refresh:
             others = []
-        limit = self.FAILED_RETRY_BATCH if conservative or not catchup else self.CATCHUP_BATCH
+        limit = (self.CATCHUP_BATCH if catchup and (not conservative or self._recovering_coverage())
+                 else self.FAILED_RETRY_BATCH)
         local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
         day = local.date()
         if not is_trading_day(day) or local.time() >= dt.time(16, 30):
@@ -293,18 +306,16 @@ class DailyMomentumStrategy:
                 # Repeatedly empty legacy codes get a weekly retry, never removal.
                 total_failures = previous.get("total_failures", 0)+1
                 retry_at = now.timestamp()+86400*(7 if total_failures >= 3 else 1)
-            elif failures >= 2:
-                day = now.astimezone(BEIJING).date()+dt.timedelta(days=1)
-                while not is_trading_day(day):
-                    day += dt.timedelta(days=1)
-                retry_at = dt.datetime.combine(day, dt.time(16, 30), BEIJING).timestamp()
             else:
-                retry_at = now.timestamp()+self.FAILED_RETRY_SECONDS
+                # Transient failures of existing history must recover during the
+                # session too. Exponential delay is bounded at one hour.
+                retry_at = now.timestamp()+min(3600, self.FAILED_RETRY_SECONDS * 2**min(failures-1, 2))
             self._retry_records[sym] = dict(as_of=as_of, failures=failures, retry_at=retry_at,
                                             total_failures=previous.get("total_failures", 0)+1,
-                                            reason=issue["reason"])
+                                            reason=issue["reason"], policy_revision=2)
         if nonheld and self._conservative_update_window(now):
-            self._next_nonholding_refresh = time.monotonic()+self.FAILED_RETRY_SECONDS
+            self._next_nonholding_refresh = time.monotonic()+(
+                self.RECOVERY_RETRY_SECONDS if self._recovering_coverage() else self.FAILED_RETRY_SECONDS)
         if self._retry_path:
             temporary = None
             try:
@@ -513,8 +524,11 @@ class DailyMomentumStrategy:
                             if requested and not any(sym in self._entry_eligible for sym in requested):
                                 delay = max(delay, self.HOLDING_RETRY_SECONDS)
                             if self._conservative_update_window(now):
-                                delay = max(delay, self.HOLDING_RETRY_SECONDS if any(
-                                    sym in self.account.positions for sym in self._history_errors) else self.FAILED_RETRY_SECONDS)
+                                interval = (self.RECOVERY_RETRY_SECONDS if self._recovering_coverage()
+                                            else self.FAILED_RETRY_SECONDS)
+                                if any(sym in self.account.positions for sym in self._history_errors):
+                                    interval = self.HOLDING_RETRY_SECONDS
+                                delay = max(delay, interval)
                             self._next_failed_retry = now_mono+delay
                         self.data_status.update(next_failed_retry_seconds=max(0,round(self._next_failed_retry-now_mono)),
                                                 refresh_batch_size=len(requested),
