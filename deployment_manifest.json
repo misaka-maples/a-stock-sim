@@ -1,15 +1,15 @@
 {
-  "baseline_commit": "cb351603ab2145898e5e491f0f25158b82b02106",
-  "backup": "/home/openarmx/quant_backups/before_adaptive_20261102",
+  "baseline_commit": "9f6f69118f11ccc7b39eb8d8531e213839c85dc0",
+  "backup": "/home/openarmx/quant_backups/before_serial_20261102",
   "validation": {
-    "local_targeted_passed": 103,
-    "local_subtests_passed": 2,
-    "remote_targeted_passed": 103,
-    "scope": "adaptive batch retry, strategy regressions and shared request budgets; no live provider probes"
+    "local_targeted_passed": 70,
+    "local_subtests_passed": 33,
+    "remote_targeted_passed": 70,
+    "scope": "no healthy BaoStock delay; failure backoff; quota-preserving migration; serialized provider protocol"
   },
   "files": {
     ".gitignore": "f6371fe2338326eb316ad6ec8f5cab67aaaf0314ba860e9563b2515fd94f0a64",
-    "README.md": "5c1e7f7946cf800253c92e773c922b36c7d5094363e40c876af00ba6e92a2c25",
+    "README.md": "3649cd65d27286dc17a074e57de56745a6bcd5be4ee7151441b7f86ea865cd0c",
     "api_auth.py": "f0ac3a30828be6aaa1fc8f8f470d0014f8338e87d9bfb9bf6eb0c3b3a7380bb1",
     "backtest.py": "75c6aec7866623b3ef8672acef5fb0d077648e78878f60fcac6be3881b50e249",
     "daily_momentum.py": "ebf6ecc198ee5e32667e893557d033a56d0fa0e1d0c9d0396383d423560a79c1",
@@ -50,8 +50,8 @@
     "test_web_stock_search.py": "59d9a79eac315352a39f4ba9c4c7c1f16387f17ce850103849f1667e3ff9a19c",
     "trade_calendar.py": "1a7a91379c8daca2bcfb13ce75cbf530d3c594cf9c080a0e6b473c8313779744",
     "web/index.html": "80cfda5b654be19d5df86252e157d65c5e18582ec5ef99f10f27417ca89490e9",
-    "market_request_budget.py": "097ab2646ca1e514442d5fa8f65fd061e7cb2eacd4909faa7f3760f54b9b1b38",
-    "test_market_request_budget.py": "ad4511ddfe5571247bce280dd4c97c311215c7afa474a17c194fae832c96512b",
+    "market_request_budget.py": "cf852eccdd41742af2c8053617d5076a4076bf72fbeb617742c282083418c990",
+    "test_market_request_budget.py": "1e8d2089d844ee9ca518844dd6fe1404fb695635be820f81ec2d79ed8754a302",
     "test_web_risk.py": "76bea2d66eac156462b9433890cd89c4d4a72ed77565cdcc13a33aee76996576",
     "test_web_allocation.py": "b23cf2ac546af629f9eb0aa85d7cf610f5925b202e3d1a7e7c830eceade7eb75"
   }

@@ -66,7 +66,11 @@ class MarketRequestBudget:
         # Configuration can lower the safety budget, never exceed its ceiling.
         if cap < 1 or cap > hard_cap:
             raise ValueError('daily limit exceeds safe ceiling')
-        interval = max(1., self._positive(values.get('min_interval', 1.)))
+        floor = 0. if provider == 'baostock' else 1.
+        interval = float(values.get('min_interval', floor))
+        if not math.isfinite(interval) or interval < 0:
+            raise ValueError('expected nonnegative finite interval')
+        interval = max(floor, interval)
         return cap, interval
 
     def _day(self, now):
@@ -136,7 +140,7 @@ class MarketRequestBudget:
                 for field in ('next_allowed_at', 'blocked_until', 'interval'):
                     if not math.isfinite(float(state[field])) or float(state[field]) < 0:
                         raise ValueError('invalid state')
-                if state['interval'] < 1.:
+                if provider != 'baostock' and state['interval'] < 1.:
                     raise ValueError('unsafe interval')
                 # A backward wall-clock jump cannot reset a day's reservations.
                 if state['day'] > self._day(now):
@@ -152,6 +156,11 @@ class MarketRequestBudget:
                          blocked_until=self._tomorrow(now) if unknown else 0.)
             if persist:
                 self._save(provider, state)
+        # Migrate healthy BaoStock ledgers without resetting usage or blocks.
+        # Network serialization is enforced by the lock, not an arbitrary sleep.
+        if provider == 'baostock' and state['failures'] == 0 and interval == 0:
+            state['interval'] = 0.
+            state['next_allowed_at'] = min(state['next_allowed_at'], now)
         return state
 
     @contextmanager
@@ -189,14 +198,15 @@ class MarketRequestBudget:
                 raise
             except BaseException:
                 state['failures'] = min(16, state['failures']+1)
-                state['interval'] = min(60., max(interval, state['interval']*2))
+                state['interval'] = min(60., max(1., interval, state['interval']*2))
                 state['next_allowed_at'] = max(state['next_allowed_at'],
                                                self.clock()+state['interval'])
                 self._save(provider, state)
                 raise
             else:
                 state['failures'] = max(0, state['failures']-1)
-                state['interval'] = max(interval, state['interval']*.8)
+                state['interval'] = (interval if provider == 'baostock' and state['failures'] == 0
+                                     else max(interval, state['interval']*.8))
                 state['next_allowed_at'] = max(state['next_allowed_at'],
                                                self.clock()+state['interval'])
                 self._save(provider, state)
