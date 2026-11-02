@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-from trade_calendar import BEIJING, get_previous_trading_day, is_trading_day, to_date
+from trade_calendar import BEIJING, get_next_trading_day, get_previous_trading_day, is_trading_day, to_date
 
 import requests
 
@@ -128,6 +128,37 @@ def last_completed_trading_day(now=None) -> str:
     if is_trading_day(now.date()) and now.time() >= datetime.time(15, 5):
         return now.date().isoformat()
     return previous_trading_day(now)
+
+
+def cache_freshness(fetched_at, latest_required, now=None, ttl=datetime.timedelta(hours=24)):
+    """Extend the current completed session through the next daily update window.
+
+    Historical backtests retain the normal TTL. A current daily bar must have
+    been fetched after its session settled; future timestamps are never trusted.
+    The caller separately validates actual bar presence and cache provenance.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=BEIJING)
+    try:
+        fetched = datetime.datetime.fromisoformat(fetched_at)
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=datetime.timezone.utc)
+        age = now - fetched
+        if age < datetime.timedelta(0):
+            return False, None
+        fresh = age <= ttl
+        valid_until = None
+        if latest_required == last_completed_trading_day(now):
+            settled = datetime.datetime.combine(datetime.date.fromisoformat(latest_required),
+                                                datetime.time(15, 5), BEIJING)
+            if fetched >= settled:
+                valid_until = datetime.datetime.combine(get_next_trading_day(latest_required),
+                                                        datetime.time(15, 5), BEIJING)
+                fresh = fresh or now < valid_until
+        return fresh, valid_until.isoformat() if valid_until else None
+    except (ValueError, TypeError, OverflowError):
+        return False, None
 
 
 class HistoricalDataFeed:
@@ -251,18 +282,11 @@ class HistoricalDataFeed:
         if bars and not raw_ok:
             warnings.append("original_execution_prices_missing; adjusted_prices_must_not_be_used_for_fills")
         fetched_at = fetched_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
-        try:
-            fetched = datetime.datetime.fromisoformat(fetched_at)
-            if fetched.tzinfo is None:
-                fetched = fetched.replace(tzinfo=datetime.timezone.utc)
-            age = datetime.datetime.now(datetime.timezone.utc) - fetched
-            fresh = datetime.timedelta(0) <= age <= self.CACHE_TTL
-        except (ValueError, TypeError):
-            fresh = False
-        if not fresh:
-            warnings.append("cache_expired")
         sessions = self._session_dates(start, end)
         latest_required = sessions[-1] if sessions else None
+        fresh, valid_until = cache_freshness(fetched_at, latest_required, ttl=self.CACHE_TTL)
+        if not fresh:
+            warnings.append("cache_expired")
         latest_available = max(dates) if dates else None
         latest_ok = bool(latest_required and latest_required in dates)
         if not latest_ok:
@@ -273,7 +297,7 @@ class HistoricalDataFeed:
             "latest_required": latest_required, "latest_available": latest_available,
             "latest_status": "current" if latest_ok else "missing",
             "schema_version": self.CACHE_SCHEMA,
-            "fetched_at": fetched_at,
+            "fetched_at": fetched_at, "freshness_valid_until": valid_until,
             "requested_start": start, "requested_end": end,
             "adjustment": "qfq", "volume_unit": "lots_100_shares", "source": source,
             "coverage": {"start": bars[0]["date"] if bars else None,

@@ -711,3 +711,49 @@ def test_pipeline_write_failure_is_not_published_as_fresh(feed, monkeypatch):
     assert seen[0]['error'] == 'cache_write_failed'
     assert seen[0]['metadata']['fresh'] is False
     assert not feed._get_cache_path('sh600519').exists()
+
+
+@pytest.mark.parametrize('now', [dt.datetime(2026, 10, 31, 20),
+                                  dt.datetime(2026, 11, 2, 9, 30),
+                                  dt.datetime(2026, 11, 2, 15, 4, 59)])
+def test_completed_friday_remains_fresh_until_monday_update(now):
+    fresh, until = history.cache_freshness('2026-10-30T15:10:00+08:00', '2026-10-30', now)
+    assert fresh
+    assert until == '2026-11-02T15:05:00+08:00'
+
+
+def test_completed_session_freshness_uses_holiday_calendar():
+    fresh, until = history.cache_freshness('2026-09-30T15:10:00+08:00', '2026-09-30',
+                                          dt.datetime(2026, 10, 8, 9, 30))
+    assert fresh
+    assert until == '2026-10-08T15:05:00+08:00'
+
+
+@pytest.mark.parametrize('fetched,required,now', [
+    ('2026-10-30T15:10:00+08:00', '2026-10-30', dt.datetime(2026, 11, 2, 15, 5)),
+    ('2026-10-30T15:04:59+08:00', '2026-10-30', dt.datetime(2026, 11, 2, 9, 30)),
+    ('2026-10-29T16:00:00+08:00', '2026-10-29', dt.datetime(2026, 11, 2, 9, 30)),
+    ('2026-11-02T10:00:00+08:00', '2026-10-30', dt.datetime(2026, 11, 2, 9, 30)),
+])
+def test_session_extension_rejects_old_session_premature_or_future_fetch(fetched, required, now):
+    assert history.cache_freshness(fetched, required, now) == (False, None)
+
+
+def test_completed_session_metadata_and_cache_reuse_without_download(feed, monkeypatch):
+    class FixedDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 11, 2, 9, 30, tzinfo=history.BEIJING)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    bars = [raw_bar('2026-10-30')]
+    metadata = feed._describe(bars, '2026-10-30', '2026-10-30', 'test_provider',
+                              '2026-10-30T15:10:00+08:00')
+    feed._get_cache_path('sh600519').write_text(json.dumps({
+        'schema_version': 2, 'symbol': 'sh600519', 'name': '测试股票',
+        'metadata': metadata, 'bars': bars,
+    }))
+    monkeypatch.setattr(history.datetime, 'datetime', FixedDatetime)
+    feed._download = Mock(side_effect=AssertionError('completed session must be reused'))
+    assert feed.fetch_stock_kline('sh600519', '2026-10-30', '2026-10-30')[2] == bars
+    assert feed.metadata['sh600519']['fresh']
+    assert feed.metadata['sh600519']['freshness_valid_until'] == '2026-11-02T15:05:00+08:00'

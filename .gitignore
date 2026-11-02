@@ -23,3 +23,5 @@ index.html
 .vscode/
 .idea/
 a_stock.py
+
+history_update_schedule.json

@@ -2455,7 +2455,7 @@
 
       const schedEl = document.getElementById('dmScheduleDesc');
       if (schedEl) {
-        const modeStr = quality.update_mode === 'holding_and_missing_only' ? '盘中低频防冲击 (优先持仓与缺失)' : '收盘全量追更模式';
+        const modeStr = quality.update_mode === 'after_close_wait' ? '等待交易日15:05更新' : quality.update_mode === 'one_off_catchup' ? `本次全池补齐（待处理 ${quality.one_off_remaining ?? '--'} 只）` : quality.update_mode === 'holding_and_missing_only' ? '盘中低频补缺' : '收盘全量追更模式';
         const winStr = quality.next_full_update_window ? quality.next_full_update_window.slice(11, 16) : '16:30';
         schedEl.innerText = `调度: ${modeStr} · 盘后追更窗口: ${winStr} · 行业覆盖: ${quality.industry_coverage || 0}只`;
       }
@@ -2465,7 +2465,7 @@
         const batch = quality.batch_progress;
         retryEl.innerText = quality.refreshing
           ? (batch ? `本批完成 ${batch.completed}/${batch.total} · 可用 ${batch.eligible} · 未达标 ${batch.unavailable}` : '正在准备历史数据')
-          : `下次自动补数: 约 ${quality.next_failed_retry_seconds ?? '--'} 秒`;
+          : quality.update_mode === 'after_close_wait' ? `下次更新：${quality.next_full_update_window?.slice(0,16).replace('T',' ') ?? '交易日15:05'}` : `下次自动补数: 约 ${quality.next_failed_retry_seconds ?? '--'} 秒`;
       }
 
       // 7. 实时行情状态

@@ -1197,3 +1197,33 @@ def test_recovery_batch_success_fast_failure_backoff_and_reset(account):
     s._history_errors[SYMBOL] = dict(reason="latest_outdated")
     s._record_update_results([SYMBOL], NOW, "2026-09-21")
     assert s._recovery_retry_seconds == 60
+
+
+def test_after_close_schedule_and_persistent_one_off_pass(account):
+    schedule = account.save_path.parent/'history_update_schedule.json'
+    schedule.write_text(json.dumps(dict(after_close_only=True, one_off_remaining=[SYMBOL])))
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=StubFeed(), industry_map={})
+    s._retry_records[SYMBOL] = dict(retry_at=NOW.timestamp()+86400, failures=3)
+    assert s._select_update_batch([SYMBOL], NOW) == [SYMBOL]
+    s._history_errors[SYMBOL] = dict(reason='no_cache')
+    s._record_update_results([SYMBOL], NOW, '2026-09-21')
+    restarted = MomentumRotationProStrategy(account, [SYMBOL], feed=StubFeed(), industry_map={})
+    assert not restarted._one_off_remaining
+    assert restarted._select_update_batch([SYMBOL], NOW) == []
+    assert restarted.data_status['update_mode'] == 'after_close_wait'
+    assert not restarted._scheduled_update_allowed(NOW.replace(hour=15, minute=4))
+    assert restarted._scheduled_update_allowed(NOW.replace(hour=15, minute=5))
+    assert not restarted._scheduled_update_allowed(dt.datetime(2026, 9, 26, 16, tzinfo=BEIJING))
+
+
+def test_after_close_bootstrap_uses_cache_without_network(account):
+    (account.save_path.parent/'history_update_schedule.json').write_text(json.dumps(dict(after_close_only=True)))
+    class CachedFeed(StubFeed):
+        def peek_universe(self, symbols, **kwargs):
+            return {s: dict(bars=completed_bars('2026-09-18'), metadata=dict(fresh=False, cache_hit=False)) for s in symbols}
+    feed = CachedFeed()
+    s = MomentumRotationProStrategy(account, [SYMBOL], feed=feed, industry_map={})
+    s.prepare(now=NOW); s._history_thread.join(5)
+    assert not feed.calls
+    assert not s.data_status['refreshing']
+    assert s.data_status['update_mode'] == 'after_close_wait'

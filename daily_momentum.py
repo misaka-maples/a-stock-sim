@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from dataclasses import asdict
 
-from history_data import HistoricalDataFeed, previous_trading_day, last_completed_trading_day, normalize_symbol_for_tencent
+from history_data import cache_freshness, HistoricalDataFeed, previous_trading_day, last_completed_trading_day, normalize_symbol_for_tencent
 from strategy_rules import (MomentumConfig, evaluate_momentum, holding_signal,
                             exit_reason, target_weight, allowed_by_sector, sector_of,
                             entry_guard_reason)
@@ -93,6 +93,13 @@ class DailyMomentumStrategy:
         except (OSError, ValueError, TypeError):
             self._retry_records = {}
         self._next_nonholding_refresh = 0
+        self._schedule_path = Path(account_path).parent / "history_update_schedule.json" if account_path else None
+        try:
+            schedule = json.loads(self._schedule_path.read_text()) if self._schedule_path else {}
+        except (OSError, ValueError):
+            schedule = {}
+        self._after_close_only = schedule.get("after_close_only") is True
+        self._one_off_remaining = set(schedule.get("one_off_remaining", [])) & set(self.watchlist)
         self._no_progress_batches = 0
         self._recovery_retry_seconds = self.CATCHUP_SECONDS
 
@@ -164,9 +171,10 @@ class DailyMomentumStrategy:
                 if fetched.tzinfo is None:
                     fetched = fetched.replace(tzinfo=dt.timezone.utc)
                 age = (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds()
-                if age < 0 or age >= ttl:
+                fresh, until = cache_freshness(meta["fetched_at"], as_of, ttl=dt.timedelta(seconds=ttl))
+                if not fresh:
                     return "stale", details, ttl
-                ttl -= age
+                ttl = max(0, ttl-age, (dt.datetime.fromisoformat(until)-dt.datetime.now(dt.timezone.utc)).total_seconds() if until else 0)
             except (ValueError, TypeError):
                 return "invalid_timestamp", details, ttl
         if count < 125:
@@ -218,7 +226,7 @@ class DailyMomentumStrategy:
         samples = list(errors.values())[:10]
         if not benchmark_valid and len(samples) < 10:
             samples.append(dict(symbol="_benchmark", reason="benchmark_unavailable", error="基准行情缺失、过期或未验证"))
-        scheduling = {key: self.data_status[key] for key in ("update_mode", "deferred_history", "next_full_update_window")
+        scheduling = {key: self.data_status[key] for key in ("update_mode", "deferred_history", "next_full_update_window", "one_off_remaining")
                       if key in self.data_status}
         self.data_status = dict(**scheduling, status="ready" if not unavailable and benchmark_valid else "partial" if eligible else "failed",
                                 as_of=as_of, requested=len(symbols), loaded=len(eligible), usable_history=len(eligible),
@@ -258,10 +266,35 @@ class DailyMomentumStrategy:
         local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
         return is_trading_day(local.date()) and dt.time(8, 30) <= local.time() < dt.time(16, 30)
 
+    def _save_update_schedule(self):
+        if not self._schedule_path:
+            return
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", dir=self._schedule_path.parent,
+                                             prefix=".update_schedule_", delete=False) as handle:
+                temporary = handle.name
+                json.dump(dict(after_close_only=self._after_close_only,
+                               one_off_remaining=sorted(self._one_off_remaining)), handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._schedule_path)
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _scheduled_update_allowed(self, now):
+        if not self._after_close_only or self._one_off_remaining:
+            return True
+        local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
+        return is_trading_day(local.date()) and local.time() >= dt.time(15, 5)
+
     def _recovering_coverage(self):
-        return bool(self.history_cache) and self._ranking_coverage() < .95
+        return bool(self._one_off_remaining) or (bool(self.history_cache) and self._ranking_coverage() < .95)
 
     def _retry_ready(self, sym, now_epoch):
+        if sym in self._one_off_remaining:
+            return True
         record = self._retry_records.get(sym, {})
         # Old warm-cache records deferred all failures until the next close.
         # Admit them once through the bounded queue; provider cooldowns still apply.
@@ -271,11 +304,30 @@ class DailyMomentumStrategy:
 
     def _select_update_batch(self, symbols, now, catchup=True):
         now_epoch = now.timestamp()
+        if self._one_off_remaining:
+            ready = {sym for sym, item in self._history_items.items()
+                     if item.get("metadata", {}).get("fresh") is True
+                     and item.get("bars") and item["bars"][-1]["date"] == self._history_date
+                     and not item.get("error") and not item.get("metadata", {}).get("error")}
+            if ready & self._one_off_remaining:
+                self._one_off_remaining -= ready
+                self._save_update_schedule()
+        self.data_status["one_off_remaining"] = len(self._one_off_remaining)
+        if not self._scheduled_update_allowed(now):
+            local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
+            day = local.date()
+            while not is_trading_day(day):
+                day += dt.timedelta(days=1)
+            self.data_status.update(update_mode="after_close_wait",
+                next_full_update_window=dt.datetime.combine(day, dt.time(15, 5), BEIJING).isoformat())
+            return []
         priority = self._prioritize_updates(symbols)
+        if self._after_close_only and self._one_off_remaining:
+            priority = [sym for sym in priority if sym in self._one_off_remaining]
         held = [sym for sym in priority if sym in self.account.positions]
         others = [sym for sym in priority if sym not in self.account.positions
                   and self._retry_ready(sym, now_epoch)]
-        conservative = self._conservative_update_window(now)
+        conservative = self._conservative_update_window(now) and not self._after_close_only
         if conservative and time.monotonic() < self._next_nonholding_refresh:
             others = []
         limit = (self.CATCHUP_BATCH if catchup and (not conservative or self._recovering_coverage())
@@ -289,10 +341,17 @@ class DailyMomentumStrategy:
         self.data_status.update(update_mode="holding_and_missing_only" if conservative else "closing_catchup",
                                 deferred_history=max(0, len(priority)-len(held)-min(limit, len(others))),
                                 next_full_update_window=dt.datetime.combine(day, dt.time(16, 30), BEIJING).isoformat())
+        if self._after_close_only:
+            self.data_status.update(update_mode="one_off_catchup" if self._one_off_remaining else "closing_catchup",
+                next_full_update_window=dt.datetime.combine(day, dt.time(15, 5), BEIJING).isoformat())
         # Isolate holding updates so a slow nonholding cannot delay publication.
         return held or others[:limit]
 
     def _record_update_results(self, requested, now, as_of):
+        if self._one_off_remaining.intersection(requested):
+            self._one_off_remaining.difference_update(requested)
+            self._save_update_schedule()
+        self.data_status["one_off_remaining"] = len(self._one_off_remaining)
         nonheld = False
         for sym in requested:
             if sym in self.account.positions:
@@ -323,7 +382,7 @@ class DailyMomentumStrategy:
                 self._no_progress_batches = min(self._no_progress_batches+1, 5)
                 self._recovery_retry_seconds = min(
                     self.FAILED_RETRY_SECONDS, 60 * 2**(self._no_progress_batches-1))
-        if nonheld and self._conservative_update_window(now):
+        if nonheld and self._conservative_update_window(now) and not self._after_close_only:
             self._next_nonholding_refresh = time.monotonic()+(
                 self._recovery_retry_seconds if self._recovering_coverage() else self.FAILED_RETRY_SECONDS)
         if self._retry_path:
@@ -378,9 +437,9 @@ class DailyMomentumStrategy:
                 if fetched.tzinfo is None:
                     fetched = fetched.replace(tzinfo=dt.timezone.utc)
                 age = (dt.datetime.now(dt.timezone.utc)-fetched).total_seconds()
-                valid = 0 <= age < ttl
+                valid, until = cache_freshness(meta["fetched_at"], as_of, ttl=dt.timedelta(seconds=ttl))
                 if valid:
-                    ttl -= age
+                    ttl = max(0, ttl-age, (dt.datetime.fromisoformat(until)-dt.datetime.now(dt.timezone.utc)).total_seconds() if until else 0)
             except (ValueError, TypeError):
                 valid = False
         return valid, ttl
@@ -409,13 +468,14 @@ class DailyMomentumStrategy:
             if repair:
                 if time.monotonic() < self._next_failed_retry:
                     return
-                retryable = [sym for sym, issue in self._history_errors.items() if issue["reason"] != "short"]
+                retryable = [sym for sym, issue in self._history_errors.items() if issue["reason"] != "short" or sym in self._one_off_remaining]
                 retryable = [sym for sym in self._prioritize_updates(retryable)
-                             if time.monotonic() >= self._symbol_retry_due.get(sym, 0)]
+                             if sym in self._one_off_remaining or time.monotonic() >= self._symbol_retry_due.get(sym, 0)]
                 catchup = self._catchup_needed()
                 requested = self._select_update_batch(retryable, now, catchup=catchup)
-                retry_benchmark = self.config.market_filter and not self._benchmark_valid
-                retry_industry = self._industry_refresh_needed and time.monotonic() >= self._next_industry_retry
+                allowed = self._scheduled_update_allowed(now)
+                retry_benchmark = allowed and self.config.market_filter and not self._benchmark_valid
+                retry_industry = allowed and self._industry_refresh_needed and time.monotonic() >= self._next_industry_retry
                 if not requested and not retry_benchmark and not retry_industry:
                     future = [due for sym, due in self._symbol_retry_due.items()
                               if sym in self._history_errors and due > time.monotonic()]
@@ -478,6 +538,8 @@ class DailyMomentumStrategy:
                     # thousands of failing requests before exposing holdings.
                     if not synchronous:
                         requested = self._select_update_batch(requested, now)
+                    if not synchronous and not self._scheduled_update_allowed(now):
+                        retry_benchmark = retry_industry = False
                     if seeded and not requested and not retry_benchmark and not retry_industry:
                         with self._history_lock:
                             if generation == self._generation:
@@ -485,7 +547,7 @@ class DailyMomentumStrategy:
                                                         refresh=dict(mode="cache_bootstrap", requested=0,
                                                                      status="deferred" if self._history_errors else "complete"))
                         return
-                if (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
+                if (synchronous or self._scheduled_update_allowed(now)) and (not repair or retry_industry) and hasattr(self.feed, "fetch_industry_map"):
                     industries = {**self.feed.fetch_industry_map(), **self._industry_overrides}
                     self._next_industry_retry = time.monotonic()+self.FAILED_RETRY_SECONDS
                 progress = dict(total=len(requested), completed=0, eligible=0, unavailable=0)
@@ -568,7 +630,7 @@ class DailyMomentumStrategy:
                         if large:
                             delay = self._source_retry_delay()
                             delay = max(delay, self._recovery_retry_seconds)
-                            if self._conservative_update_window(now):
+                            if self._conservative_update_window(now) and not self._after_close_only:
                                 interval = (self._recovery_retry_seconds if self._recovering_coverage()
                                             else self.FAILED_RETRY_SECONDS)
                                 if any(sym in self.account.positions for sym in self._history_errors):
