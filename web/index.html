@@ -1019,11 +1019,11 @@
           </div>
           <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
             <span>剩余配额: <strong id="baoRemainingText" style="color:#fff">--</strong></span>
-            <span>频控间隔: <strong id="baoIntervalText" style="color:#38bdf8">1.0s</strong></span>
+            <span>频控间隔: <strong id="baoIntervalText" style="color:#38bdf8">0.0s (无延迟)</strong></span>
             <span>失败次数: <strong id="baoFailsText" style="color:#fff">0</strong></span>
           </div>
           <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="baoNote">
-            主力数据源：全市场日K线批量拉取
+            主力数据源：全市场日K线批量拉取（串行直发，无固定等待）
           </div>
         </div>
 
@@ -2505,7 +2505,7 @@
         }
 
         const isCircuitOpen = c.state === 'open';
-        const interval = b.interval || 1.0;
+        const interval = typeof b.interval === 'number' ? b.interval : (isBao ? 0.0 : 1.0);
         const isRateLimited = interval > 5;
 
         if (dot) dot.innerText = isCircuitOpen ? '🔴' : isRateLimited ? '🟡' : '🟢';
@@ -2525,7 +2525,13 @@
         }
 
         if (remainingText) remainingText.innerText = (b.remaining !== undefined ? b.remaining : (limit - used)).toLocaleString();
-        if (intervalText) intervalText.innerText = `${interval.toFixed(1)}s`;
+        if (intervalText) {
+          if (isBao && interval === 0) {
+            intervalText.innerText = '0.0s (无延迟)';
+          } else {
+            intervalText.innerText = `${interval.toFixed(1)}s`;
+          }
+        }
         if (failsText) failsText.innerText = b.failures || 0;
 
         if (note && b.reason) {
