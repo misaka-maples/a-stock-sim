@@ -1181,3 +1181,19 @@ def test_validated_partial_batch_published_before_slow_tail(account):
     assert s.data_status['loaded'] == 2
     assert s.data_status['batch_progress']['completed'] == 2
     assert not s.data_status['refreshing']
+
+
+def test_recovery_batch_success_fast_failure_backoff_and_reset(account):
+    s = prepared(account, feed=StubFeed({SYMBOL: completed_bars("2026-09-18")}))
+    for expected in (60, 120, 240, 480, 900, 900):
+        s._record_update_results([SYMBOL], NOW, "2026-09-21")
+        assert s._recovery_retry_seconds == expected
+    s._entry_eligible.add(SYMBOL)
+    s._history_errors.pop(SYMBOL, None)
+    s._record_update_results([SYMBOL], NOW, "2026-09-21")
+    assert s._recovery_retry_seconds == 5
+    assert s._no_progress_batches == 0
+    s._entry_eligible.clear()
+    s._history_errors[SYMBOL] = dict(reason="latest_outdated")
+    s._record_update_results([SYMBOL], NOW, "2026-09-21")
+    assert s._recovery_retry_seconds == 60

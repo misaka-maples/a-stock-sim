@@ -1,20 +1,18 @@
 {
-  "baseline_commit": "dec4b2430b9375375a478482bf38d5a473c7f311",
-  "backup": "/home/openarmx/quant_backups/before_pipeline_20261102",
+  "baseline_commit": "cb351603ab2145898e5e491f0f25158b82b02106",
+  "backup": "/home/openarmx/quant_backups/before_adaptive_20261102",
   "validation": {
-    "local_full_passed": 506,
-    "local_full_skipped": 6,
-    "local_subtests_passed": 212,
-    "additional_write_failure_test": "58 history integrity tests passed including new disk failure test",
-    "remote_targeted_passed": 212,
-    "scope": "single SDK stream, overlapping parsing, bounded tasks, incremental publishing, cold-start gate, offline UI regressions; no extra live SDK probes"
+    "local_targeted_passed": 103,
+    "local_subtests_passed": 2,
+    "remote_targeted_passed": 103,
+    "scope": "adaptive batch retry, strategy regressions and shared request budgets; no live provider probes"
   },
   "files": {
     ".gitignore": "f6371fe2338326eb316ad6ec8f5cab67aaaf0314ba860e9563b2515fd94f0a64",
-    "README.md": "0f6b23e04da85e50ed29afc7e728c1237478f31eeb5c54abf18371235c46b8bf",
+    "README.md": "5c1e7f7946cf800253c92e773c922b36c7d5094363e40c876af00ba6e92a2c25",
     "api_auth.py": "f0ac3a30828be6aaa1fc8f8f470d0014f8338e87d9bfb9bf6eb0c3b3a7380bb1",
     "backtest.py": "75c6aec7866623b3ef8672acef5fb0d077648e78878f60fcac6be3881b50e249",
-    "daily_momentum.py": "ad8ac7e5480cf180f5076a46a406bbf15f58c146087b56f5180cf648a2f810a9",
+    "daily_momentum.py": "ebf6ecc198ee5e32667e893557d033a56d0fa0e1d0c9d0396383d423560a79c1",
     "entry_guard_research.py": "5c965a13e5a6bad4ae5bd35a4e2623d08504d78fbb0e42f45ffe7f4a3a415f32",
     "execution.py": "d2d218ef0cd8eada052d10cb52eb86d702c48c3718282f178da07ee513b4338d",
     "history_data.py": "c0297e354110ab1890e15b0a9501c068abf55abd7d46ae7beb815fa05078dbfd",
@@ -33,7 +31,7 @@
     "test_account_execution.py": "06596449777896fd1a408d8cda6d625546f9c0afd0176f50b4a35027d2bcabdd",
     "test_api_auth.py": "9e84a38d195ad57565488bce1c909fe6335459f60422593bf4c7bb7743c8d089",
     "test_backtest.py": "380ed8a5d8703003e582147ceae498bb6c01d464f00e327e684ab18080645449",
-    "test_daily_momentum.py": "92775fe650dc476b0e47acacb7615fa53b889660e8d5a6e5947a8ecf94b45f78",
+    "test_daily_momentum.py": "22479cb3dfd93c41901a5e071236a83d0a0c804cc930fe7be4ab3148ae27d30d",
     "test_entry_rules.py": "cb601a542964aada12225d09d96352f3244ad4c9be24749e30d395532f99330e",
     "test_execution.py": "e448474f6531fe347280fb75efd203f0e2ccaa385bdd63a99f0594ba3864c4ca",
     "test_history_integrity.py": "17b074a5f827383ef3785fbe31d696fec8249f64e52e5e5b7e6d281727ddf3f2",

@@ -40,7 +40,6 @@ class DailyMomentumStrategy:
     CATCHUP_BATCH = 96
     CATCHUP_SECONDS = 5
     HOLDING_RETRY_SECONDS = 60
-    RECOVERY_RETRY_SECONDS = 300
 
     def __init__(self, account, watchlist, name="Momentum_Rotation_Pro", feed=None,
                  industry_map=None, **kwargs):
@@ -94,6 +93,8 @@ class DailyMomentumStrategy:
         except (OSError, ValueError, TypeError):
             self._retry_records = {}
         self._next_nonholding_refresh = 0
+        self._no_progress_batches = 0
+        self._recovery_retry_seconds = self.CATCHUP_SECONDS
 
     def _new_risk_data_valid(self):
         return (self._published_generation == self._generation
@@ -314,9 +315,17 @@ class DailyMomentumStrategy:
             self._retry_records[sym] = dict(as_of=as_of, failures=failures, retry_at=retry_at,
                                             total_failures=previous.get("total_failures", 0)+1,
                                             reason=issue["reason"], policy_revision=2)
+        if requested:
+            if any(sym in self._entry_eligible for sym in requested):
+                self._no_progress_batches = 0
+                self._recovery_retry_seconds = self.CATCHUP_SECONDS
+            else:
+                self._no_progress_batches = min(self._no_progress_batches+1, 5)
+                self._recovery_retry_seconds = min(
+                    self.FAILED_RETRY_SECONDS, 60 * 2**(self._no_progress_batches-1))
         if nonheld and self._conservative_update_window(now):
             self._next_nonholding_refresh = time.monotonic()+(
-                self.RECOVERY_RETRY_SECONDS if self._recovering_coverage() else self.FAILED_RETRY_SECONDS)
+                self._recovery_retry_seconds if self._recovering_coverage() else self.FAILED_RETRY_SECONDS)
         if self._retry_path:
             temporary = None
             try:
@@ -558,10 +567,9 @@ class DailyMomentumStrategy:
                                 self._symbol_retry_due.pop(sym, None)
                         if large:
                             delay = self._source_retry_delay()
-                            if requested and not any(sym in self._entry_eligible for sym in requested):
-                                delay = max(delay, self.HOLDING_RETRY_SECONDS)
+                            delay = max(delay, self._recovery_retry_seconds)
                             if self._conservative_update_window(now):
-                                interval = (self.RECOVERY_RETRY_SECONDS if self._recovering_coverage()
+                                interval = (self._recovery_retry_seconds if self._recovering_coverage()
                                             else self.FAILED_RETRY_SECONDS)
                                 if any(sym in self.account.positions for sym in self._history_errors):
                                     interval = self.HOLDING_RETRY_SECONDS
