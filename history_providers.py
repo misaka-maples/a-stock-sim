@@ -470,6 +470,10 @@ class SourceRouter:
         env = dict(os.environ)
         env["QUANT_BAO_LEASE_PATH"] = str(self._bao_lease_path)
         env["QUANT_MARKET_BASE_DIR"] = str(self.base_dir)
+        sdk_dir = self.base_dir / "data" / "market_sdk"
+        if sdk_dir.exists():
+            current_pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{sdk_dir}:{current_pp}" if current_pp else str(sdk_dir)
         return env
 
     def _record_failure(self, provider, symbol, exc):
