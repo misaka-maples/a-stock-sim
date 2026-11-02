@@ -49,6 +49,7 @@ from history_data import last_completed_trading_day
 from trade_calendar import is_trading_day
 from api_auth import install_auth
 from execution import _risk_and_limits
+from runtime_resources import memory_snapshot, release_unused_memory, configure_logging
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -90,6 +91,8 @@ class ServerContext:
         self.execution_participation_rate = .05
 
 ctx = ServerContext()
+# One process owns the account; GET and POST share this non-queuing guard.
+backtest_lock = threading.Lock()
 
 
 def validated_interval(value):
@@ -381,13 +384,14 @@ def worker_step(now=None):
             ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
             ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
         if ctx.account:
-            ctx.account.save()
+            ctx.account.save_if_due()
         current_held = list(ctx.account.positions) if ctx.account else []
         ctx.closing_report_pending = closing_due and not _close_prices_ready(checked_at, current_held, valid)
         if closing_due and not ctx.closing_report_pending:
             day = checked_at.date().isoformat()
             # Save final marks before archiving them. Mark reporting complete
             # only after the final-price snapshot has been written successfully.
+            ctx.account.save()
             SnapshotManager().update_daily_snapshot(date_str=day)
             ctx.account.strategy_state.setdefault("__server__", {})["closing_report_date"] = day
             ctx.account.save()
@@ -1386,6 +1390,25 @@ def get_backtest_config():
 @app.post("/api/backtest/run")
 def run_backtest_endpoint(req: BacktestRequest):
     """触发量化策略历史回测并返回绩效报告与资产曲线"""
+    if not backtest_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="已有回测正在运行，请等待完成后重试")
+    try:
+        resources = memory_snapshot()
+        if not resources["backtest_allowed"]:
+            raise HTTPException(status_code=503, detail="可用内存不足或无法读取内存状态，暂不接受回测",
+                                headers={"Retry-After": "60"})
+        return _run_backtest_request(req)
+    finally:
+        try:
+            release_unused_memory()
+        except Exception:
+            logger.warning("回测后内存回收失败", exc_info=True)
+        finally:
+            backtest_lock.release()
+
+
+def _run_backtest_request(req: BacktestRequest):
+    # Keep the allocation-heavy frame out of the cleanup scope.
     try:
         momentum = req.strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro")
         supplied = req.model_fields_set if hasattr(req, "model_fields_set") else req.__fields_set__
@@ -1484,6 +1507,8 @@ def run_backtest_endpoint(req: BacktestRequest):
             industry_source={"capture": "loaded_strategy_snapshot", **industry_source} if industries else dict(source="unavailable"),
             ignored_params=ignored, model_limitations=limitations)
         return {"success": True, "data": res}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"回测执行失败: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
@@ -1511,10 +1536,12 @@ def health_check():
     """服务健康检查接口"""
     alive = bool(ctx.worker_thread and ctx.worker_thread.is_alive())
     storage = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
-    healthy = storage and (not ctx.worker_started or worker_is_healthy(datetime.datetime.now(BEIJING)))
+    resources = memory_snapshot()
+    resources["backtest_running"] = backtest_lock.locked()
+    healthy = resources["memory_healthy"] and storage and (not ctx.worker_started or worker_is_healthy(datetime.datetime.now(BEIJING)))
     return JSONResponse(status_code=200 if healthy else 503,
                         content={"status": "ok" if healthy else "degraded", "worker_alive": alive,
-                                 "storage_healthy": storage, "time": datetime.datetime.now(BEIJING).isoformat()})
+                                 "storage_healthy": storage, "resources": resources, "time": datetime.datetime.now(BEIJING).isoformat()})
 
 
 # ==============================================================================
@@ -1657,6 +1684,7 @@ def main():
     parser.add_argument("--account-file", type=str, default="sim_account.json", help="账户存储路径")
 
     args = parser.parse_args()
+    configure_logging(BASE_DIR / "logs" / "server.log")
 
     saved_cfg = {}
     if STRATEGY_CONFIG_PATH.exists():
@@ -1718,7 +1746,7 @@ def main():
     logger.info(f"监控标的总数: {len(ctx.symbols)} 只 | 严格限制沪深主板: 是")
     logger.info(f"刷新间隔: {ctx.interval}s | 测试模式: {ctx.ignore_market_hours} | T+1: {not args.no_t1}")
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False, log_config=None)
 
 
 if __name__ == "__main__":

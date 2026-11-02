@@ -23,6 +23,9 @@ import copy
 import re
 import tempfile
 import uuid
+import gzip
+import threading
+from functools import wraps
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Callable
 
@@ -36,6 +39,23 @@ SIM_ACCOUNT_PATH = BASE_DIR / "sim_account.json"
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 NOTIFICATION_CONFIG_PATH = BASE_DIR / "data" / "notification_config.json"
 INDEX_FILE = SNAPSHOTS_DIR / "index.json"
+
+# Serialize API snapshot operations with the daily scheduler in this process.
+_SNAPSHOT_LOCK = threading.RLock()
+
+
+def _serialized(operation):
+    @wraps(operation)
+    def wrapped(*args, **kwargs):
+        with _SNAPSHOT_LOCK:
+            return operation(*args, **kwargs)
+    return wrapped
+
+
+def _stored_snapshot_path(snapshot_id):
+    plain = _snapshot_path(snapshot_id)
+    return plain if plain.exists() else _snapshot_path(snapshot_id, ".json.gz")
+
 
 BEIJING = datetime.timezone(datetime.timedelta(hours=8))
 
@@ -145,6 +165,7 @@ class SnapshotManager:
                 today_trades.append(t)
         return today_trades
 
+    @_serialized
     def create_snapshot(
         self,
         tag: str = "manual",
@@ -287,8 +308,60 @@ class SnapshotManager:
         index.insert(0, item_meta)
         self._save_index(index)
 
+        if tag == "daily":
+            try:
+                self.archive_old_daily_snapshots()
+            except Exception:
+                # A maintenance failure must not turn a successfully saved close into a failure.
+                logger.exception("历史日终快照压缩失败，原始快照保留，下一次重试")
         logger.info(f"系统快照 [{snapshot_id}] 已生成 ({description})")
         return snapshot
+
+    @_serialized
+    def archive_old_daily_snapshots(self, retention_days: int = 90) -> int:
+        """Keep 90 calendar days (including today) active; losslessly gzip older daily data.
+
+        Manual, migration and pre-restore backups are never selected. Archives stay
+        addressable by the original ID for list/get/export/restore; nothing expires.
+        """
+        if isinstance(retention_days, bool) or not isinstance(retention_days, int) or retention_days < 1:
+            raise ValueError("保留天数必须是正整数")
+        cutoff = get_now().date() - datetime.timedelta(days=retention_days - 1)
+        archived = 0
+        for item in self._load_index():
+            sid = item.get("snapshot_id", "")
+            if item.get("tag") != "daily" or not re.fullmatch(r"daily_\d{4}-\d{2}-\d{2}", sid):
+                continue
+            try:
+                day = datetime.date.fromisoformat(sid[6:])
+            except ValueError:
+                continue
+            if day >= cutoff:
+                continue
+            source = _snapshot_path(sid)
+            if not source.exists():
+                continue
+            payload = source.read_bytes()
+            meta = json.loads(payload).get("meta", {})
+            if meta.get("tag") != "daily" or meta.get("snapshot_id") != sid:
+                continue
+            target = _snapshot_path(sid, ".json.gz")
+            _atomic_bytes(target, gzip.compress(payload, mtime=0))
+            # Verify the durable archive before removing the uncompressed duplicate.
+            with gzip.open(target, "rb") as stream:
+                if stream.read() != payload:
+                    raise OSError("压缩快照校验失败")
+            directory_fd = os.open(SNAPSHOTS_DIR, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+                source.unlink()
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            archived += 1
+        # Reconcile even after an earlier interrupted archive operation.
+        self.list_snapshots()
+        return archived
 
     def update_daily_snapshot(
         self,
@@ -313,6 +386,7 @@ class SnapshotManager:
             snapshot_id=snapshot_id
         )
 
+    @_serialized
     def list_snapshots(self) -> List[Dict[str, Any]]:
         """获取所有快照列表（按时间倒序）"""
         index = self._load_index()
@@ -322,11 +396,15 @@ class SnapshotManager:
         for item in index:
             sid = item.get("snapshot_id")
             try:
-                fpath = _snapshot_path(sid)
+                fpath = _stored_snapshot_path(sid)
             except ValueError:
                 modified = True
                 continue
             if fpath.exists():
+                if item.get("filename") != fpath.name:
+                    item["filename"] = fpath.name
+                    modified = True
+                item["archived"] = fpath.name.endswith(".json.gz")
                 item["file_size"] = fpath.stat().st_size
                 valid_index.append(item)
             else:
@@ -336,19 +414,28 @@ class SnapshotManager:
             self._save_index(valid_index)
         return valid_index
 
+    @_serialized
     def get_snapshot(self, snapshot_id: str) -> Optional[Dict[str, Any]]:
         """读取指定快照数据"""
-        fpath = _snapshot_path(snapshot_id)
+        fpath = _stored_snapshot_path(snapshot_id)
         if not fpath.exists():
             return None
+        if fpath.name.endswith(".json.gz"):
+            with gzip.open(fpath, "rt", encoding="utf-8") as stream:
+                return json.load(stream)
         return self._read_json_safe(fpath)
 
+    @_serialized
     def delete_snapshot(self, snapshot_id: str) -> bool:
         """删除指定快照及其归档文件"""
         json_file = _snapshot_path(snapshot_id)
         tar_file = _snapshot_path(snapshot_id, ".tar.gz")
 
+        compressed_file = _snapshot_path(snapshot_id, ".json.gz")
         deleted = False
+        if compressed_file.exists():
+            compressed_file.unlink()
+            deleted = True
         if json_file.exists():
             json_file.unlink()
             deleted = True
@@ -360,6 +447,7 @@ class SnapshotManager:
         self._save_index(new_index)
         return deleted
 
+    @_serialized
     def export_archive(self, snapshot_id: str, output_path: Optional[Path] = None) -> Path:
         """
         将快照打包导出为标准的 .tar.gz 便携独立离线迁移压缩包
@@ -442,6 +530,7 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
         finally:
             temporary_pack.cleanup()
 
+    @_serialized
     def restore_snapshot(
         self,
         snapshot_input: Union[str, Dict[str, Any], Path],
@@ -521,7 +610,7 @@ A股量化模拟交易控制台 - 离线整机迁移快照包
             updates[NOTIFICATION_CONFIG_PATH] = notification_state
 
         # 6. 如果当前快照不在快照库中，则存入库并更新索引
-        if sid and not _snapshot_path(sid).exists():
+        if sid and not _stored_snapshot_path(sid).exists():
             updates[_snapshot_path(sid)] = snapshot_data
             # 更新索引
             summary = account_state.get("summary", {})

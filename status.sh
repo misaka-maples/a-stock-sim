@@ -6,13 +6,22 @@
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$DIR/server.pid"
 LOG_FILE="$DIR/server.log"
+[ ! -f "$DIR/logs/server.log" ] || LOG_FILE="$DIR/logs/server.log"
 
 echo "=========================================================="
 echo "          A股模拟交易系统运行状态巡检                    "
 echo "=========================================================="
 
 RUNNING=0
-if [ -f "$PID_FILE" ]; then
+UNIT=openarmx-quant.service
+if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl show "$UNIT" -p WorkingDirectory --value 2>/dev/null)" = "$DIR" ]; then
+    PID=$(systemctl show "$UNIT" -p MainPID --value)
+    if systemctl is-active --quiet "$UNIT" && [ "$PID" -gt 0 ]; then
+        RUNNING=1
+        echo "[状态]: systemd 正在守护 (PID: $PID)"
+        systemctl show "$UNIT" -p ActiveState -p SubState -p NRestarts -p MemoryCurrent -p MemoryHigh -p MemoryMax
+    fi
+elif [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if ps -p "$PID" > /dev/null 2>&1; then
         RUNNING=1

@@ -2,6 +2,13 @@
 # Stop only this project's server and allow its durable shutdown to complete.
 set -eu
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The installed service owns this deployment; do not launch a second process.
+UNIT=openarmx-quant.service
+if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl show "$UNIT" -p WorkingDirectory --value 2>/dev/null)" = "$DIR" ]; then
+    sudo systemctl stop "$UNIT"
+    systemctl is-active "$UNIT" || true
+    exit 0
+fi
 python3 - "$DIR" <<'STOP_PY'
 import os, signal, sys, time
 from pathlib import Path

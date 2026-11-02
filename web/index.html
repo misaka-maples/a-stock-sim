@@ -2785,7 +2785,7 @@
           renderBacktestResults(res.data);
           container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
-          showToast(`回测失败: ${res.error || '未知错误'}`, true);
+          showToast(`回测失败: ${res.detail || res.error || '未知错误'}`, true);
         }
       } catch (err) {
         showToast(`回测请求异常: ${err}`, true);

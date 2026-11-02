@@ -494,6 +494,7 @@ class SimAccount:
         self.risk_history = {"history_complete": True}
         self.accounting_history_complete = True
         self._persistence_error = None
+        self._last_durable_save = None
         self.save_path = Path(save_path) if save_path else (BASE_DIR / "sim_account.json")
 
         # 持仓结构: {symbol: {
@@ -1409,6 +1410,22 @@ class SimAccount:
             self.risk_history["valuation_repaired"] = True
             logger.warning("已隔离损坏的历史估值；现金与成交保持原值")
 
+    def save_if_due(self, interval_seconds=30.0):
+        """Checkpoint periodic marks without rewriting the ledger on every poll.
+
+        Trades, orders and explicit saves always use save() directly. Only
+        reconstructible market marks and periodic strategy updates may be
+        delayed; callers must save() before taking a snapshot or shutting down.
+        Returns whether a durable checkpoint was written.
+        """
+        if not math.isfinite(interval_seconds) or interval_seconds < 0:
+            raise ValueError("账户检查点间隔必须是有限非负秒数")
+        if (self._persistence_error is None and self._last_durable_save is not None
+                and time.monotonic() - self._last_durable_save < interval_seconds):
+            return False
+        self.save()
+        return True
+
     def save(self):
         """Durably commit a complete account snapshot; errors are never hidden."""
         data = {
@@ -1439,6 +1456,8 @@ class SimAccount:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+            # Advance only after both file and directory have been synced.
+            self._last_durable_save = time.monotonic()
         except OSError as exc:
             self._persistence_error = str(exc)
             raise AccountPersistenceError(str(exc), committed=committed) from exc
@@ -2350,7 +2369,7 @@ class PaperTradingEngine:
 
         # 4. 再次更新持仓市值与保存状态
         self.strategy.account.update_market_prices(quotes)
-        self.strategy.account.save()
+        self.strategy.account.save_if_due()
 
         # 5. 渲染输出终端信息
         self.render_dashboard(now, market_status, quotes)
@@ -2370,7 +2389,9 @@ class PaperTradingEngine:
                     break
                 time.sleep(self.interval)
         except KeyboardInterrupt:
-            print("\n[!] 收到退出信号，模拟交易引擎安全停止。已保存最新状态至 sim_account.json。")
+            print("\n[!] 收到退出信号，模拟交易引擎停止。")
+        finally:
+            self.strategy.account.save()
 
     def _render_sleeping(self, now: datetime.datetime, market_status: str):
         """休市期间的简化提示"""

@@ -4,6 +4,17 @@
 # ==============================================================================
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The installed service owns this deployment; do not launch a second process.
+UNIT=openarmx-quant.service
+if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl show "$UNIT" -p WorkingDirectory --value 2>/dev/null)" = "$DIR" ]; then
+    if [ "$#" -gt 0 ]; then
+        echo "systemd 已接管服务；请通过 systemctl edit $UNIT 配置启动参数。"
+        exit 1
+    fi
+    sudo systemctl start "$UNIT"
+    systemctl status "$UNIT" --no-pager
+    exit $?
+fi
 PID_FILE="$DIR/server.pid"
 LOG_FILE="$DIR/server.log"
 

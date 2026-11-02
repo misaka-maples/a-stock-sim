@@ -1,0 +1,35 @@
+[Unit]
+Description=OpenArmX paper trading service
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=openarmx
+Group=openarmx
+WorkingDirectory=/home/openarmx/test
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENARMX_MALLOC_TRIM=1
+Environment=PYTHONPATH=/home/openarmx/test/data/market_sdk
+Environment=OPENARMX_LOG_FILE=/home/openarmx/test/logs/server.log
+ExecStart=/usr/bin/python3 /home/openarmx/test/server.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+KillSignal=SIGTERM
+KillMode=control-group
+MemoryAccounting=true
+MemoryHigh=8G
+MemoryMax=10G
+MemorySwapMax=1G
+OOMPolicy=stop
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+LogNamespace=openarmx-quant
+SyslogIdentifier=openarmx-quant
+
+[Install]
+WantedBy=multi-user.target

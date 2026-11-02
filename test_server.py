@@ -33,6 +33,10 @@ class TestServerAPI(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.ctx = server.ServerContext()
         self.stack.enter_context(patch.object(server, "ctx", self.ctx))
+        # API tests use mocked backtests; admission must not depend on host load.
+        self.stack.enter_context(patch.object(server, "memory_snapshot", return_value={
+            "memory_healthy": True, "backtest_allowed": True,
+            "effective_available_bytes": 8 * 1024 ** 3}))
         # Keep production authentication enabled; every route test logs in
         # with private credentials generated only inside its temporary tree.
         manager = server.auth_manager
