@@ -64,6 +64,25 @@ class ProviderTests(unittest.TestCase):
         r['open']=''
         self.assertEqual(normalize_baostock([r],[r]),[])
 
+    def test_baostock_observed_suspension_blank_activity(self):
+        r = dict(date="2025-12-10", open="84.7300", high="84.7300",
+                 low="84.7300", close="84.7300", preclose="84.7300",
+                 volume="", amount="", tradestatus="0", isST="0")
+        a = dict(r, **{k: "84.6018882400" for k in ("open", "high", "low", "close")})
+        for blank in ("", None):
+            b = normalize_baostock([dict(r, volume=blank, amount=blank)], [a])[0]
+            self.assertEqual((b["volume"], b["amount"]), (0, 0))
+            self.assertTrue(b["is_suspended"])
+            self.assertEqual(b["raw_close"], 84.73)
+            self.assertEqual(b["close"], 84.60188824)
+        for status in ("1", "", None):
+            with self.assertRaisesRegex(ProviderUnavailable, "invalid_number"):
+                normalize_baostock([dict(r, tradestatus=status)], [a])
+        for bad in ("invalid", "nan", -1):
+            with self.assertRaises(ProviderUnavailable):
+                normalize_baostock([dict(r, volume=bad)], [a])
+        self.assertEqual(r["volume"], "", "normalization must not mutate raw evidence")
+
     def test_baostock_dated_st_flag_known_or_unknown(self):
         row=dict(date='2026-10-14',open=10,close=10,high=11,low=9,volume=12300,amount=45678,tradestatus='1')
         for flag,expected in [('0',False),('1',True),('',None),(None,None),('unexpected',None)]:

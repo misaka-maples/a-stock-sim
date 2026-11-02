@@ -1,12 +1,13 @@
 {
-  "baseline_commit": "5d06ba9c2250df0eef9ec293e8cad31b14b5482a",
-  "backup": "/home/openarmx/quant_backups/before_retry_20261102",
+  "baseline_commit": "a7b865d7266092eabd160669a01801105bae735f",
+  "backup": "/home/openarmx/quant_backups/before_parse_20261102",
   "validation": {
-    "local_passed": 499,
+    "local_passed": 500,
     "local_skipped": 6,
     "local_subtests_passed": 212,
-    "remote_targeted_passed": 101,
-    "scope": "bounded history retries and request budgets; full local suite; no live provider probes"
+    "remote_targeted_passed": 73,
+    "raw_response_replay": "276/276 bars parsed; explicit suspension retained",
+    "scope": "full offline local suite; remote provider/execution tests with isolated mocked SDK lease"
   },
   "files": {
     ".gitignore": "f6371fe2338326eb316ad6ec8f5cab67aaaf0314ba860e9563b2515fd94f0a64",
@@ -17,7 +18,7 @@
     "entry_guard_research.py": "5c965a13e5a6bad4ae5bd35a4e2623d08504d78fbb0e42f45ffe7f4a3a415f32",
     "execution.py": "d2d218ef0cd8eada052d10cb52eb86d702c48c3718282f178da07ee513b4338d",
     "history_data.py": "20e53214104ae633248fde40971233e061e1813bdb3aba35c0920493f3ec5f1f",
-    "history_providers.py": "554505d081e6b79b94ff62bfe4f56d9c704e8c043be64b5498954fec635f9300",
+    "history_providers.py": "370b1aecb3dedf64f8ab04336c1aee6b258d00e9a1e8a2b1c077381e7909bb2d",
     "momentum_backtest.py": "b40e7321203c25cc9654bd84cf41655b31d0ade981ac01bd68a4e22b3eac5a33",
     "notifier.py": "f5ba9329f9a82caa2fe126a913489cc41c1e10ddc494bc0052429c345592ba6e",
     "requirements-market.txt": "c12c76898b0caf1fd85f6c190319d99d53e0eba706ba7d78c6cc128e14c34486",
@@ -36,7 +37,7 @@
     "test_entry_rules.py": "cb601a542964aada12225d09d96352f3244ad4c9be24749e30d395532f99330e",
     "test_execution.py": "e448474f6531fe347280fb75efd203f0e2ccaa385bdd63a99f0594ba3864c4ca",
     "test_history_integrity.py": "9b97fd711a9bce9d949a48a889951b67f9e4f6bccf78d5911d1602cc05acc9ff",
-    "test_history_providers.py": "72ec2fa2e45b85d7a5136569dee344661a4823fff1c7c2c6c5cec4caffc334c9",
+    "test_history_providers.py": "ce49a533a96922ca308cb932551ff9eb55252e48cecefdf10a6095af9f048b3e",
     "test_momentum_backtest.py": "a7e665c9cb5e9a3d8292d267d1eae6a68b90dd97c18401d5a59afe86ff5336c2",
     "test_notifier.py": "12318f2ec984cfcd7fbdd404e000a69e54880bdb9ea138922c3793837bb0d1f8",
     "test_research.py": "224ca5c1a9c0ca20659229e56565ebd49239e2ef39d4e3cfe9d4fdf142d76666",

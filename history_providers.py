@@ -173,8 +173,17 @@ def normalize_baostock(raw_rows, adjusted_rows, adjustment="qfq"):
         # with prices, but do not manufacture a tradable observation for blanks.
         if raw.get("tradestatus") == "0" and any(raw.get(k) in (None, "") for k in ("open", "close", "high", "low")):
             continue
+        suspended = raw.get("tradestatus") == "0"
+        if suspended:
+            # BaoStock retains prices on some suspended days but leaves activity
+            # blank. Only an explicit suspension permits interpreting it as zero.
+            for key in ("volume", "amount"):
+                if raw.get(key) in (None, ""):
+                    raw[key] = 0
         raw["volume"] = _number(raw["volume"]) / 100
         bar = _bar(raw, adj, "baostock", date, raw.get("preclose"))
+        if raw.get("tradestatus") in ("0", "1"):
+            bar["is_suspended"] = suspended
         # Dated provider flag, never infer non-ST from an empty/missing field.
         if raw.get("isST") in ("0", "1"):
             bar["is_st"] = raw["isST"] == "1"
