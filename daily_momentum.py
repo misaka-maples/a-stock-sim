@@ -78,6 +78,14 @@ class DailyMomentumStrategy:
         self._symbol_retry_due = {}
         self._next_industry_retry = 0
         account_path = getattr(account, "save_path", None)
+        self._base_dir = Path(account_path).parent if account_path else None
+        if self._base_dir:
+            from stock_lifecycle import confirmed_delisted_symbols
+            self._delisted = confirmed_delisted_symbols(self._base_dir)
+        else:
+            self._delisted = set()
+        held = set(account.positions) if account else set()
+        self.watchlist = [s for s in self.watchlist if s not in self._delisted or s in held]
         self._retry_path = Path(account_path).parent / "history_refresh_retries.json" if account_path else None
         try:
             saved = json.loads(self._retry_path.read_text()) if self._retry_path else {}
@@ -99,7 +107,7 @@ class DailyMomentumStrategy:
         except (OSError, ValueError):
             schedule = {}
         self._after_close_only = schedule.get("after_close_only") is True
-        self._one_off_remaining = set(schedule.get("one_off_remaining", [])) & set(self.watchlist)
+        self._one_off_remaining = (set(schedule.get("one_off_remaining", [])) & set(self.watchlist)) - self._delisted
         self._no_progress_batches = 0
         self._recovery_retry_seconds = self.CATCHUP_SECONDS
 
@@ -129,7 +137,11 @@ class DailyMomentumStrategy:
 
     def set_watchlist(self, symbols):
         with self._history_lock:
-            self.watchlist = list(dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols))
+            symbols = list(dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols))
+            if self._delisted:
+                held = set(self.account.positions) if self.account else set()
+                symbols = [s for s in symbols if s not in self._delisted or s in held]
+            self.watchlist = symbols
             self._generation += 1
             self._last_attempt = 0
             self.state.pop("planned_revision", None)
@@ -322,6 +334,9 @@ class DailyMomentumStrategy:
                 next_full_update_window=dt.datetime.combine(day, dt.time(15, 5), BEIJING).isoformat())
             return []
         priority = self._prioritize_updates(symbols)
+        if self._delisted:
+            held = set(self.account.positions)
+            priority = [sym for sym in priority if sym not in self._delisted or sym in held]
         if self._after_close_only and self._one_off_remaining:
             priority = [sym for sym in priority if sym in self._one_off_remaining]
         held = [sym for sym in priority if sym in self.account.positions]
@@ -669,7 +684,7 @@ class DailyMomentumStrategy:
         if self._history_date != as_of or not self._new_risk_data_valid():
             return signals
         for sym, bars in self.history_cache.items():
-            if sym not in self.watchlist or sym not in self._entry_eligible:
+            if sym not in self.watchlist or sym not in self._entry_eligible or sym in self._delisted:
                 continue
             code = sym[-6:]
             if not code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):

@@ -194,7 +194,10 @@ def on_snapshot_restored(snapshot_data: Dict[str, Any]):
                     saved = json.loads(STRATEGY_CONFIG_PATH.read_text())
                 strategy_id = saved.get("active_strategy", saved.get("current_strategy", ctx.strategy.name))
                 params = saved.get("parameters", asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {})
-                ctx.symbols = normalized_watchlist(saved.get("symbols", ctx.symbols))
+                from stock_lifecycle import filter_active_symbols
+                saved_symbols = normalized_watchlist(saved.get("symbols", ctx.symbols))
+                held = set(ctx.account.positions) if ctx.account else set()
+                ctx.symbols = filter_active_symbols(saved_symbols, positions=held, base_dir=BASE_DIR)
                 ctx.interval = validated_interval(saved.get("interval", ctx.interval))
                 ctx.strategy_active = saved.get("strategy_active", ctx.strategy_active)
                 ctx.strategy = configured_strategy(strategy_id, ctx.account, ctx.symbols, params)
@@ -1098,7 +1101,10 @@ def update_strategy_config(req: StrategyConfigRequest):
     """动态更新策略参数与自选股列表"""
     with ctx.lock:
         try:
-            symbols = normalized_watchlist(req.symbols) if req.symbols is not None else list(ctx.symbols)
+            from stock_lifecycle import filter_active_symbols
+            raw_symbols = normalized_watchlist(req.symbols) if req.symbols is not None else list(ctx.symbols)
+            held = set(ctx.account.positions) if ctx.account else set()
+            symbols = filter_active_symbols(raw_symbols, positions=held, base_dir=BASE_DIR)
             interval = validated_interval(req.interval) if req.interval is not None else validated_interval(ctx.interval)
             for key in ("min_change", "max_change", "take_profit", "stop_loss"):
                 value = getattr(req, key)
@@ -1678,11 +1684,6 @@ def main():
         symbols = StockUniverse.load_universe(only_main_board=True)
         logger.info(f"已全量加载全A股监控池（严格仅限沪深主板），共监控 {len(symbols)} 只标的。")
 
-    # 初始化上下文
-    ctx.symbols = symbols
-    ctx.interval = validated_interval(args.interval if args.interval is not None else saved_cfg.get("interval", 3.))
-    ctx.ignore_market_hours = args.test
-
     ctx.account = SimAccount(
         initial_cash=args.cash,
         strict_t1=(not args.no_t1),
@@ -1691,6 +1692,19 @@ def main():
     if args.purge_non_main:
         purge_res = ctx.account.purge_non_main_board()
         logger.info(f"已剥离历史非沪深主板资产与收益: {purge_res}")
+
+    from stock_lifecycle import filter_active_symbols
+    held = set(ctx.account.positions) if ctx.account else set()
+    active_symbols = filter_active_symbols(symbols, positions=held, base_dir=BASE_DIR)
+    if len(active_symbols) != len(symbols):
+        logger.info("已从监控池移除 %d 只已退市股票，保留有效标的 %d 只", len(symbols) - len(active_symbols), len(active_symbols))
+        symbols = active_symbols
+        saved_cfg["symbols"] = symbols
+
+    # 初始化上下文
+    ctx.symbols = symbols
+    ctx.interval = validated_interval(args.interval if args.interval is not None else saved_cfg.get("interval", 3.))
+    ctx.ignore_market_hours = args.test
 
     active_strat_id = saved_cfg.get("active_strategy", saved_cfg.get("current_strategy", "Momentum_Rotation"))
     strat_kwargs = saved_cfg.get("parameters", {})

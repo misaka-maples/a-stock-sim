@@ -231,7 +231,8 @@ class StockUniverse:
             if not symbols:
                 stocks = cls.scan_and_save(path, only_main_board=only_main_board)
                 return [s["symbol"] for s in stocks]
-            return symbols
+            from stock_lifecycle import filter_active_symbols
+            return filter_active_symbols(symbols, base_dir=BASE_DIR)
         except Exception:
             stocks = cls.scan_and_save(path, only_main_board=only_main_board)
             return [s["symbol"] for s in stocks]
