@@ -29,6 +29,10 @@ import requests
 from market_request_budget import (MarketRequestBudget, RequestBudgetExceeded,
                                    RequestQueueBusy, RequestBudgetUnavailable)
 
+_market_sdk = Path(__file__).resolve().parent / "data" / "market_sdk"
+if _market_sdk.exists() and str(_market_sdk) not in sys.path:
+    sys.path.insert(0, str(_market_sdk))
+
 
 class ProviderUnavailable(ValueError):
     """Sanitized provider error; never contains remote response bodies or secrets."""

@@ -32,6 +32,9 @@ import uvicorn
 # 引入核心交易系统模块
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), "/home/maple"])
+_market_sdk = BASE_DIR / "data" / "market_sdk"
+if _market_sdk.exists() and str(_market_sdk) not in sys.path:
+    sys.path.insert(0, str(_market_sdk))
 
 from sim_trader import (
     SimAccount, MarketFeed, StockUniverse,
