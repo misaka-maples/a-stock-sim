@@ -26,6 +26,10 @@ NOW = dt.datetime(2026, 9, 22, 10, tzinfo=BEIJING)
 
 class TestServerAPI(unittest.TestCase):
     def setUp(self):
+        async_patch = patch.object(server, "BACKTEST_ASYNC", False)
+        async_patch.start()
+        self.addCleanup(async_patch.stop)
+
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

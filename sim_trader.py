@@ -1200,6 +1200,8 @@ class SimAccount:
                 }
             item = symbol_map[sym]
             item["trade_count"] += 1
+            if item["status"] == "已清仓":
+                item["last_price"] = t.get("price", item["last_price"])
             item["total_fees"] = round(item["total_fees"] + t.get("fees", 0.0), 2)
             if t.get("side") == "BUY":
                 item["buy_amount"] = round(item["buy_amount"] + t.get("amount", 0.0), 2)
@@ -1472,37 +1474,41 @@ class SimAccount:
         try:
             content = self.save_path.read_text()
             data = json.loads(content)
-            sum_data = data.get("summary", {})
-            self.initial_cash = sum_data.get("initial_cash", self.initial_cash)
-            self.cash = sum_data.get("cash", self.cash)
-            self.positions = data.get("positions", {})
-            self.trades = data.get("trades", [])
-            self.orders = data.get("orders", [])
-            self.equity_history = data.get("equity_history", [])
-            self.daily_equity_history = data.get("daily_equity_history", [])
-            if not self.daily_equity_history:
-                daily = {point["time"][:10]: dict(point) for point in self.equity_history if point.get("time")}
-                self.daily_equity_history = [daily[date] for date in sorted(daily)]
-            self.risk_history = data.get("risk_history") or {
-                "history_complete": False,
-                "peak_equity": max(self.initial_cash, sum_data.get("peak_equity", self.initial_cash)),
-                "max_drawdown": sum_data.get("max_drawdown", 0),
-                "max_drawdown_pct": sum_data.get("max_drawdown_pct", 0)
-            }
-            self._last_rejections = {}
-            self.strategy_state = data.get("strategy_state", {})
-            self._quote_consumption = {tuple(row[:3]): row[3] for row in data.get("quote_consumption", [])}
-            self._daily_consumption = {tuple(row[:3]): row[3] for row in data.get("daily_consumption", [])}
-            self._quote_capacity = {tuple(row[:3]): row[3] for row in data.get("quote_capacity", [])}
-            # Legacy consumption is a safe lower bound for already-used books.
-            for key, used in self._quote_consumption.items():
-                self._quote_capacity.setdefault(key, used)
-            self._validate_loaded_finances()
-            self._migrate_cost_basis()
-            self.update_t1_available_shares()
-            self._backfill_equity_history()
+            self._apply_loaded_data(data)
         except Exception as exc:
             raise ValueError(f"账户文件无法安全加载: {self.save_path}: {exc}") from exc
+
+    def _apply_loaded_data(self, data, migrate=True):
+        sum_data = data.get("summary", {})
+        self.initial_cash = sum_data.get("initial_cash", self.initial_cash)
+        self.cash = sum_data.get("cash", self.cash)
+        self.positions = data.get("positions", {})
+        self.trades = data.get("trades", [])
+        self.orders = data.get("orders", [])
+        self.equity_history = data.get("equity_history", [])
+        self.daily_equity_history = data.get("daily_equity_history", [])
+        if not self.daily_equity_history:
+            daily = {point["time"][:10]: dict(point) for point in self.equity_history if point.get("time")}
+            self.daily_equity_history = [daily[date] for date in sorted(daily)]
+        self.risk_history = data.get("risk_history") or {
+            "history_complete": False,
+            "peak_equity": max(self.initial_cash, sum_data.get("peak_equity", self.initial_cash)),
+            "max_drawdown": sum_data.get("max_drawdown", 0),
+            "max_drawdown_pct": sum_data.get("max_drawdown_pct", 0)
+        }
+        self._last_rejections = {}
+        self.strategy_state = data.get("strategy_state", {})
+        self._quote_consumption = {tuple(row[:3]): row[3] for row in data.get("quote_consumption", [])}
+        self._daily_consumption = {tuple(row[:3]): row[3] for row in data.get("daily_consumption", [])}
+        self._quote_capacity = {tuple(row[:3]): row[3] for row in data.get("quote_capacity", [])}
+        # Legacy consumption is a safe lower bound for already-used books.
+        for key, used in self._quote_consumption.items():
+            self._quote_capacity.setdefault(key, used)
+        self._validate_loaded_finances()
+        if migrate:
+            self._migrate_cost_basis()
+        self.update_t1_available_shares()
+        self._backfill_equity_history()
 
 
 # ==============================================================================

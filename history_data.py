@@ -176,6 +176,7 @@ class HistoricalDataFeed:
     MAX_WORKERS = 6
 
     def __init__(self, cache_dir: Optional[Path] = None, request_timeout: float = 6):
+        self.compact_limit = None
         self.cache_dir = Path(cache_dir) if cache_dir is not None else CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
@@ -709,10 +710,18 @@ class HistoricalDataFeed:
         return dict(symbol=symbol, name=self._security_name(symbol, cached.get("name", symbol[2:])), bars=bars,
                     metadata=metadata, error=metadata.get("error"))
 
+    def _compact_item(self, item):
+        if self.compact_limit is not None:
+            from compact_bars import CompactBars
+            item["bars"] = CompactBars(item.get("bars", []), limit=self.compact_limit)
+            # Live strategy never uses this full-history date index.
+            item.pop("by_date", None)
+        return item
+
     def peek_universe(self, symbols, start_date="2024-01-01", end_date=None):
         """Read-only cache bootstrap; every missing/invalid name remains explicit."""
         start, end = self._dates(start_date, end_date)
-        return {symbol: self._peek_cached(symbol, start, end)
+        return {symbol: self._compact_item(self._peek_cached(symbol, start, end))
                 for symbol in dict.fromkeys(normalize_symbol_for_tencent(s) for s in symbols)}
 
     def peek_benchmark_kline(self, index_code="000300", start_date="2024-01-01", end_date=None):
@@ -805,9 +814,9 @@ class HistoricalDataFeed:
                 sym, name, bars = self.fetch_stock_kline(symbol, start, end, use_cache)
                 with self._lock:
                     metadata = copy.deepcopy(self.metadata.get(sym, {}))
-                return sym, {"symbol": sym, "name": name, "bars": bars,
-                             "by_date": {b["date"]: b for b in bars},
-                             "metadata": metadata, "error": metadata.get("error")}
+                return sym, self._compact_item({"symbol": sym, "name": name, "bars": bars,
+                             "metadata": metadata, "error": metadata.get("error"),
+                             **({"by_date": {b["date"]: b for b in bars}} if self.compact_limit is None else {})})
             except Exception as exc:
                 metadata = self._describe([], start, end, "unavailable", error=type(exc).__name__)
                 return symbol, {"symbol": symbol, "name": symbol[2:], "bars": [], "by_date": {},

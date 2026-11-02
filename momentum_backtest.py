@@ -9,6 +9,7 @@ import datetime as dt
 import math
 import re
 import statistics
+import time
 
 from history_data import HistoricalDataFeed, previous_trading_day, normalize_symbol_for_tencent
 from trade_calendar import is_trading_day
@@ -50,9 +51,13 @@ class MomentumBacktestEngine:
                  commission_rate=.00025, min_commission=5.0,
                  stamp_tax_rate=.0005, transfer_fee_rate=.00001,
                  slippage_rate=.001, strict_t1=True, warmup_calendar_days=400,
-                 **kwargs):
+                 streaming=False, spill_results=False, work_dir=None, progress=None, **kwargs):
         if strategy_name not in MOMENTUM_STRATEGIES:
             raise ValueError("Unknown momentum strategy")
+        self.streaming, self.spill_results = streaming, spill_results
+        self.work_dir, self.progress = work_dir, progress
+        self._progress_at = 0
+        self._stream_store = None
         self.feed = feed if feed is not None else HistoricalDataFeed()
         if end_date is None:
             from history_data import last_completed_trading_day
@@ -110,7 +115,27 @@ class MomentumBacktestEngine:
         except (KeyError, TypeError, ValueError):
             return False
 
+    def notify_progress(self, phase, done, total, throttle=False):
+        if self.progress and (not throttle or time.monotonic()-self._progress_at >= 1):
+            self.progress(phase, done, total)
+            self._progress_at = time.monotonic()
+
+    def close(self):
+        if self._stream_store is not None:
+            self._stream_store.close()
+            self._stream_store = None
+
     def run(self):
+        try:
+            result = self._run()
+        except BaseException:
+            self.close()
+            raise
+        if not self.spill_results:
+            self.close()
+        return result
+
+    def _run(self):
         warmup_start = (dt.date.fromisoformat(self.start_date)
                         - dt.timedelta(days=self.warmup_calendar_days)).isoformat()
         benchmark = sorted(self.feed.fetch_benchmark_kline(
@@ -122,8 +147,14 @@ class MomentumBacktestEngine:
         dates = [b["date"] for b in benchmark if self.start_date <= b["date"] <= self.end_date]
         if not dates:
             raise ValueError("No benchmark bars in requested period")
-        stocks = self.feed.fetch_universe_klines(
-            self.symbols, start_date=warmup_start, end_date=self.end_date)
+        if self.streaming:
+            from streaming_history import StreamingStocks
+            signal_dates = {previous_trading_day(dt.date.fromisoformat(d)) for d in dates}
+            stocks = StreamingStocks(self, warmup_start, dates, signal_dates)
+            self._stream_store = stocks
+        else:
+            stocks = self.feed.fetch_universe_klines(
+                self.symbols, start_date=warmup_start, end_date=self.end_date)
         warnings = ["daily_open_approximation: signals use previous close; fills use next raw open",
                     "capacity_approximation: daily total volume limits fills, not opening-auction depth",
                     "corporate_actions_not_accounted: cash dividends, splits and delisting recoveries require an event feed"]
@@ -136,38 +167,46 @@ class MomentumBacktestEngine:
         warnings.append("historical_risk_status_unverified: dated ST/price-limit metadata takes precedence; current names are only a conservative fallback")
         if self.universe_intervals is None:
             warnings.append("fixed_pool_research_only: historical universe eligibility/survivorship unverified")
-        missing_industry = sum(not self.industry_map.get(s) and not any(
-            b.get("industry") or b.get("sector") for b in stocks.get(s, {}).get("bars", [])
-            if b.get("date", "") <= self.end_date) for s in self.symbols)
-        if missing_industry:
-            warnings.append("missing_industry_mapping: unknown names share one capped industry bucket")
-        if self.ignored_legacy_parameters:
-            warnings.append("ignored_legacy_parameters: " + ", ".join(self.ignored_legacy_parameters))
-        data_coverage = {}
-        for symbol in self.symbols:
-            info = stocks.get(symbol) or {"bars": []}
-            bars = sorted([b for b in info.get("bars", []) if b.get("date", "") <= self.end_date],
-                          key=lambda b: b["date"])
-            if len({b["date"] for b in bars}) != len(bars):
-                raise ValueError("Duplicate stock dates: " + symbol)
-            info = dict(info, bars=bars, by_date={b["date"]: b for b in bars})
-            stocks[symbol] = info
-            raw_missing = [b["date"] for b in bars if not self._raw_valid(b)]
-            if raw_missing:
-                raise ValueError("raw_prices_missing: " + symbol + "; fail closed")
-            in_period = [b["date"] for b in bars if self.start_date <= b["date"] <= self.end_date]
-            pre_count = sum(b["date"] < dates[0] for b in bars)
-            data_coverage[symbol] = dict(start=bars[0]["date"] if bars else None,
-                                         end=bars[-1]["date"] if bars else None,
-                                         count=len(bars), pre_start_bars=pre_count,
-                                         period_count=len(in_period), metadata=info.get("metadata", {}))
-            if not bars:
-                warnings.append("missing_stock_data: " + symbol)
-            if pre_count < 125:
-                warnings.append("insufficient_warmup: " + symbol)
-            if any(d not in info["by_date"] for d in dates):
-                warnings.append("missing_bars_or_suspension: " + symbol)
-
+        if self.streaming:
+            missing_industry = stocks.missing_industry
+            data_coverage = stocks.coverage
+            if missing_industry:
+                warnings.append("missing_industry_mapping: unknown names share one capped industry bucket")
+            if self.ignored_legacy_parameters:
+                warnings.append("ignored_legacy_parameters: " + ", ".join(self.ignored_legacy_parameters))
+            warnings.extend(stocks.warnings)
+        else:
+            missing_industry = sum(not self.industry_map.get(s) and not any(
+                b.get("industry") or b.get("sector") for b in stocks.get(s, {}).get("bars", [])
+                if b.get("date", "") <= self.end_date) for s in self.symbols)
+            if missing_industry:
+                warnings.append("missing_industry_mapping: unknown names share one capped industry bucket")
+            if self.ignored_legacy_parameters:
+                warnings.append("ignored_legacy_parameters: " + ", ".join(self.ignored_legacy_parameters))
+            data_coverage = {}
+            for symbol in self.symbols:
+                info = stocks.get(symbol) or {"bars": []}
+                bars = sorted([b for b in info.get("bars", []) if b.get("date", "") <= self.end_date],
+                              key=lambda b: b["date"])
+                if len({b["date"] for b in bars}) != len(bars):
+                    raise ValueError("Duplicate stock dates: " + symbol)
+                info = dict(info, bars=bars, by_date={b["date"]: b for b in bars})
+                stocks[symbol] = info
+                raw_missing = [b["date"] for b in bars if not self._raw_valid(b)]
+                if raw_missing:
+                    raise ValueError("raw_prices_missing: " + symbol + "; fail closed")
+                in_period = [b["date"] for b in bars if self.start_date <= b["date"] <= self.end_date]
+                pre_count = sum(b["date"] < dates[0] for b in bars)
+                data_coverage[symbol] = dict(start=bars[0]["date"] if bars else None,
+                                             end=bars[-1]["date"] if bars else None,
+                                             count=len(bars), pre_start_bars=pre_count,
+                                             period_count=len(in_period), metadata=info.get("metadata", {}))
+                if not bars:
+                    warnings.append("missing_stock_data: " + symbol)
+                if pre_count < 125:
+                    warnings.append("insufficient_warmup: " + symbol)
+                if any(d not in info["by_date"] for d in dates):
+                    warnings.append("missing_bars_or_suspension: " + symbol)
         bench_by_date = {b["date"]: b for b in benchmark}
         prior_date = {date: previous_trading_day(dt.date.fromisoformat(date)) for date in dates}
         missing_benchmark = []
@@ -185,7 +224,13 @@ class MomentumBacktestEngine:
         bench_initial = float(bench_by_date[first_previous]["close"] if first_previous in bench_by_date
                               else bench_by_date[dates[0]].get("open", bench_by_date[dates[0]]["close"]))
         cash, positions, cooldown, pending_exits = self.initial_cash, {}, {}, {}
-        fills, trades, rejections, curve = [], [], [], []
+        if self.spill_results:
+            if not self.streaming:
+                raise ValueError("spill_results requires streaming")
+            from streaming_history import DiskList
+            fills, trades, rejections, curve = [DiskList(stocks.db, name) for name in ('fills','trades','rejections','curve')]
+        else:
+            fills, trades, rejections, curve = [], [], [], []
         peak, total_fees = self.initial_cash, 0.0
         observed_factors = {}
 
@@ -214,8 +259,11 @@ class MomentumBacktestEngine:
             return mapping
 
         for index, date in enumerate(dates):
+            self.notify_progress('replay', index, len(dates))
             day_notional = 0.0
             as_of = prior_date[date]
+            if self.streaming:
+                stocks.prepare_day(date, as_of)
             dated_industries = industries_on(date)
             signals = {}
             rebalance = index % self.config.rebalance_every == 0
@@ -228,7 +276,7 @@ class MomentumBacktestEngine:
                                     else "ST" in name or "退" in name or name.startswith("PT"))
                     if (_main_board(symbol) and not risk_warning
                             and eligible_on(symbol, as_of, self.universe_intervals)):
-                        signal = evaluate_momentum(stocks[symbol]["bars"], as_of, self.config)
+                        signal = stocks.signal(symbol, as_of) if self.streaming else evaluate_momentum(stocks[symbol]["bars"], as_of, self.config)
                         if signal:
                             signals[symbol] = signal
             ranking = sorted(signals, key=lambda s: (-signals[s]["score"], s))
@@ -242,7 +290,7 @@ class MomentumBacktestEngine:
             # Orders only inspect completed bars. Failed/partial exits persist.
             if as_of:
                 for symbol, pos in positions.items():
-                    signal = holding_signal(stocks[symbol]["bars"], as_of)
+                    signal = stocks.signal(symbol, as_of, holding=True) if self.streaming else holding_signal(stocks[symbol]["bars"], as_of)
                     if signal is None:
                         continue  # Missing evidence cannot authorize a new rank exit.
                     reason = exit_reason(signal["raw_signal_price"], pos["cost_price"],
@@ -461,10 +509,10 @@ class MomentumBacktestEngine:
                               gross_exposure=market_value/equity if equity > 0 else 0,
                               industry_exposure={s: v/equity if equity > 0 else 0 for s, v in industry_values.items()}))
 
-        wins = [t for t in trades if t["net_pnl"] > 0]
-        losses = [t for t in trades if t["net_pnl"] <= 0]
-        avg_win = sum(t["net_pnl"] for t in wins)/len(wins) if wins else 0
-        avg_loss = abs(sum(t["net_pnl"] for t in losses)/len(losses)) if losses else 0
+        win_count = sum(t["net_pnl"] > 0 for t in trades)
+        loss_count = len(trades)-win_count
+        avg_win = sum(t["net_pnl"] for t in trades if t["net_pnl"] > 0)/win_count if win_count else 0
+        avg_loss = abs(sum(t["net_pnl"] for t in trades if t["net_pnl"] <= 0)/loss_count) if loss_count else 0
         final = curve[-1]["equity"]
         total_return = (final/self.initial_cash-1)*100
         cagr = ((final/self.initial_cash)**(252/len(curve))-1)*100 if final > 0 else -100
@@ -491,8 +539,8 @@ class MomentumBacktestEngine:
                        excess_return_pct=round(total_return-curve[-1]["benchmark_return_pct"], 2),
                        max_drawdown_pct=max_dd, max_drawdown_val=max(p["drawdown"] for p in curve),
                        sharpe_ratio=round(sharpe, 3), calmar_ratio=round(cagr/max_dd, 3) if max_dd else 0,
-                       total_trades=len(trades), win_rate=round(len(wins)/len(trades)*100, 2) if trades else 0,
-                       win_count=len(wins), loss_count=len(losses), avg_win=round(avg_win, 2), avg_loss=round(avg_loss, 2),
+                       total_trades=len(trades), win_rate=round(win_count/len(trades)*100, 2) if trades else 0,
+                       win_count=win_count, loss_count=loss_count, avg_win=round(avg_win, 2), avg_loss=round(avg_loss, 2),
                        profit_loss_ratio=round(avg_win/avg_loss, 2) if avg_loss else 0,
                        avg_holding_days=round(statistics.mean(t["holding_days"] for t in trades), 2) if trades else 0,
                        total_fees=round(total_fees, 2), fill_count=len(fills),

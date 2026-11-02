@@ -58,6 +58,8 @@ class DailyMomentumStrategy:
         self.state.setdefault("pending_entries", {})
         self.state.setdefault("entry_rejections", [])
         self.state.setdefault("exit_rejections", {})
+        if feed is None and hasattr(self.feed, "compact_limit"):
+            self.feed.compact_limit = 126
         self.history_cache = {}
         self.latest_candidates = []
         self.data_status = {"status": "not_loaded", "requested": len(self.watchlist), "loaded": 0}

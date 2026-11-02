@@ -1,0 +1,9 @@
+[Unit]
+Description=Combined 2 CPU / small-memory quant budget
+
+[Slice]
+CPUAccounting=true
+CPUQuota=200%
+MemoryAccounting=true
+MemoryMax=1536M
+MemorySwapMax=0

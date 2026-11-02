@@ -50,6 +50,16 @@ from trade_calendar import is_trading_day
 from api_auth import install_auth
 from execution import _risk_and_limits
 from runtime_resources import memory_snapshot, release_unused_memory, configure_logging
+from backtest_jobs import JobStore
+
+BACKTEST_ASYNC = True
+_job_store = None
+
+def backtest_store():
+    global _job_store
+    if _job_store is None:
+        _job_store = JobStore()
+    return _job_store
 
 STRATEGY_CONFIG_PATH = BASE_DIR / "data" / "strategy_config.json"
 
@@ -705,17 +715,17 @@ def get_quotes():
 
 
 @app.get("/api/trades")
-def get_trades(limit: int = 50):
+def get_trades(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
     """获取历史成交明细"""
     with ctx.lock:
-        return ctx.account.trades[-limit:]
+        return ctx.account.trades[max(0, len(ctx.account.trades)-offset-limit):max(0,len(ctx.account.trades)-offset)]
 
 
 @app.get("/api/orders")
-def get_orders(limit: int = 50):
+def get_orders(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
     """获取委托订单记录"""
     with ctx.lock:
-        return ctx.account.orders[-limit:]
+        return ctx.account.orders[max(0, len(ctx.account.orders)-offset-limit):max(0,len(ctx.account.orders)-offset)]
 
 
 @app.get("/api/status")
@@ -1355,12 +1365,7 @@ def get_backtest_config():
         "strategies": [
             {"id": "Momentum_Rotation_Pro", "name": "日线动量增强（次日成交）"},
             {"id": "Momentum_Rotation", "name": "基础日线动量（次日成交）"},
-            {"id": "Minervini_SEPA", "name": "趋势收缩突破（旧版实验）"},
-            {"id": "ONeil_CANSLIM", "name": "相对强度突破（旧版实验）"},
-            {"id": "TurtleBreakout", "name": "通道突破（旧版实验）"},
-            {"id": "MATrendFollowing", "name": "双均线趋势（旧版实验）"},
-            {"id": "ShortTermResonance", "name": "量价共振（旧版日线近似）"},
-            {"id": "MomentumBreakout", "name": "价格突破（旧版实验）"}
+
         ],
         "pools": [
             {"id": "current_watchlist", "name": f"当前监控池快照 ({current_pool_count}只；非历史时点股票池)", "symbol_count": current_pool_count},
@@ -1390,6 +1395,8 @@ def get_backtest_config():
 @app.post("/api/backtest/run")
 def run_backtest_endpoint(req: BacktestRequest):
     """触发量化策略历史回测并返回绩效报告与资产曲线"""
+    if BACKTEST_ASYNC:
+        return _run_backtest_request(req, submit=True)
     if not backtest_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="已有回测正在运行，请等待完成后重试")
     try:
@@ -1407,7 +1414,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             backtest_lock.release()
 
 
-def _run_backtest_request(req: BacktestRequest):
+def _run_backtest_request(req: BacktestRequest, submit=False):
     # Keep the allocation-heavy frame out of the cleanup scope.
     try:
         momentum = req.strategy_name in ("Momentum_Rotation", "Momentum_Rotation_Pro")
@@ -1484,8 +1491,7 @@ def _run_backtest_request(req: BacktestRequest):
             arguments.update(take_profit_trigger_pct=req.take_profit, stop_loss_pct=req.stop_loss,
                              max_holding_days=req.max_holding_days, max_positions=req.max_positions)
         # Only copies have been captured above; network/data work is outside ctx.lock.
-        res = run_backtest(**arguments)
-        res = dict(res)
+        res = {} if submit else dict(run_backtest(**arguments))
         limitations = (["当前/固定股票池与当前行业分类不代表历史时点，结果仅供研究",
                         "未计现金分红、送股、拆并股及退市回收事件",
                         "日线MA与排名信号次日执行；盘中止损仅按日线OHLC近似，不能精确还原逐笔触发或盘口成交",
@@ -1506,6 +1512,15 @@ def _run_backtest_request(req: BacktestRequest):
                 main_board_ratio=main_board_mapped/len(main_board_symbols) if main_board_symbols else 0),
             industry_source={"capture": "loaded_strategy_snapshot", **industry_source} if industries else dict(source="unavailable"),
             ignored_params=ignored, model_limitations=limitations)
+        if submit:
+            try:
+                job = backtest_store().submit(arguments, res["request_context"])
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            return JSONResponse(status_code=202, content={"success": True, "job": job,
+                "message": "任务已保存；工作日08:00–17:00保护实时策略，仅在保护窗口外且服务健康时运行"})
         return {"success": True, "data": res}
     except HTTPException:
         raise
@@ -1529,6 +1544,38 @@ def run_backtest_get(
     return run_backtest_endpoint(BacktestRequest(start_date=start, end_date=end, initial_cash=cash,
         strategy_name=strategy, pool_type=pool, take_profit=take_profit, stop_loss=stop_loss,
         use_current_config=use_current_config))
+
+
+@app.get("/api/backtest/jobs")
+def list_backtest_jobs():
+    return {"success": True, "jobs": backtest_store().list()}
+
+
+@app.get("/api/backtest/jobs/{job_id}")
+def get_backtest_job(job_id: str):
+    try:
+        return {"success": True, "job": backtest_store().get(job_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="回测任务不存在")
+
+
+@app.post("/api/backtest/jobs/{job_id}/cancel")
+def cancel_backtest_job(job_id: str):
+    try:
+        return {"success": True, "job": backtest_store().cancel(job_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="回测任务不存在")
+
+
+@app.get("/api/backtest/jobs/{job_id}/result")
+def get_backtest_job_result(job_id: str):
+    try:
+        store = backtest_store()
+        if store.get(job_id)["status"] != "completed":
+            raise HTTPException(status_code=409, detail="回测尚未完成")
+        return FileResponse(store.result_path(job_id), media_type="application/json")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="回测任务不存在")
 
 
 @app.get("/health")

@@ -806,6 +806,8 @@
         <button id="btRunBtn" class="btn btn-primary" style="width: 100%; padding: 8px 16px; font-weight: 600;" onclick="runBacktestUI()">
           🚀 开始运行回测
         </button>
+        <button class="btn" onclick="cancelBacktestUI()">取消排队 / 运行中的回测</button>
+        <p style="font-size:12px;color:var(--text-muted)">回测仅使用本机缓存。工作日08:00–17:00保护策略，跨入保护窗口将停止并重新排队。</p>
       </div>
     </div>
     <div style="padding:0 16px 12px;line-height:1.7;font-size:12px;color:var(--text-muted)">
@@ -1360,6 +1362,7 @@
       }
       startStockQuoteRefresh();
       loadBacktestConfiguration().catch(() => {});
+      restoreBacktestJob().catch(() => {});
       fetchData();
       fetchNotifyStatus();
       if (timerId) clearInterval(timerId);
@@ -2765,33 +2768,76 @@
       return payload;
     }
 
+    let backtestPollTimer = null;
+    let activeBacktestJobId = null;
+    async function pollBacktestJob(jobId) {
+      const btn = document.getElementById('btRunBtn');
+      try {
+        const response = await apiFetch('/api/backtest/jobs/' + jobId);
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || '任务读取失败');
+        const job = result.job;
+        if (job.status === 'completed') {
+          const response = await apiFetch('/api/backtest/jobs/' + jobId + '/result');
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error(result.detail || '结果读取失败');
+          renderBacktestResults(result.data);
+          document.getElementById('btResultContainer').style.display = 'block';
+          activeBacktestJobId = null;
+          btn.disabled = false; btn.innerText = '🚀 开始运行回测';
+          showToast('历史回测完成');
+          return;
+        }
+        if (job.status === 'failed' || job.status === 'cancelled') {
+          activeBacktestJobId = null;
+          btn.disabled = false; btn.innerText = '🚀 开始运行回测';
+          showToast(job.status === 'cancelled' ? '回测已取消' : '回测失败: ' + job.error, true);
+          return;
+        }
+        const p = job.progress || {};
+        btn.innerText = job.status === 'queued' ? '已排队，等待非交易时段与空闲资源' : '回测中: ' + (p.phase || '') + ' ' + (p.done || 0) + '/' + (p.total || 0);
+        btn.disabled = true;
+      } catch (err) {
+        showToast('回测状态暂不可用: ' + err.message, true);
+      }
+      backtestPollTimer = setTimeout(() => pollBacktestJob(jobId), 5000);
+    }
+
+    async function cancelBacktestUI() {
+      const id = activeBacktestJobId;
+      if (!id) return;
+      await apiFetch('/api/backtest/jobs/' + id + '/cancel', {method:'POST'});
+    }
+
+    async function restoreBacktestJob() {
+      clearTimeout(backtestPollTimer);
+      let id = activeBacktestJobId;
+      if (!id) {
+        const response = await apiFetch('/api/backtest/jobs');
+        const result = await response.json();
+        const job = (result.jobs || []).find(j => j.status === 'running' || j.status === 'queued');
+        if (job) { id = job.id; activeBacktestJobId = id; }
+      }
+      if (id) pollBacktestJob(id);
+    }
+
     async function runBacktestUI() {
       const btn = document.getElementById('btRunBtn');
-      const container = document.getElementById('btResultContainer');
-
       btn.disabled = true;
-      btn.innerText = '⏳ 正在拉取数据与回测撮合...';
-
       try {
-        const res = await apiFetch('/api/backtest/run', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+        const response = await apiFetch('/api/backtest/run', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify(buildBacktestPayload())
-        }).then(r => r.json());
-
-        if (res.success && res.data) {
-          showToast('历史回测运行成功！');
-          container.style.display = 'block';
-          renderBacktestResults(res.data);
-          container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        } else {
-          showToast(`回测失败: ${res.detail || res.error || '未知错误'}`, true);
-        }
+        });
+        const result = await response.json();
+        if (!response.ok || !result.job) throw new Error(result.detail || result.error || '任务提交失败');
+        activeBacktestJobId = result.job.id;
+        showToast(result.message);
+        clearTimeout(backtestPollTimer);
+        pollBacktestJob(result.job.id);
       } catch (err) {
-        showToast(`回测请求异常: ${err}`, true);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = '🚀 开始运行回测';
+        btn.disabled = false; btn.innerText = '🚀 开始运行回测';
+        showToast('回测请求异常: ' + err.message, true);
       }
     }
 

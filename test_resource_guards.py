@@ -8,6 +8,11 @@ from fastapi import HTTPException
 import server
 import runtime_resources as resources
 
+@pytest.fixture(autouse=True)
+def synchronous_compatibility(monkeypatch):
+    monkeypatch.setattr(server, "BACKTEST_ASYNC", False)
+
+
 
 def test_get_and_post_share_nonblocking_guard():
     entered, finish = threading.Event(), threading.Event()
