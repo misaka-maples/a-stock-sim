@@ -246,6 +246,8 @@ def _acquire_worker_lease():
 def _install_bao_budget():
     """Instrument the SDK packet boundary, including login/logout and pages."""
     import baostock.util.socketutil as transport
+    import socket
+    socket.setdefaulttimeout(15.0)
     budget = MarketRequestBudget()
     try:
         state = budget.initialize("baostock")

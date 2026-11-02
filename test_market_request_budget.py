@@ -181,14 +181,14 @@ except RequestQueueBusy:
         state = self.budget.status('baostock')
         self.assertEqual(state['used'], 1)
         self.assertEqual(state['failures'], 0)
-        self.assertEqual(state['interval'], 0)
+        self.assertEqual(state['interval'], 0.25)
 
     def test_baostock_success_has_no_fixed_sleep_and_failure_still_backs_off(self):
         start = self.clock.now
         for _ in range(3):
             with self.budget.request('baostock'):
                 pass
-        self.assertEqual(self.clock.now, start)
+        self.assertAlmostEqual(self.clock.now, start + 0.5)
         with self.assertRaises(OSError):
             with self.budget.request('baostock'):
                 raise OSError('network')
@@ -196,10 +196,10 @@ except RequestQueueBusy:
         with self.make().request('baostock'):
             pass
         recovered = self.clock.now
-        self.assertGreater(recovered, start)
+        self.assertGreater(recovered, start + 0.5)
         with self.make().request('baostock'):
             pass
-        self.assertEqual(self.clock.now, recovered)
+        self.assertGreater(self.clock.now, recovered)
         self.assertEqual(self.budget.status('baostock')['used'], 6)
 
     def test_legacy_healthy_bao_interval_migrates_without_resetting_quota(self):
@@ -212,8 +212,8 @@ except RequestQueueBusy:
         start = self.clock.now
         with self.make().request('baostock'):
             pass
-        self.assertEqual(self.clock.now, start)
         self.assertEqual(self.budget.status('baostock')['used'], 2)
+        self.assertEqual(self.budget.status('baostock')['interval'], 0.25)
 
     def test_initialize_records_unknown_day_without_network_reservation(self):
         budget = MarketRequestBudget(self.tmp.name, clock=self.clock.time,

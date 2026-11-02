@@ -1021,11 +1021,11 @@
           </div>
           <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
             <span>剩余配额: <strong id="baoRemainingText" style="color:#fff">--</strong></span>
-            <span>频控间隔: <strong id="baoIntervalText" style="color:#38bdf8">0.0s (无延迟)</strong></span>
+            <span>频控间隔: <strong id="baoIntervalText" style="color:#38bdf8">0.25s (频控保护)</strong></span>
             <span>失败次数: <strong id="baoFailsText" style="color:#fff">0</strong></span>
           </div>
           <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="baoNote">
-            主力数据源：全市场日K线批量拉取（串行直发，无固定等待）
+            主力数据源：全市场日K线批量拉取（0.25s 频控保护，避免触发上游反爬）
           </div>
         </div>
 
@@ -2508,13 +2508,39 @@
         }
 
         const isCircuitOpen = c.state === 'open';
-        const interval = typeof b.interval === 'number' ? b.interval : (isBao ? 0.0 : 1.0);
+        const interval = typeof b.interval === 'number' ? b.interval : (isBao ? 0.25 : 1.0);
         const isRateLimited = interval > 5;
+        const lastCode = c.last_error_code || (sh[budgetName] && sh[budgetName].last_error_code) || diag[budgetName]?.last_error_code;
+        const retrySec = c.retry_after_seconds || (sh[budgetName] && sh[budgetName].retry_after_seconds) || 0;
+        const isBlacklisted = lastCode === 'sdk_error_10001011';
 
-        if (dot) dot.innerText = isCircuitOpen ? '🔴' : isRateLimited ? '🟡' : '🟢';
+        if (dot) dot.innerText = isBlacklisted ? '🚫' : isCircuitOpen ? '🔴' : isRateLimited ? '🟡' : '🟢';
         if (badge) {
-          badge.innerText = isCircuitOpen ? `熔断 (${c.retry_after_seconds || 0}s)` : isRateLimited ? '自适应退避' : '正常';
-          badge.className = 'badge ' + (isCircuitOpen ? 'badge-strategy-off' : isRateLimited ? 'badge-market' : 'badge-strategy-on');
+          if (isBlacklisted) {
+            const minLeft = Math.ceil(retrySec / 60);
+            badge.innerText = minLeft > 1 ? `🚫 IP黑名单 (${minLeft}分)` : `🚫 IP黑名单 (${retrySec}s)`;
+            badge.className = 'badge badge-strategy-off';
+          } else if (isCircuitOpen) {
+            if (lastCode === 'worker_timeout') {
+              badge.innerText = `⏱️ 响应超时 (${retrySec}s)`;
+            } else if (lastCode === 'HTTPError') {
+              badge.innerText = `🛡️ WAF拦截 (${retrySec}s)`;
+            } else if (lastCode === 'ConnectionError') {
+              badge.innerText = `🔌 连接重置 (${retrySec}s)`;
+            } else if (lastCode === 'provider_restricted') {
+              const minLeft = Math.ceil(retrySec / 60);
+              badge.innerText = minLeft > 1 ? `⏸️ 静默保护 (${minLeft}分)` : `⏸️ 静默保护 (${retrySec}s)`;
+            } else {
+              badge.innerText = `熔断 (${retrySec}s)`;
+            }
+            badge.className = 'badge badge-strategy-off';
+          } else if (isRateLimited) {
+            badge.innerText = '自适应退避';
+            badge.className = 'badge badge-market';
+          } else {
+            badge.innerText = '正常';
+            badge.className = 'badge badge-strategy-on';
+          }
         }
 
         const used = b.used || 0;
@@ -2529,16 +2555,47 @@
 
         if (remainingText) remainingText.innerText = (b.remaining !== undefined ? b.remaining : (limit - used)).toLocaleString();
         if (intervalText) {
-          if (isBao && interval === 0) {
-            intervalText.innerText = '0.0s (无延迟)';
+          if (isBao) {
+            intervalText.innerText = `${interval.toFixed(2)}s (频控保护)`;
           } else {
             intervalText.innerText = `${interval.toFixed(1)}s`;
           }
         }
         if (failsText) failsText.innerText = b.failures || 0;
 
-        if (note && b.reason) {
-          note.innerText = `提示: ${b.reason}`;
+        if (note) {
+          if (isBlacklisted) {
+            const minLeft = Math.ceil(retrySec / 60);
+            note.innerText = `⚠️ BaoStock官方反爬封禁 (10001011 黑名单用户)；系统已开启静默保护（剩余约 ${minLeft} 分钟），期间暂停请求以促成官方解禁。`;
+            note.style.color = 'var(--red-up)';
+          } else if (isCircuitOpen) {
+            if (lastCode === 'worker_timeout') {
+              note.innerText = `上游接口未在30秒内响应（可能网络丢包或对端负载过高），熔断器保护中。`;
+            } else if (lastCode === 'HTTPError') {
+              note.innerText = `触发上游服务器安全拦截（HTTP 501 / WAF 防护），熔断冷却中。`;
+            } else if (lastCode === 'ConnectionError') {
+              note.innerText = `对端服务器重置或拒绝连接 (ConnectionError)，熔断冷却中。`;
+            } else if (lastCode === 'provider_restricted') {
+              note.innerText = `接口处于受限静默保护期，暂停外发请求以促成官方解禁。`;
+            } else if (b.reason) {
+              note.innerText = `提示: ${b.reason}`;
+            } else {
+              note.innerText = `接口异常触发熔断保护，${retrySec}秒后尝试探活自愈。`;
+            }
+            note.style.color = 'var(--text-muted)';
+          } else if (b.reason) {
+            note.innerText = `提示: ${b.reason}`;
+            note.style.color = 'var(--text-muted)';
+          } else {
+            note.style.color = 'var(--text-muted)';
+            if (isBao) {
+              note.innerText = '主力数据源：全市场日K线批量拉取（0.25s 频控保护，避免触发上游反爬）';
+            } else if (budgetName === 'eastmoney') {
+              note.innerText = '行业分类数据映射与高可靠备用';
+            } else if (budgetName === 'tencent') {
+              note.innerText = '快速前复权K线校验与盘口撮合';
+            }
+          }
         }
       }
 
@@ -2552,6 +2609,13 @@
       if (diagContainer) {
         const counts = diag.baostock?.counts_by_code || {};
         const labels = {
+          sdk_error_10001011: '🚫 IP黑名单/反爬封禁',
+          circuit_open: '⚡ 熔断保护生效',
+          worker_timeout: '⏱️ 请求响应超时',
+          login_failed: '🔑 登录握手失败',
+          provider_restricted: '⏸️ 受限静默保护中',
+          ConnectionError: '🔌 连接中断/重置',
+          HTTPError: '🛡️ HTTP错误/WAF拦截',
           untracked_prior_usage: '未追踪早前用量',
           empty_history: '历史无数据/停牌',
           invalid_number: '数字解析异常',
@@ -2573,8 +2637,22 @@
       if (lastErr) {
         const lastSym = diag.baostock?.last_failed_symbol;
         const lastCode = diag.baostock?.last_error_code;
+        const labels = {
+          sdk_error_10001011: '🚫 IP黑名单/反爬封禁',
+          circuit_open: '⚡ 熔断保护生效',
+          worker_timeout: '⏱️ 请求响应超时',
+          login_failed: '🔑 登录握手失败',
+          provider_restricted: '⏸️ 受限静默保护中',
+          ConnectionError: '🔌 连接中断/重置',
+          HTTPError: '🛡️ HTTP错误/WAF拦截',
+          untracked_prior_usage: '未追踪早前用量',
+          empty_history: '历史无数据/停牌',
+          invalid_number: '数字解析异常',
+          stale_history: '历史K线陈旧'
+        };
         if (lastSym || lastCode) {
-          lastErr.innerText = `最近接口反馈: ${lastCode || '--'} (${lastSym || '--'})`;
+          const desc = labels[lastCode] || lastCode || '--';
+          lastErr.innerText = `最近接口反馈: ${desc} [${lastCode}] (${lastSym || '--'})`;
         } else {
           lastErr.innerText = '';
         }

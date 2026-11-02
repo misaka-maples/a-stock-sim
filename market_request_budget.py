@@ -66,7 +66,7 @@ class MarketRequestBudget:
         # Configuration can lower the safety budget, never exceed its ceiling.
         if cap < 1 or cap > hard_cap:
             raise ValueError('daily limit exceeds safe ceiling')
-        floor = 0. if provider == 'baostock' else 1.
+        floor = 0.25 if provider == 'baostock' else 1.
         interval = float(values.get('min_interval', floor))
         if not math.isfinite(interval) or interval < 0:
             raise ValueError('expected nonnegative finite interval')
@@ -157,10 +157,9 @@ class MarketRequestBudget:
             if persist:
                 self._save(provider, state)
         # Migrate healthy BaoStock ledgers without resetting usage or blocks.
-        # Network serialization is enforced by the lock, not an arbitrary sleep.
-        if provider == 'baostock' and state['failures'] == 0 and interval == 0:
-            state['interval'] = 0.
-            state['next_allowed_at'] = min(state['next_allowed_at'], now)
+        # Preserve the minimum safety interval floor to prevent triggering remote anti-scraping blocks.
+        if provider == 'baostock' and state['failures'] == 0:
+            state['interval'] = max(interval, state['interval'])
         return state
 
     @contextmanager
