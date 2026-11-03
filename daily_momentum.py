@@ -301,7 +301,13 @@ class DailyMomentumStrategy:
         if not self._after_close_only or self._one_off_remaining:
             return True
         local = now.astimezone(BEIJING) if now.tzinfo else now.replace(tzinfo=BEIJING)
-        return is_trading_day(local.date()) and local.time() >= dt.time(15, 5)
+        if not is_trading_day(local.date()):
+            return False
+        if local.time() >= dt.time(15, 5):
+            return True
+        if local.time() < dt.time(9, 15) and self._recovering_coverage():
+            return True
+        return False
 
     def _recovering_coverage(self):
         return bool(self._one_off_remaining) or (bool(self.history_cache) and self._ranking_coverage() < .95)

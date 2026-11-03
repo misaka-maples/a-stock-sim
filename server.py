@@ -847,6 +847,7 @@ def refresh_history():
     now = datetime.datetime.now(BEIJING)
     with ctx.lock:
         strategy = ctx.strategy
+        symbols = list(ctx.symbols)
     if not strategy or not hasattr(strategy, "prepare"):
         raise HTTPException(400, "当前策略不支持历史数据更新")
 
@@ -859,6 +860,11 @@ def refresh_history():
             strategy._next_industry_retry = 0
         if hasattr(strategy, "_next_nonholding_refresh"):
             strategy._next_nonholding_refresh = 0
+        if hasattr(strategy, "_one_off_remaining"):
+            targets = set(getattr(strategy, "watchlist", symbols) or symbols) - getattr(strategy, "_delisted", set())
+            strategy._one_off_remaining = targets
+            if hasattr(strategy, "_save_update_schedule"):
+                strategy._save_update_schedule()
 
     strategy.prepare(now, synchronous=False)
     return {"success": True, "message": "已触发历史数据后台检测与更新", "refreshing": True}
