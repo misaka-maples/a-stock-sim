@@ -900,14 +900,20 @@ class DailyMomentumStrategy:
             else:
                 # 尝试从候选信号或历史 K 线恢复
                 sig = self.state.get("pending_entries", {}).get(sym, {}).get("signal")
-                if not sig and sym in self.history_cache:
+                bars = self.history_cache.get(sym, [])
+                if not bars and getattr(self, "feed", None):
+                    try:
+                        bars = self.feed._peek_cached(sym, "2024-01-01", as_of).get("bars", [])
+                    except Exception:
+                        bars = []
+                if not sig and bars:
                     buy_day = min((lot.get("date", "9999") for lot in pos.get("buy_lots", [])), default=as_of)
                     sig_day = previous_trading_day(buy_day) if buy_day <= as_of else as_of
-                    sig = evaluate_momentum(self.history_cache[sym], sig_day, self.config)
+                    sig = evaluate_momentum(bars, sig_day, self.config)
                     if not sig:
-                        sig = evaluate_momentum(self.history_cache[sym], buy_day, self.config)
+                        sig = evaluate_momentum(bars, buy_day, self.config)
                     if not sig:
-                        sig = evaluate_momentum(self.history_cache[sym], as_of, self.config)
+                        sig = evaluate_momentum(bars, as_of, self.config)
                 if sig:
                     atr_pct = float(sig.get("atr_pct", 0.0) or 0.0)
                     volatility = float(sig.get("volatility", 0.0) or 0.0)
