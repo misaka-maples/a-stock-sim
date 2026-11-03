@@ -205,6 +205,80 @@ def target_weight(config, signal):
     return max(0.0, weight)
 
 
+def compute_risk_sizing_row(symbol, name, shares, cost_price, total_equity, config,
+                            atr_pct=0.0, volatility=0.0, cost_basis=None):
+    """计算单只持仓标的的风控头寸测算明细（ATR真实波幅、2×ATR距离、风险预算上限、耗资及仓位占比）"""
+    atr_val = float(atr_pct or 0.0)
+    vol_val = float(volatility or 0.0)
+    shares_int = int(shares or 0)
+    cost_val = float(cost_price or 0.0)
+    equity_val = float(total_equity or 0.0)
+
+    # 1. 2×ATR 风险距离 (或与硬止损取大)
+    stop_dist = abs(getattr(config, "stop_loss_pct", -6.0) or -6.0) / 100.0
+    atr_dist = 2.0 * atr_val
+    risk_distance = max(stop_dist, atr_dist) if atr_val > 0 else stop_dist
+
+    # 2. 风险预算算得权重上限
+    risk_budget = float(getattr(config, "risk_per_trade", 0.01) or 0.01)
+    max_pos = max(1, int(getattr(config, "max_positions", 3) or 3))
+    slot_cap = min(float(getattr(config, "max_stock_weight", 0.33) or 0.33), 1.0 / max_pos)
+    risk_cap = risk_budget / max(risk_distance, 0.001) if risk_budget > 0 else slot_cap
+
+    vol_target = float(getattr(config, "volatility_target", 0.25) or 0.25)
+    vol_cap = (vol_target / vol_val / max_pos) if (vol_target > 0 and vol_val > 0) else slot_cap
+
+    final_weight_cap = max(0.0, min(slot_cap, risk_cap, vol_cap))
+
+    # 3. 耗资与实际仓位占比
+    basis = float(cost_basis) if cost_basis is not None else round(shares_int * cost_val, 2)
+    actual_pct = (basis / equity_val * 100.0) if equity_val > 0 else 0.0
+
+    risk_label = f"{round(risk_budget * 100)}%" if round(risk_budget * 100, 2) == round(risk_budget * 100) else f"{risk_budget * 100:.1f}%"
+
+    return {
+        "symbol": symbol,
+        "name": name,
+        "label": f"{name} ({symbol})",
+        "atr_pct": atr_val,
+        "atr_pct_str": f"{atr_val * 100:.2f}%" if atr_val > 0 else "--",
+        "risk_distance": risk_distance,
+        "risk_distance_str": f"{risk_distance * 100:.2f}%" if risk_distance > 0 else "--",
+        "risk_budget": risk_budget,
+        "risk_budget_pct_label": risk_label,
+        "risk_weight_cap": final_weight_cap,
+        "risk_weight_cap_str": f"{final_weight_cap * 100:.2f}%",
+        "shares": shares_int,
+        "shares_str": f"{shares_int} 股",
+        "cost": basis,
+        "cost_str": f"¥{basis:,.0f}" if basis >= 1000 else f"¥{basis:,.2f}",
+        "actual_pct": actual_pct,
+        "actual_pct_str": f"{actual_pct:.1f}%"
+    }
+
+
+def format_position_sizing_markdown_table(rows, total_weight_cap=None, total_cost=None, total_actual_pct=None, risk_budget_pct="1%"):
+    """生成对齐用户要求的风控头寸精准测算 Markdown 表格"""
+    header_cap = f"{risk_budget_pct} 风险预算算得权重上限"
+    lines = [
+        f"| 持仓股票 | 日均波幅 ATR% | 2×ATR 风险距离 | {header_cap} | 实际买入股数 | 耗资 (元) | 实际仓位占比 |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ]
+    if not rows:
+        lines.append("| *当前无持仓* | - | - | - | - | - | - |")
+        return "\n".join(lines)
+
+    sum_weight = total_weight_cap if total_weight_cap is not None else sum(r.get("risk_weight_cap", 0.0) for r in rows)
+    sum_cost = total_cost if total_cost is not None else sum(r.get("cost", 0.0) for r in rows)
+    sum_pct = total_actual_pct if total_actual_pct is not None else sum(r.get("actual_pct", 0.0) for r in rows)
+
+    for r in rows:
+        lines.append(f"| {r['label']} | {r['atr_pct_str']} | {r['risk_distance_str']} | {r['risk_weight_cap_str']} | {r['shares_str']} | {r['cost_str']} | {r['actual_pct_str']} |")
+
+    lines.append(f"| **合计** | - | - | **{sum_weight * 100:.2f}%** | - | **¥{sum_cost:,.0f}** | **~{sum_pct:.1f}%** |")
+    return "\n".join(lines)
+
+
 def sector_of(symbol, industry_map):
     value = (industry_map or {}).get(symbol)
     if isinstance(value, dict):

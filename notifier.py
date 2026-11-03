@@ -388,6 +388,17 @@ class NotificationManager:
         if cash is not None:
             lines.append(f"- **当前可用现金**：¥{cash:,.2f}")
 
+        sizing = trade.get("sizing")
+        if sizing and isinstance(sizing, dict):
+            lines.extend([
+                "",
+                "### 📐 风险暴露与头寸测算",
+                f"- **日均波幅 ATR%**：{sizing.get('atr_pct_str', '--')}",
+                f"- **2×ATR 风险距离**：{sizing.get('risk_distance_str', '--')}",
+                f"- **风险预算权重上限**：{sizing.get('risk_weight_cap_str', '--')}",
+                f"- **实际建仓占比**：{sizing.get('actual_pct_str', '--')}"
+            ])
+
         lines.extend([
             "",
             "---",
@@ -397,12 +408,58 @@ class NotificationManager:
         content = "\n".join(lines)
         self.async_dispatch(title=title, content=content, summary=summary)
 
+    def notify_position_adjustment(
+        self,
+        sizing_table: Dict[str, Any],
+        adjustment_type: str = "持仓调整",
+        total_equity: Optional[float] = None,
+        cash: Optional[float] = None,
+        force: bool = False
+    ):
+        """持仓调整与精准风控测算快报通知"""
+        if not force and not self.config.get("enabled", False):
+            return
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total_weight = sizing_table.get("total_actual_pct_str") or "--"
+        cash_pct = sizing_table.get("cash_pct_str") or "--"
+        equity_val = total_equity or sizing_table.get("total_equity") or 0.0
+        cash_val = cash or sizing_table.get("cash") or 0.0
+        pos_count = len(sizing_table.get("rows", []))
+
+        title = f"【A股模拟】🔄 {adjustment_type}快报 (总仓位 {total_weight}，现金 {cash_pct})"
+        summary_text = f"{adjustment_type}完成：持仓 {pos_count} 只，总仓位 {total_weight}，留存现金 {cash_pct}"
+
+        markdown_table = sizing_table.get("markdown_table", "")
+        risk_pct = sizing_table.get("risk_budget_pct", "1%")
+
+        lines = [
+            f"# 🔄 {adjustment_type}与精准风控测算快报",
+            f"> **调整时间**：{now_str}",
+            f"> **账户总资产**：¥{equity_val:,.2f} | **可用现金**：¥{cash_val:,.2f} ({cash_pct})",
+            f"> **当前持仓占用**：**{total_weight}** (共 {pos_count} 只标的)",
+            "",
+            "### 📐 仓位测算与风险暴露明细 (Fixed Risk Sizing)",
+            markdown_table,
+            "",
+            "> 💡 **头寸与风控逻辑说明**：",
+            f"> 1. **严格风控**：采用固定风险暴露模型（单票承受最大 {risk_pct} 账户回撤，结合 2×ATR 真实波幅），波动越大建仓越轻；",
+            f"> 2. **现金防御**：持仓占用合计 {total_weight}，剩余 {cash_pct} 资金作为防御性现金储备，规避市场系统性风险。",
+            "",
+            "---",
+            "*来自 A股量化模拟交易控制台 · 实时极速推送*"
+        ]
+
+        content = "\n".join(lines)
+        self.async_dispatch(title=title, content=content, summary=summary_text)
+
     def notify_daily_summary(
         self,
         summary: Dict[str, Any],
         positions: Dict[str, Any],
         force: bool = False,
-        date_str: Optional[str] = None
+        date_str: Optional[str] = None,
+        sizing_table: Optional[Dict[str, Any]] = None
     ):
         """每日 15:00 收盘快报通知（自动跳过周末与法定休市节假日，仅在开盘日推送）"""
         if not self.config.get("notify_on_daily_summary", True):
@@ -464,6 +521,14 @@ class NotificationManager:
                 pnl = pos.get("unrealized_pnl", 0.0)
                 pnl_pct = pos.get("pnl_pct", 0.0)
                 lines.append(f"- **{p_name}** ({sym}): {shares}股 | 成本 ¥{cost:.2f} → 现价 ¥{last:.2f} | 浮盈 **{pnl:+,.2f}元 ({pnl_pct:+.2f}%)**")
+
+        if sizing_table and sizing_table.get("markdown_table"):
+            lines.extend([
+                "",
+                "### 📐 仓位测算与风险暴露明细 (ATR 波动率风控)",
+                sizing_table["markdown_table"],
+                f"> 💡 单票风险预算上限 {sizing_table.get('risk_budget_pct', '1%')}；持仓总占比 {sizing_table.get('total_actual_pct_str', '--')}，留存现金 {sizing_table.get('cash_pct_str', '--')} 防御。"
+            ])
 
         lines.extend([
             "",

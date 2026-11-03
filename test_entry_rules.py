@@ -1,7 +1,8 @@
 """Next-session entry risk boundaries, independent of matching and accounts."""
 import unittest
 
-from strategy_rules import MomentumConfig, entry_guard_reason
+from strategy_rules import (MomentumConfig, entry_guard_reason,
+                            compute_risk_sizing_row, format_position_sizing_markdown_table)
 
 
 class EntryGuardTests(unittest.TestCase):
@@ -135,6 +136,55 @@ class EntryConfigTests(unittest.TestCase):
                     MomentumConfig(entry_require_ma20=value)
         self.assertTrue(MomentumConfig(entry_require_ma20=True).entry_require_ma20)
         self.assertFalse(MomentumConfig(entry_require_ma20=False).entry_require_ma20)
+
+
+class PositionSizingPrecisionTests(unittest.TestCase):
+    def test_compute_risk_sizing_row_and_markdown(self):
+        config = MomentumConfig(max_positions=3, max_stock_weight=0.33, stop_loss_pct=-6.0,
+                                risk_per_trade=0.01, volatility_target=0.25)
+        # Qingdao Food test values
+        row1 = compute_risk_sizing_row(
+            symbol="sz001219", name="青岛食品", shares=600, cost_price=20.69,
+            total_equity=96639.44, config=config, atr_pct=0.038329, volatility=0.4914,
+            cost_basis=12414.0
+        )
+        self.assertEqual(row1["shares"], 600)
+        self.assertEqual(row1["shares_str"], "600 股")
+        self.assertEqual(row1["atr_pct_str"], "3.83%")
+        self.assertEqual(row1["risk_distance_str"], "7.67%")
+        self.assertEqual(row1["risk_weight_cap_str"], "13.04%")
+        self.assertEqual(row1["cost_str"], "¥12,414")
+        self.assertEqual(row1["actual_pct_str"], "12.8%")
+
+        # PetroChina
+        row2 = compute_risk_sizing_row(
+            symbol="sh601857", name="中国石油", shares=1100, cost_price=13.85,
+            total_equity=96639.44, config=config, atr_pct=0.0306, volatility=0.2629,
+            cost_basis=15235.0
+        )
+        self.assertEqual(row2["atr_pct_str"], "3.06%")
+        self.assertEqual(row2["risk_distance_str"], "6.12%")
+        self.assertEqual(row2["risk_weight_cap_str"], "16.34%")
+
+        # Yixintang
+        row3 = compute_risk_sizing_row(
+            symbol="sz002727", name="一心堂", shares=800, cost_price=13.30375,
+            total_equity=96639.44, config=config, atr_pct=0.0439, volatility=0.3623,
+            cost_basis=10643.0
+        )
+        self.assertEqual(row3["atr_pct_str"], "4.39%")
+        self.assertEqual(row3["risk_distance_str"], "8.78%")
+        self.assertEqual(row3["risk_weight_cap_str"], "11.39%")
+
+        # Markdown table
+        table = format_position_sizing_markdown_table([row1, row2, row3], total_weight_cap=0.4077,
+                                                      total_cost=38292.0, total_actual_pct=40.1)
+        self.assertIn("青岛食品 (sz001219)", table)
+        self.assertIn("中国石油 (sh601857)", table)
+        self.assertIn("一心堂 (sz002727)", table)
+        self.assertIn("40.77%", table)
+        self.assertIn("¥38,292", table)
+        self.assertIn("~40.1%", table)
 
 
 if __name__ == "__main__":

@@ -1192,6 +1192,37 @@
             </tbody>
           </table>
         </div>
+        <!-- 持仓调整与精准风控测算明细 -->
+        <div id="positionSizingCard" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:0 16px 8px;">
+            <div style="font-weight:600; font-size:13px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
+              <span>📐 调仓精准测算 (ATR 波动率头寸管理)</span>
+              <span id="sizingTotalBadge" class="badge" style="background:rgba(59,130,246,0.15); color:var(--accent-blue); font-size:11px; padding:2px 8px; border-radius:10px;">总仓位: --</span>
+            </div>
+            <span id="sizingCashDefenseBadge" style="font-size:12px; color:var(--text-muted)">现金防御: --</span>
+          </div>
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>持仓股票</th>
+                  <th class="text-right">日均波幅 ATR%</th>
+                  <th class="text-right">2×ATR 风险距离</th>
+                  <th class="text-right" id="thRiskBudgetCap">1% 风险预算算得权重上限</th>
+                  <th class="text-right">实际买入股数</th>
+                  <th class="text-right">耗资 (元)</th>
+                  <th class="text-right">实际仓位占比</th>
+                </tr>
+              </thead>
+              <tbody id="positionSizingTbody">
+                <tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding: 12px;">正在加载头寸风控测算...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted); padding: 6px 16px 10px; line-height: 1.5;">
+            💡 <strong>风控逻辑</strong>：采用固定风险敞口模型（单票承受最大回撤 1%），标的波动率越高、建仓越轻；剩余资金保留为现金防御，避免单边系统性风险。
+          </div>
+        </div>
       </div>
 
       <!-- 全市场起爆共振雷达池 -->
@@ -2305,6 +2336,54 @@
       }
     }
 
+    function renderPositionSizing(sizing) {
+      const tbody = document.getElementById('positionSizingTbody');
+      const totalBadge = document.getElementById('sizingTotalBadge');
+      const cashBadge = document.getElementById('sizingCashDefenseBadge');
+      const thCap = document.getElementById('thRiskBudgetCap');
+      if (!tbody) return;
+
+      if (!sizing || !Array.isArray(sizing.rows) || sizing.rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding: 12px;">当前空仓，待轮动或补位信号触发建仓</td></tr>';
+        if (totalBadge) totalBadge.innerText = '总仓位: 0.0%';
+        if (cashBadge) cashBadge.innerText = '现金防御: 100.0%';
+        return;
+      }
+
+      if (thCap && sizing.risk_budget_pct) {
+        thCap.innerText = `${sizing.risk_budget_pct} 风险预算算得权重上限`;
+      }
+      if (totalBadge) totalBadge.innerText = `总仓位: ${sizing.total_actual_pct_str || '--'}`;
+      if (cashBadge) cashBadge.innerText = `现金防御: ${sizing.cash_pct_str || '--'}`;
+
+      const escapeHtml = str => String(str || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+      let html = sizing.rows.map(r => `
+        <tr>
+          <td style="font-weight:600; color:var(--accent-blue)">${escapeHtml(r.label)}</td>
+          <td class="text-right">${escapeHtml(r.atr_pct_str)}</td>
+          <td class="text-right">${escapeHtml(r.risk_distance_str)}</td>
+          <td class="text-right" style="color:var(--text-primary)">${escapeHtml(r.risk_weight_cap_str)}</td>
+          <td class="text-right">${escapeHtml(r.shares_str)}</td>
+          <td class="text-right">${escapeHtml(r.cost_str)}</td>
+          <td class="text-right" style="font-weight:600; color:var(--accent-blue)">${escapeHtml(r.actual_pct_str)}</td>
+        </tr>
+      `).join('');
+
+      html += `
+        <tr style="font-weight:700; background:rgba(255,255,255,0.02); border-top:1px solid var(--border-color);">
+          <td>合计</td>
+          <td class="text-right">-</td>
+          <td class="text-right">-</td>
+          <td class="text-right" style="color:var(--text-primary)">${escapeHtml(sizing.total_weight_cap_str)}</td>
+          <td class="text-right">-</td>
+          <td class="text-right">${escapeHtml(sizing.total_cost_str)}</td>
+          <td class="text-right" style="color:var(--accent-blue)">${escapeHtml(sizing.total_actual_pct_str)}</td>
+        </tr>
+      `;
+      tbody.innerHTML = html;
+    }
+
     function renderAllocationStatus(st) {
       const allocation = st.allocation_status;
       const state = document.getElementById('dmAllocationStatus');
@@ -2312,8 +2391,10 @@
       if (!allocation || typeof allocation !== 'object') {
         if (state) state.innerText = '空位与待买计划: 服务未提供，不能据候选数判断是否买入';
         if (schedule) { schedule.innerText = '下次排名轮动: 待获取'; schedule.title = ''; }
+        renderPositionSizing(null);
         return;
       }
+      renderPositionSizing(allocation.position_sizing);
       const count = value => Number.isInteger(value) && value >= 0 ? value : '--';
       const mode = allocation.refill_enabled === true ? '每日检查空位补仓' : allocation.refill_enabled === false ? '空位补仓已关闭' : '补仓设置未知';
       const reason = allocation.wait_reason || (allocation.can_refill ? '检查通过，仍须满足开仓和成交约束' : '等待策略确认');

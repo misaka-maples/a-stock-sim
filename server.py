@@ -230,18 +230,34 @@ SnapshotManager.register_restore_validator(validate_snapshot_settings)
 
 
 def setup_account_trade_notification(account: SimAccount):
-    """为账户挂载微信交易成交通知回调"""
     """为账户挂载微信交易成交通知与实时快照更新回调"""
     if getattr(account, "_server_trade_callback", None) is not None:
         return
     def on_trade_callback(trade: Dict[str, Any], acc: SimAccount):
         try:
             summary = acc.get_summary() if acc else {}
+            # 附带当前标的的风控测算
+            if ctx.strategy and hasattr(ctx.strategy, "state"):
+                saved_sizings = ctx.strategy.state.get("position_sizings", {})
+                if trade.get("symbol") in saved_sizings:
+                    trade["sizing"] = saved_sizings[trade["symbol"]]
+
             NotificationManager().notify_trade(
                 trade=trade,
                 total_equity=summary.get("total_equity"),
                 cash=summary.get("cash")
             )
+
+            # 若为买入成交，同时发布持仓调整精准风控测算快报
+            if trade.get("side") == "BUY" and ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table"):
+                sizing_tbl = ctx.strategy.get_position_sizing_table()
+                adj_type = "空位补仓" if "空位补仓" in trade.get("reason", "") else "周期轮动调仓"
+                NotificationManager().notify_position_adjustment(
+                    sizing_table=sizing_tbl,
+                    adjustment_type=adj_type,
+                    total_equity=summary.get("total_equity"),
+                    cash=summary.get("cash")
+                )
         except Exception as e:
             logger.error(f"微信交易推送执行异常: {e}")
 
@@ -409,7 +425,8 @@ def worker_step(now=None):
             ctx.account.strategy_state.setdefault("__server__", {})["closing_report_date"] = day
             ctx.account.save()
             try:
-                NotificationManager().notify_daily_summary(ctx.account.get_summary(), dict(ctx.account.positions))
+                sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
+                NotificationManager().notify_daily_summary(ctx.account.get_summary(), dict(ctx.account.positions), sizing_table=sizing_tbl)
             except Exception:
                 logger.exception("最终收盘战报通知失败；收盘快照已保存")
         ctx.worker_last_success = checked_at
@@ -1052,6 +1069,19 @@ def list_strategies():
             "strategy_active": ctx.strategy_active,
             "current_parameters": asdict(ctx.strategy.config) if hasattr(ctx.strategy, "config") else {},
             "strategies": strategies
+        }
+
+
+@app.get("/api/strategy/position_sizing")
+def get_strategy_position_sizing():
+    """获取当前持仓的 ATR 波动率风控头寸精准测算明细表"""
+    with ctx.lock:
+        if not ctx.strategy or not hasattr(ctx.strategy, "get_position_sizing_table"):
+            return {"success": False, "rows": [], "message": "当前策略未提供头寸测算"}
+        now = dt.datetime.now(BEIJING)
+        return {
+            "success": True,
+            "data": ctx.strategy.get_position_sizing_table(now=now)
         }
 
 

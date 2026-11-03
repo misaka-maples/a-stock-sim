@@ -14,7 +14,8 @@ from dataclasses import asdict
 from history_data import cache_freshness, HistoricalDataFeed, previous_trading_day, last_completed_trading_day, normalize_symbol_for_tencent
 from strategy_rules import (MomentumConfig, evaluate_momentum, holding_signal,
                             exit_reason, target_weight, allowed_by_sector, sector_of,
-                            entry_guard_reason)
+                            entry_guard_reason, compute_risk_sizing_row,
+                            format_position_sizing_markdown_table)
 from execution import _timestamp
 from trade_calendar import BEIJING, is_trading_day, is_trading_time
 
@@ -863,7 +864,95 @@ class DailyMomentumStrategy:
                                                                  for candidate in candidates)*100*1.002),
                     wait_reason=reason, last_rebalance=last,
                     next_rebalance_signal_date=signal_day, next_execution_date=day.isoformat(),
-                    entry_signal_date=as_of if self._history_date == as_of else None)
+                    entry_signal_date=as_of if self._history_date == as_of else None,
+                    position_sizing=self.get_position_sizing_table(now))
+
+    def get_position_sizing_table(self, now=None):
+        """生成当前持仓的风控头寸测算明细表（含 ATR%、2×ATR、风险预算权重上限、耗资及仓位占比）"""
+        now = now or dt.datetime.now(BEIJING)
+        as_of = last_completed_trading_day(now)
+        total_equity = float(self.account.get_summary().get("total_equity", 0.0) or 0.0)
+        cash = float(self.account.get_summary().get("cash", 0.0) or 0.0)
+        positions = getattr(self.account, "positions", {})
+
+        saved_sizings = dict(self.state.get("position_sizings", {}))
+
+        rows = []
+        total_weight_cap = 0.0
+        total_cost = 0.0
+        total_actual_pct = 0.0
+
+        risk_budget = float(getattr(self.config, "risk_per_trade", 0.01) or 0.01)
+        risk_budget_pct = f"{round(risk_budget * 100)}%" if round(risk_budget * 100, 2) == round(risk_budget * 100) else f"{risk_budget * 100:.1f}%"
+
+        for sym, pos in positions.items():
+            name = pos.get("name", sym)
+            shares = int(pos.get("total_shares", 0) or 0)
+            cost_price = float(pos.get("cost_price", 0.0) or 0.0)
+            cost_basis = float(pos.get("cost_basis_cents", 0) / 100.0) if pos.get("cost_basis_cents") else (shares * cost_price)
+
+            sizing = saved_sizings.get(sym)
+            atr_pct = 0.0
+            volatility = 0.0
+            if sizing and sizing.get("atr_pct"):
+                atr_pct = float(sizing["atr_pct"])
+                volatility = float(sizing.get("volatility", 0.0) or 0.0)
+            else:
+                # 尝试从候选信号或历史 K 线恢复
+                sig = self.state.get("pending_entries", {}).get(sym, {}).get("signal")
+                if not sig and sym in self.history_cache:
+                    buy_day = min((lot.get("date", "9999") for lot in pos.get("buy_lots", [])), default=as_of)
+                    sig_day = previous_trading_day(buy_day) if buy_day <= as_of else as_of
+                    sig = evaluate_momentum(self.history_cache[sym], sig_day, self.config)
+                    if not sig:
+                        sig = evaluate_momentum(self.history_cache[sym], buy_day, self.config)
+                    if not sig:
+                        sig = evaluate_momentum(self.history_cache[sym], as_of, self.config)
+                if sig:
+                    atr_pct = float(sig.get("atr_pct", 0.0) or 0.0)
+                    volatility = float(sig.get("volatility", 0.0) or 0.0)
+
+            row = compute_risk_sizing_row(
+                symbol=sym,
+                name=name,
+                shares=shares,
+                cost_price=cost_price,
+                total_equity=total_equity,
+                config=self.config,
+                atr_pct=atr_pct,
+                volatility=volatility,
+                cost_basis=cost_basis
+            )
+            rows.append(row)
+            total_weight_cap += row["risk_weight_cap"]
+            total_cost += row["cost"]
+            total_actual_pct += row["actual_pct"]
+
+        table_md = format_position_sizing_markdown_table(
+            rows,
+            total_weight_cap=total_weight_cap,
+            total_cost=total_cost,
+            total_actual_pct=total_actual_pct,
+            risk_budget_pct=risk_budget_pct
+        )
+
+        return {
+            "as_of": as_of,
+            "total_equity": total_equity,
+            "cash": cash,
+            "risk_budget": risk_budget,
+            "risk_budget_pct": risk_budget_pct,
+            "rows": rows,
+            "total_weight_cap": total_weight_cap,
+            "total_weight_cap_str": f"{total_weight_cap * 100:.2f}%",
+            "total_cost": total_cost,
+            "total_cost_str": f"¥{total_cost:,.0f}" if total_cost >= 1000 else f"¥{total_cost:,.2f}",
+            "total_actual_pct": total_actual_pct,
+            "total_actual_pct_str": f"~{total_actual_pct:.1f}%",
+            "cash_pct_str": f"~{max(0.0, 100.0 - total_actual_pct):.1f}%",
+            "markdown_table": table_md,
+            "updated_at": dt.datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+        }
 
     def _reject_entry(self, symbol, intent, execution_day, reason):
         # Unsafe prices cancel the rest of this day's intent, including partial
@@ -1007,6 +1096,7 @@ class DailyMomentumStrategy:
                     self.state["pending_exits"].pop(symbol, None)
                     self.state["exit_signal_dates"].pop(symbol, None)
                     self.state["pending_entries"].pop(symbol, None)
+                    self.state.setdefault("position_sizings", {}).pop(symbol, None)
             timing = "实时触发执行" if reason == "盘中硬止损信号" else "收盘信号，随后交易日执行"
             result = self.account.execute_sell(sym, q.get("current", 0), avail,
                         reason=f"{self.name}: {signal_date}{'收盘' if reason != '盘中硬止损信号' else ''}{reason}，{timing}",
@@ -1076,8 +1166,19 @@ class DailyMomentumStrategy:
             if remaining < 100 or not allowed_by_sector(sym, remaining * price / total, weights,
                                                        self.industry_map, self.config.max_sector_weight):
                 continue
-            def commit_purchase(trade, account, entry=intent):
+            def commit_purchase(trade, account, entry=intent, symbol=sym, sig=intent["signal"], buy_price=price, buy_shares=remaining):
                 entry["filled_shares"] += trade["shares"]
+                self.state.setdefault("position_sizings", {})[symbol] = compute_risk_sizing_row(
+                    symbol=symbol,
+                    name=trade.get("name", symbol),
+                    shares=buy_shares,
+                    cost_price=buy_price,
+                    total_equity=total,
+                    config=self.config,
+                    atr_pct=sig.get("atr_pct", 0.0),
+                    volatility=sig.get("volatility", 0.0),
+                    cost_basis=buy_shares * buy_price
+                )
             result = self.account.execute_buy(sym, q.get("name", sym), price, remaining,
                         reason=f"{self.name}: {as_of}收盘动量排名，次日执行，"
                                + ("空位补仓" if intent.get("entry_reason") == "vacancy_refill" else "周期轮动"),

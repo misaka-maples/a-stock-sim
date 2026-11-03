@@ -18,7 +18,10 @@ from notifier import NotificationManager, WxPusherClient, ServerChanClient
 class TestNotifier(unittest.TestCase):
 
     def setUp(self):
+        from concurrent.futures import ThreadPoolExecutor
         self.mgr = NotificationManager()
+        if getattr(self.mgr, "executor", None) is None or getattr(self.mgr.executor, "_shutdown", False):
+            self.mgr.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="wx_notifier")
         # 使用临时测试配置
         self.test_cfg_path = BASE_DIR / "data" / "test_notification_config.json"
         self.mgr.config_path = self.test_cfg_path
@@ -128,6 +131,42 @@ class TestNotifier(unittest.TestCase):
         self.assertIn("买入成交", title)
         self.assertIn("比亚迪", content)
         self.assertIn("¥285.50", content)
+
+    @patch.object(NotificationManager, "dispatch_message")
+    def test_position_adjustment_notification(self, mock_dispatch):
+        """测试持仓调整风控测算快报通知"""
+        self.mgr.config["enabled"] = True
+        sizing_table = {
+            "total_equity": 96639.44,
+            "cash": 57359.44,
+            "risk_budget_pct": "1%",
+            "rows": [
+                {
+                    "symbol": "sz001219",
+                    "name": "青岛食品",
+                    "label": "青岛食品 (sz001219)",
+                    "atr_pct_str": "3.83%",
+                    "risk_distance_str": "7.67%",
+                    "risk_weight_cap_str": "13.04%",
+                    "shares_str": "600 股",
+                    "cost_str": "¥12,414",
+                    "actual_pct_str": "12.8%"
+                }
+            ],
+            "total_actual_pct_str": "~40.1%",
+            "cash_pct_str": "~59.9%",
+            "markdown_table": "| 持仓股票 | 日均波幅 ATR% | 2×ATR 风险距离 | 1% 风险预算算得权重上限 | 实际买入股数 | 耗资 (元) | 实际仓位占比 |\n| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+        }
+        self.mgr.notify_position_adjustment(sizing_table, adjustment_type="周期轮动调仓")
+        self.mgr.executor.shutdown(wait=True)
+        mock_dispatch.assert_called()
+        args, kwargs = mock_dispatch.call_args
+        title = args[0] if args else kwargs.get("title", "")
+        content = args[1] if len(args) > 1 else kwargs.get("content", "")
+        self.assertIn("周期轮动调仓快报", title)
+        self.assertIn("总仓位 ~40.1%", title)
+        self.assertIn("仓位测算与风险暴露明细", content)
+        self.assertIn("日均波幅 ATR%", content)
 
 
 if __name__ == "__main__":
