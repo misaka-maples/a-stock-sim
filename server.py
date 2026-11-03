@@ -1078,7 +1078,7 @@ def get_strategy_position_sizing():
     with ctx.lock:
         if not ctx.strategy or not hasattr(ctx.strategy, "get_position_sizing_table"):
             return {"success": False, "rows": [], "message": "当前策略未提供头寸测算"}
-        now = dt.datetime.now(BEIJING)
+        now = datetime.datetime.now(BEIJING)
         return {
             "success": True,
             "data": ctx.strategy.get_position_sizing_table(now=now)
