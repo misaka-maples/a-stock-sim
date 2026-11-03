@@ -329,6 +329,7 @@ def _baostock_stream():
                     protocol.flush()
                     return 1
                 logged_in = True
+            request_count = 0
             while True:
                 # Release the SDK session/OS lease after five idle seconds, so
                 # another research feed can acquire the single allowed login.
@@ -337,6 +338,7 @@ def _baostock_stream():
                 line = sys.stdin.readline()
                 if not line:
                     break
+                request_count += 1
                 request_id = None
                 try:
                     request = json.loads(line)
@@ -356,6 +358,8 @@ def _baostock_stream():
                             result = {"bars": normalize_baostock(raw, adjusted, adjustment)}
                     protocol.write(json.dumps(dict(id=request_id, **result), allow_nan=False) + "\n")
                     protocol.flush()
+                    if request_count >= 150:
+                        break
                 except Exception as exc:
                     code = _safe_error_code(exc)
                     if code == "sdk_error_10001011":
