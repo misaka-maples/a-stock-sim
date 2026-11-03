@@ -2391,10 +2391,8 @@
       if (!allocation || typeof allocation !== 'object') {
         if (state) state.innerText = '空位与待买计划: 服务未提供，不能据候选数判断是否买入';
         if (schedule) { schedule.innerText = '下次排名轮动: 待获取'; schedule.title = ''; }
-        renderPositionSizing(null);
         return;
       }
-      renderPositionSizing(allocation.position_sizing);
       const count = value => Number.isInteger(value) && value >= 0 ? value : '--';
       const mode = allocation.refill_enabled === true ? '每日检查空位补仓' : allocation.refill_enabled === false ? '空位补仓已关闭' : '补仓设置未知';
       const reason = allocation.wait_reason || (allocation.can_refill ? '检查通过，仍须满足开仓和成交约束' : '等待策略确认');
@@ -2408,6 +2406,9 @@
     function renderDataMonitor(st) {
       if (!st) return;
       renderAllocationStatus(st);
+      if (st.allocation_status && st.allocation_status.position_sizing) {
+        renderPositionSizing(st.allocation_status.position_sizing);
+      }
       const quality = st.data_quality || {};
       const sh = quality.source_health || {};
       const budgets = sh.request_budget || {};
