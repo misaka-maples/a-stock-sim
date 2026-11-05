@@ -16,10 +16,12 @@ A股量化交易系统 - 持仓股票实时策略评估与全息风控守护引�
 """
 
 import math
+import json
 import logging
 import datetime
+from pathlib import Path
 from collections.abc import Sequence
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 logger = logging.getLogger("position_guardian")
 
@@ -34,6 +36,31 @@ def _valid_price(val: Any) -> Optional[float]:
         return v
     except (ValueError, TypeError):
         return None
+
+
+def _get_history_bars(symbol: str, history_cache: Dict[str, Any]) -> Sequence[Any]:
+    bars = history_cache.get(symbol, [])
+    if isinstance(bars, dict) and "bars" in bars:
+        bars = bars["bars"]
+    if bars and isinstance(bars, (list, tuple, Sequence)) and not isinstance(bars, (str, bytes)):
+        return bars
+    # 回退到本地磁盘历史 K 线缓存（处理服务刚重启或后台异步加载期间的持仓均线保护）
+    base_dirs = [
+        Path("data/history_cache"),
+        Path(__file__).resolve().parent / "data" / "history_cache",
+    ]
+    for bdir in base_dirs:
+        cache_path = bdir / f"{symbol}_qfq.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                file_bars = data.get("bars", [])
+                if file_bars:
+                    return file_bars
+            except Exception:
+                pass
+    return []
 
 
 def update_position_monitors(
@@ -102,10 +129,8 @@ def update_position_monitors(
 
         # 检查建仓以来的历史 bars 极值（补充开盘前或跨日的历史最高价）
         buy_date = mon.get("buy_date", "")
-        hist_bars = history_cache.get(sym, [])
-        if isinstance(hist_bars, dict) and "bars" in hist_bars:
-            hist_bars = hist_bars["bars"]
-        if isinstance(hist_bars, (list, tuple, Sequence)) and not isinstance(hist_bars, (str, bytes)) and len(hist_bars) > 0:
+        hist_bars = _get_history_bars(sym, history_cache)
+        if hist_bars and len(hist_bars) > 0:
             for b in hist_bars:
                 b_date = b.get("date", "")
                 if buy_date and b_date >= buy_date:
@@ -158,10 +183,8 @@ def compute_live_ma20(symbol: str, current_price: float, history_cache: Dict[str
     """
     结合今日实时价格与历史日 K 线收盘价，动态计算包含当日最新价的实时 MA20。
     """
-    bars = history_cache.get(symbol, [])
-    if isinstance(bars, dict) and "bars" in bars:
-        bars = bars["bars"]
-    if not isinstance(bars, (list, tuple, Sequence)) or isinstance(bars, (str, bytes)) or len(bars) < 19:
+    bars = _get_history_bars(symbol, history_cache)
+    if not bars or len(bars) < 19:
         return None
     valid_cp = _valid_price(current_price)
     if valid_cp is None:
