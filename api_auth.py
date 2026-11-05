@@ -203,7 +203,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if (path == "/api" or path.startswith("/api/")) and path not in PUBLIC_API_PATHS:
+        is_public_trade = path.startswith("/api/trade/chart") or path.startswith("/api/trade/review")
+        if (path == "/api" or path.startswith("/api/")) and path not in PUBLIC_API_PATHS and not is_public_trade:
             try:
                 self.manager.require(request)
             except HTTPException as exc:

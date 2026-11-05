@@ -242,6 +242,29 @@ def setup_account_trade_notification(account: SimAccount):
                 if trade.get("symbol") in saved_sizings:
                     trade["sizing"] = saved_sizings[trade["symbol"]]
 
+            # 若为卖出成交，自动执行持仓期间 K 线与盈利机会复盘及图谱渲染
+            if trade.get("side") == "SELL":
+                try:
+                    from trade_analysis import extract_holding_kline_data, generate_trade_kline_chart, format_trade_review_markdown
+                    hist_cache = getattr(ctx.strategy, "history_cache", {}) if ctx.strategy else {}
+                    feed = getattr(ctx.strategy, "feed", None) if ctx.strategy else None
+                    current_q = ctx.last_quotes.get(trade.get("symbol", "")) if hasattr(ctx, "last_quotes") else None
+                    all_trades = acc.trades if (acc and hasattr(acc, "trades")) else []
+                    review = extract_holding_kline_data(
+                        sell_trade=trade,
+                        trades_history=all_trades,
+                        history_cache=hist_cache,
+                        feed=feed,
+                        current_quote=current_q
+                    )
+                    chart_path = generate_trade_kline_chart(review)
+                    review["chart_path"] = chart_path
+                    trade["review"] = review
+                    base_url = os.environ.get("QUANT_BASE_URL", "http://172.168.200.241:8000")
+                    trade["review_markdown"] = format_trade_review_markdown(review, chart_base_url=base_url)
+                except Exception as ex:
+                    logger.error(f"生成卖出交易复盘异常: {ex}")
+
             NotificationManager().notify_trade(
                 trade=trade,
                 total_equity=summary.get("total_equity"),
@@ -746,6 +769,67 @@ def get_orders(limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0
     """获取委托订单记录"""
     with ctx.lock:
         return ctx.account.orders[max(0, len(ctx.account.orders)-offset-limit):max(0,len(ctx.account.orders)-offset)]
+
+
+@app.get("/api/trade/review/{trade_id}")
+def get_trade_review(trade_id: str):
+    """获取指定卖出交易的持仓 K 线复盘数据与盈利机会分析"""
+    from trade_analysis import find_trade_by_id, extract_holding_kline_data, generate_trade_kline_chart
+    with ctx.lock:
+        trade_record = find_trade_by_id(trade_id, account=ctx.account)
+        if not trade_record:
+            raise HTTPException(404, f"未找到交易记录: {trade_id}")
+        trade, trades_history = trade_record
+        if trade.get("side") != "SELL":
+            raise HTTPException(400, "仅支持对卖出成交进行持仓复盘")
+
+        hist_cache = getattr(ctx.strategy, "history_cache", {}) if ctx.strategy else {}
+        feed = getattr(ctx.strategy, "feed", None) if ctx.strategy else None
+        current_q = ctx.last_quotes.get(trade.get("symbol", "")) if hasattr(ctx, "last_quotes") else None
+
+        review = extract_holding_kline_data(
+            sell_trade=trade,
+            trades_history=trades_history,
+            history_cache=hist_cache,
+            feed=feed,
+            current_quote=current_q
+        )
+        chart_path = generate_trade_kline_chart(review)
+        review["chart_path"] = chart_path
+        review["chart_url"] = f"/api/trade/chart/{trade_id}"
+        return {"success": True, "review": review}
+
+
+@app.get("/api/trade/chart/{trade_id}")
+def get_trade_chart(trade_id: str):
+    """获取指定卖出交易的持仓 K 线复盘高清图片"""
+    from fastapi.responses import FileResponse
+    from trade_analysis import CHARTS_DIR, find_trade_by_id, extract_holding_kline_data, generate_trade_kline_chart
+
+    chart_file = CHARTS_DIR / f"{trade_id}.png"
+    if chart_file.exists():
+        return FileResponse(str(chart_file), media_type="image/png")
+
+    with ctx.lock:
+        trade_record = find_trade_by_id(trade_id, account=ctx.account)
+        if not trade_record:
+            raise HTTPException(404, f"未找到交易记录: {trade_id}")
+        trade, trades_history = trade_record
+        hist_cache = getattr(ctx.strategy, "history_cache", {}) if ctx.strategy else {}
+        feed = getattr(ctx.strategy, "feed", None) if ctx.strategy else None
+        current_q = ctx.last_quotes.get(trade.get("symbol", "")) if hasattr(ctx, "last_quotes") else None
+
+        review = extract_holding_kline_data(
+            sell_trade=trade,
+            trades_history=trades_history,
+            history_cache=hist_cache,
+            feed=feed,
+            current_quote=current_q
+        )
+        chart_path = generate_trade_kline_chart(review, output_path=chart_file)
+        if chart_path and Path(chart_path).exists():
+            return FileResponse(chart_path, media_type="image/png")
+        raise HTTPException(500, "生成复盘图表失败")
 
 
 @app.get("/api/status")

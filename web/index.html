@@ -2117,17 +2117,33 @@
         return;
       }
       let html = '';
-      [...trades].reverse().slice(0, 10).forEach(t => {
+      [...trades].reverse().slice(0, 15).forEach(t => {
         const isBuy = t.side === 'BUY';
         const tag = isBuy ? '<span style="color:var(--red-up); font-weight:700">买入</span>' : '<span style="color:var(--green-down); font-weight:700">卖出</span>';
+        let pnlText = '';
+        let reviewBtn = '';
+        if (!isBuy) {
+          if (t.realized_pnl !== undefined && t.realized_pnl !== null) {
+            const pnlVal = Number(t.realized_pnl);
+            const pnlColor = pnlVal >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+            pnlText = `<span style="color:${pnlColor}; font-weight:700; font-size:11px; margin-left:6px;">(${pnlVal >= 0 ? '+' : ''}¥${pnlVal.toFixed(2)})</span>`;
+          }
+          if (t.trade_id) {
+            reviewBtn = `<button class="btn btn-secondary btn-xs" style="padding:1px 6px; font-size:11px; margin-left:6px; cursor:pointer;" onclick="openTradeReviewModal('${t.trade_id}')" title="点击查看买入至卖出期间完整K线走势与潜在盈利机会">📊 复盘K线</button>`;
+          }
+        }
         html += `
           <div class="history-item">
             <div>
-              <div>${tag} <strong>${t.name}</strong> (${t.symbol})</div>
-              <div style="color:var(--text-muted); font-size:11px;">${t.time} | 规费: ¥${t.fees.toFixed(2)}</div>
+              <div style="display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                <span>${tag} <strong>${t.name}</strong> (${t.symbol})</span>
+                ${pnlText}
+                ${reviewBtn}
+              </div>
+              <div style="color:var(--text-muted); font-size:11px;">${t.time} | 规费: ¥${Number(t.fees || 0).toFixed(2)}</div>
             </div>
             <div class="text-right">
-              <div style="font-weight:600">¥${t.price.toFixed(2)} × ${t.shares}股</div>
+              <div style="font-weight:600">¥${Number(t.price || 0).toFixed(2)} × ${t.shares}股</div>
               <div style="color:var(--text-muted); font-size:11px;">${t.reason || '手动委托'}</div>
             </div>
           </div>
@@ -3889,6 +3905,116 @@
       box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    // =========================================================================
+    // 卖出持仓周期 K 线复盘与盈利机会分析模态框
+    // =========================================================================
+    async function openTradeReviewModal(tradeId) {
+      const modal = document.getElementById('tradeReviewModal');
+      modal.style.display = 'flex';
+
+      const title = document.getElementById('tradeReviewTitle');
+      const kpis = document.getElementById('tradeReviewKpis');
+      const verdict = document.getElementById('tradeReviewVerdict');
+      const img = document.getElementById('tradeReviewChartImg');
+      const tbody = document.getElementById('tradeReviewTrajectoryBody');
+
+      title.innerHTML = `📈 加载复盘中... (<span style="font-family:monospace">${tradeId}</span>)`;
+      kpis.innerHTML = '<div style="color:#94a3b8; font-size:12px; grid-column:1/-1;">正在提取持仓日K线、测算最高浮盈与逐日轨迹...</div>';
+      verdict.innerHTML = '正在分析盈利机会...';
+      img.style.display = 'none';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#94a3b8; padding:16px;">载入中...</td></tr>';
+
+      try {
+        const res = await fetch(`/api/trade/review/${tradeId}`);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          title.innerHTML = `❌ 复盘加载失败: ${err.detail || res.statusText}`;
+          kpis.innerHTML = '';
+          verdict.innerHTML = `<span style="color:#f87171;">无法获取该笔交易复盘：${err.detail || '服务未返回数据'}</span>`;
+          return;
+        }
+        const data = await res.json();
+        const rev = data.review;
+
+        title.innerHTML = `📈 【持仓复盘】<strong>${rev.name}</strong> (${rev.symbol}) · 持仓 <strong>${rev.holding_days}</strong> 天`;
+
+        const pnlVal = Number(rev.realized_pnl || 0);
+        const pnlPct = Number(rev.realized_pnl_pct || 0);
+        const pnlSign = pnlVal > 0 ? '+' : '';
+        const pnlColor = pnlVal >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+
+        kpis.innerHTML = `
+          <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #334155;">
+            <div style="font-size:11px; color:#94a3b8;">买入均价</div>
+            <div style="font-weight:700; font-size:14px; color:#38bdf8;">¥${Number(rev.buy_price||0).toFixed(2)}</div>
+            <div style="font-size:10px; color:#64748b;">${rev.buy_date}</div>
+          </div>
+          <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #334155;">
+            <div style="font-size:11px; color:#94a3b8;">卖出均价</div>
+            <div style="font-weight:700; font-size:14px; color:#f87171;">¥${Number(rev.sell_price||0).toFixed(2)}</div>
+            <div style="font-size:10px; color:#64748b;">${rev.sell_date}</div>
+          </div>
+          <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #334155;">
+            <div style="font-size:11px; color:#94a3b8;">⭐ 最高潜在浮盈</div>
+            <div style="font-weight:700; font-size:14px; color:#fbbf24;">+${Number(rev.max_profit_pct||0).toFixed(2)}%</div>
+            <div style="font-size:10px; color:#64748b;">¥${Number(rev.max_high||0).toFixed(2)} (${rev.max_high_date})</div>
+          </div>
+          <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #334155;">
+            <div style="font-size:11px; color:#94a3b8;">实现盈亏</div>
+            <div style="font-weight:700; font-size:14px; color:${pnlColor};">${pnlSign}¥${pnlVal.toFixed(2)}</div>
+            <div style="font-size:10px; color:${pnlColor};">${pnlSign}${pnlPct.toFixed(2)}%</div>
+          </div>
+          <div style="background:#0f172a; padding:10px; border-radius:6px; border:1px solid #334155;">
+            <div style="font-size:11px; color:#94a3b8;">平仓原因</div>
+            <div style="font-size:11px; font-weight:600; color:#e2e8f0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${rev.reason}">${rev.reason.split('：')[1] || rev.reason}</div>
+            <div style="font-size:10px; color:#64748b;">${rev.shares} 股</div>
+          </div>
+        `;
+
+        verdict.innerHTML = `<strong>💡 机会诊断</strong>：${rev.verdict}`;
+
+        img.src = `/api/trade/chart/${tradeId}?t=${Date.now()}`;
+        img.style.display = 'block';
+
+        let trajHtml = '';
+        (rev.daily_trajectory || []).forEach(row => {
+          const chg = Number(row.day_change_pct || 0);
+          const hp = Number(row.high_profit_pct || 0);
+          const cp = Number(row.close_pnl_pct || 0);
+          const chgColor = chg >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+          const hColor = hp >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+          const cColor = cp >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+          trajHtml += `
+            <tr>
+              <td>${row.date}</td>
+              <td>¥${Number(row.open||0).toFixed(2)}</td>
+              <td>¥${Number(row.high||0).toFixed(2)}</td>
+              <td>¥${Number(row.low||0).toFixed(2)}</td>
+              <td>¥${Number(row.close||0).toFixed(2)}</td>
+              <td style="color:${chgColor}; font-weight:600;">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</td>
+              <td style="color:${hColor}; font-weight:700;">${hp >= 0 ? '+' : ''}${hp.toFixed(2)}%</td>
+              <td style="color:${cColor}; font-weight:600;">${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%</td>
+            </tr>
+          `;
+        });
+        tbody.innerHTML = trajHtml || '<tr><td colspan="8" style="text-align:center; color:#94a3b8;">暂无逐日轨迹数据</td></tr>';
+
+      } catch (err) {
+        title.innerHTML = `❌ 加载失败: ${err.message}`;
+      }
+    }
+
+    function closeTradeReviewModal() {
+      const modal = document.getElementById('tradeReviewModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function handleTradeReviewOverlayClick(e) {
+      if (e.target.id === 'tradeReviewModal') {
+        closeTradeReviewModal();
+      }
+    }
+
     // Data access begins only after the server has verified the session.
     initializeAuth();
   </script>
@@ -4155,6 +4281,61 @@
       <!-- 底部关闭按钮 -->
       <div class="modal-footer" style="display:flex; justify-content:flex-end; margin-top:16px;">
         <button class="btn" onclick="closeSnapshotModal()" style="padding:8px 24px;">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卖出持仓周期 K 线复盘与盈利机会分析弹窗 -->
+  <div id="tradeReviewModal" class="modal-overlay" onclick="handleTradeReviewOverlayClick(event)">
+    <div class="modal-card" style="max-width: 860px;" onclick="event.stopPropagation()">
+      <!-- 头部 -->
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;">
+        <h3 id="tradeReviewTitle" style="margin:0; font-size:17px; color:#e2e8f0; display:flex; align-items:center; gap:8px;">
+          📈 持仓周期 K 线复盘
+        </h3>
+        <button class="btn" onclick="closeTradeReviewModal()" style="padding:4px 10px; font-size:16px; line-height:1;">✕</button>
+      </div>
+
+      <!-- 核心指标卡片 -->
+      <div id="tradeReviewKpis" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:14px;">
+      </div>
+
+      <!-- 机会诊断横幅 -->
+      <div id="tradeReviewVerdict" style="background:rgba(30,41,59,0.85); border:1px solid #334155; border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px; color:#e2e8f0; line-height:1.5;">
+      </div>
+
+      <!-- 高清 K 线图容器 -->
+      <div style="background:#181a20; border-radius:8px; overflow:hidden; border:1px solid #334155; margin-bottom:16px; text-align:center;">
+        <img id="tradeReviewChartImg" src="" alt="持仓K线复盘图" style="max-width:100%; height:auto; display:block; margin:0 auto; min-height:200px;" />
+      </div>
+
+      <!-- 逐日轨迹明细表格 -->
+      <div style="margin-top:14px;">
+        <div style="font-weight:600; font-size:13px; color:#94a3b8; margin-bottom:8px;">📅 持仓期间逐日价格与浮盈轨迹</div>
+        <div class="table-responsive" style="max-height:220px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px;">
+          <table class="table" style="margin:0; font-size:12px; width:100%;">
+            <thead>
+              <tr style="background:#0f172a; position:sticky; top:0; z-index:2;">
+                <th>日期</th>
+                <th>开盘</th>
+                <th>最高</th>
+                <th>最低</th>
+                <th>收盘</th>
+                <th>日涨跌</th>
+                <th>当日最高浮盈</th>
+                <th>收盘浮盈</th>
+              </tr>
+            </thead>
+            <tbody id="tradeReviewTrajectoryBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 底部关闭按钮 -->
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; margin-top:16px; border-top:1px solid #334155; padding-top:12px;">
+        <span style="font-size:11px; color:#64748b;">* 基于全A主板历史行情与盘中实际成交价格复盘</span>
+        <button class="btn btn-primary" onclick="closeTradeReviewModal()" style="padding:6px 20px;">关闭复盘</button>
       </div>
     </div>
   </div>

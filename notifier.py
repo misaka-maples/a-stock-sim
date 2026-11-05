@@ -369,6 +369,12 @@ class NotificationManager:
 
         title = f"【A股模拟】{side_text}：{name}({symbol}) {shares}股"
         summary = f"{side_text} {name} {shares}股 @¥{price:.2f}，金额 ¥{amount:,.2f}"
+        if not is_buy:
+            pnl_val = trade.get("realized_pnl")
+            if pnl_val is not None:
+                rev = trade.get("review")
+                peak_info = f"，最高浮盈 +{rev['max_profit_pct']:.2f}%" if rev and rev.get("max_profit_pct") is not None else ""
+                summary = f"{side_text} {name} {shares}股 @¥{price:.2f}，盈亏 ¥{float(pnl_val):,.2f}{peak_info}"
 
         lines = [
             f"# {side_text}提醒",
@@ -382,6 +388,11 @@ class NotificationManager:
             f"- **交易税费**：¥{fees:.2f}",
             f"- **入场/离场逻辑**：{reason}",
         ]
+
+        if not is_buy and trade.get("realized_pnl") is not None:
+            pnl_val = float(trade["realized_pnl"])
+            pnl_label = "🔴 赤字亏损" if pnl_val < 0 else "🟢 盈利锁定"
+            lines.append(f"- **平仓实现盈亏**：{pnl_label} ¥{pnl_val:,.2f}")
 
         if total_equity is not None:
             lines.append(f"- **当前账户总权益**：¥{total_equity:,.2f}")
@@ -398,6 +409,16 @@ class NotificationManager:
                 f"- **风险预算权重上限**：{sizing.get('risk_weight_cap_str', '--')}",
                 f"- **实际建仓占比**：{sizing.get('actual_pct_str', '--')}"
             ])
+
+        # 若为卖出成交，展示持仓期间 K 线与盈利机会复盘明细
+        if not is_buy:
+            if trade.get("review_markdown"):
+                lines.append("")
+                lines.append(trade["review_markdown"])
+            elif trade.get("review"):
+                from trade_analysis import format_trade_review_markdown
+                lines.append("")
+                lines.append(format_trade_review_markdown(trade["review"]))
 
         lines.extend([
             "",
