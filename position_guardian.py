@@ -18,6 +18,7 @@ A股量化交易系统 - 持仓股票实时策略评估与全息风控守护引�
 import math
 import logging
 import datetime
+from collections.abc import Sequence
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("position_guardian")
@@ -104,7 +105,7 @@ def update_position_monitors(
         hist_bars = history_cache.get(sym, [])
         if isinstance(hist_bars, dict) and "bars" in hist_bars:
             hist_bars = hist_bars["bars"]
-        if isinstance(hist_bars, list) and hist_bars:
+        if isinstance(hist_bars, (list, tuple, Sequence)) and not isinstance(hist_bars, (str, bytes)) and len(hist_bars) > 0:
             for b in hist_bars:
                 b_date = b.get("date", "")
                 if buy_date and b_date >= buy_date:
@@ -160,7 +161,7 @@ def compute_live_ma20(symbol: str, current_price: float, history_cache: Dict[str
     bars = history_cache.get(symbol, [])
     if isinstance(bars, dict) and "bars" in bars:
         bars = bars["bars"]
-    if not isinstance(bars, list) or len(bars) < 19:
+    if not isinstance(bars, (list, tuple, Sequence)) or isinstance(bars, (str, bytes)) or len(bars) < 19:
         return None
     valid_cp = _valid_price(current_price)
     if valid_cp is None:
