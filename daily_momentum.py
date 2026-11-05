@@ -1,4 +1,5 @@
 """Completed daily signals, next-session execution, persistent order intent."""
+import copy
 import datetime as dt
 import json
 import logging
@@ -59,6 +60,7 @@ class DailyMomentumStrategy:
         self.state.setdefault("pending_entries", {})
         self.state.setdefault("entry_rejections", [])
         self.state.setdefault("exit_rejections", {})
+        self.state.setdefault("position_monitors", {})
         if feed is None and hasattr(self.feed, "compact_limit"):
             self.feed.compact_limit = 126
         self.history_cache = {}
@@ -1004,6 +1006,9 @@ class DailyMomentumStrategy:
         quotes = quotes or {}
         as_of = last_completed_trading_day(now)
         rows = []
+        monitors_view = copy.deepcopy(self.state.get("position_monitors", {}))
+        from position_guardian import update_position_monitors, evaluate_position_realtime_rules
+        update_position_monitors(self.account.positions, quotes, self.history_cache, monitors_view, now=now)
         for sym, pos in list(self.account.positions.items()):
             quote = quotes.get(sym, {})
             cost = self._position_cost(pos)
@@ -1017,9 +1022,20 @@ class DailyMomentumStrategy:
                                      current_adjusted_price=daily["signal_price"])
                 if reason:
                     signal_date = as_of
-            if (not reason and self.config.stop_loss_mode == "intraday" and price is not None
-                    and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct):
-                reason, signal_date = "盘中硬止损信号", now.date().isoformat()
+
+            avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+            guard_reason, guard_info = evaluate_position_realtime_rules(
+                sym, pos, quote, self.history_cache, self.config, monitors_view.get(sym, {}),
+                now=now, available_shares=avail, validated_price=price, is_past_buy=(buy_day <= as_of)
+            )
+
+            if not reason and self.config.stop_loss_mode == "intraday":
+                if guard_reason:
+                    reason = guard_reason
+                    signal_date = now.date().isoformat()
+                elif price is not None and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct:
+                    reason, signal_date = "盘中硬止损信号", now.date().isoformat()
+
             blocked = ""
             if reason:
                 if not is_trading_time(now):
@@ -1043,7 +1059,15 @@ class DailyMomentumStrategy:
                              triggered=bool(reason), signal_date=signal_date, blocked_reason=blocked,
                              quote_status="fresh" if price is not None else "stale" if quote else "unavailable",
                              quote_time=_timestamp(quote["time"]).isoformat() if price is not None else None,
-                             available_shares=pos.get("available_shares", 0)))
+                             available_shares=pos.get("available_shares", 0),
+                             peak_price=guard_info.get("peak_price"),
+                             peak_profit_pct=guard_info.get("peak_profit_pct"),
+                             trailing_stop_price=guard_info.get("trailing_stop_price"),
+                             trailing_stop_active=guard_info.get("trailing_stop_active"),
+                             breakeven_price=guard_info.get("breakeven_price"),
+                             breakeven_active=guard_info.get("breakeven_active"),
+                             live_ma20=guard_info.get("live_ma20"),
+                             guard_info=guard_info.get("summary", "")))
         return rows
 
     def on_tick(self, quotes, now=None):
@@ -1071,12 +1095,30 @@ class DailyMomentumStrategy:
                 self._plan(as_of, execution_day)
         if self.config.stop_loss_mode == "intraday":
             changed = False
+            monitors = self.state.setdefault("position_monitors", {})
+            from position_guardian import update_position_monitors, evaluate_position_realtime_rules
+            update_position_monitors(self.account.positions, quotes, self.history_cache, monitors, now=now)
             for sym, pos in self.account.positions.items():
                 price = self._live_stop_quote(quotes.get(sym, {}), now, sym)
+                if price is None:
+                    continue
                 cost = self._position_cost(pos)
-                if price is not None and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct:
+                avail = pos.get("available_shares", 0) if self.account.strict_t1 else pos.get("total_shares", 0)
+                q = quotes.get(sym, {})
+                buy_day = min((lot["date"] for lot in pos.get("buy_lots", [])), default=execution_day)
+
+                guard_reason, _ = evaluate_position_realtime_rules(
+                    sym, pos, q, self.history_cache, self.config, monitors.get(sym, {}),
+                    now=now, available_shares=avail, validated_price=price, is_past_buy=(buy_day <= as_of)
+                )
+
+                trigger_reason = guard_reason
+                if not trigger_reason and cost > 0 and (price/cost-1)*100 <= self.config.stop_loss_pct:
+                    trigger_reason = "盘中硬止损信号"
+
+                if trigger_reason:
                     if sym not in self.state["pending_exits"]:
-                        self.state["pending_exits"][sym] = "盘中硬止损信号"
+                        self.state["pending_exits"][sym] = trigger_reason
                         self.state["exit_signal_dates"][sym] = execution_day
                         self.state["pending_entries"].pop(sym, None)
                         changed = True
@@ -1103,9 +1145,12 @@ class DailyMomentumStrategy:
                     self.state["exit_signal_dates"].pop(symbol, None)
                     self.state["pending_entries"].pop(symbol, None)
                     self.state.setdefault("position_sizings", {}).pop(symbol, None)
-            timing = "实时触发执行" if reason == "盘中硬止损信号" else "收盘信号，随后交易日执行"
+                    self.state.setdefault("position_monitors", {}).pop(symbol, None)
+            is_intraday_exit = any(k in reason for k in ("盘中", "实时"))
+            timing = "实时触发执行" if is_intraday_exit else "收盘信号，随后交易日执行"
+            prefix = "" if is_intraday_exit else "收盘"
             result = self.account.execute_sell(sym, q.get("current", 0), avail,
-                        reason=f"{self.name}: {signal_date}{'收盘' if reason != '盘中硬止损信号' else ''}{reason}，{timing}",
+                        reason=f"{self.name}: {signal_date}{prefix}{reason}，{timing}",
                         state_update=commit_sale)
             if not result.get("success"):
                 self.state["exit_rejections"][sym] = dict(reason=result.get("reason") or result.get("message") or "成交未完成", time=now.isoformat())

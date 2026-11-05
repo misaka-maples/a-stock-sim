@@ -1874,14 +1874,22 @@
         return;
       }
       const n = (value, digits=2) => Number.isFinite(Number(value)) && value != null ? Number(value).toLocaleString('zh-CN', {minimumFractionDigits:digits, maximumFractionDigits:digits}) : '--';
-      const statuses = {healthy:'未触发', watching:'监控中', armed:'未触发', triggered:'已触发，等待卖出', pending:'已触发，待执行退出', blocked:'已触发，卖出受阻', awaiting_quote:'等待有效行情', paused:'策略已暂停', waiting:'等待执行', disabled:'策略未启用', unavailable:'风控状态暂不可用', safe:'未触发'};
+      const statuses = {healthy:'未触发', watching:'监控中', armed:'未触发', triggered:'已触发，等待卖出', pending:'已触发，待执行退出', blocked:'已触发，卖出受阻', awaiting_quote:'等待有效行情', paused:'策略已暂停', waiting:'等待执行', disabled:'策略未启用', unavailable:'风控状态暂不可用', safe:'未触发', trailing_stop_armed:'🎯 跟踪止盈监控中', breakeven_armed:'🛡️ 保本防守激活', normal_holding:'⚡ 实时守护中', limit_up_locked:'🚀 涨停锁仓'};
       const quoteLabels = {fresh:'有效报价', stale:'过期报价，仅供估值', unavailable:'缓存估值，时间未核验', previous_close:'昨收估值'};
       tbody.innerHTML = positions.map(p => {
         const isUp = Number(p.unrealized_pnl) >= 0;
         const risk = p.risk || {};
         const mode = risk.stop_loss_mode === 'intraday' ? '盘中硬止损' : risk.stop_loss_mode === 'daily_close' ? '收盘确认，次日执行' : '止损模式未提供';
         const riskLabel = statuses[risk.status] || (risk.status || '风控状态暂不可用');
-        const details = [mode, risk.stop_price != null ? '止损参考价 ¥' + n(risk.stop_price) : '', risk.triggered ? '已触发' : '', risk.reason, risk.blocked_reason, risk.signal_date ? '信号日 ' + risk.signal_date : ''].filter(Boolean);
+        const details = [
+          mode,
+          risk.stop_price != null ? '止损参考价 ¥' + n(risk.stop_price) : '',
+          risk.triggered ? '已触发' : '',
+          risk.guard_info || '',
+          risk.reason,
+          risk.blocked_reason,
+          risk.signal_date ? '信号日 ' + risk.signal_date : ''
+        ].filter(Boolean);
         const symbol = String(p.symbol || '');
         const sellable = /^[a-z]{2}\d{6}$/.test(symbol) && Number(p.available_shares) > 0;
         return `<tr>

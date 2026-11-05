@@ -37,11 +37,22 @@ class MomentumConfig:
     max_entry_gap_up_pct: float = 5.0
     max_entry_intraday_drop_pct: float = 3.0
     entry_require_ma20: bool = True
+    # 持仓实时全息风控守护引擎参数
+    enable_realtime_guardian: bool = True
+    trailing_stop_enabled: bool = True
+    trailing_stop_activation_pct: float = 4.0
+    trailing_stop_drop_pct: float = 2.0
+    breakeven_enabled: bool = True
+    breakeven_activation_pct: float = 2.5
+    breakeven_buffer_pct: float = 0.3
+    realtime_ma20_exit: bool = True
+    protect_limit_up: bool = True
 
     def __post_init__(self):
         if self.stop_loss_mode not in ("intraday", "daily_close"):
             raise ValueError("stop_loss_mode 必须为 intraday 或 daily_close")
-        for name in ("entry_require_ma20", "refill_vacancies"):
+        for name in ("entry_require_ma20", "refill_vacancies", "enable_realtime_guardian",
+                     "trailing_stop_enabled", "breakeven_enabled", "realtime_ma20_exit", "protect_limit_up"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} 必须为布尔值")
         for name in ("max_entry_gap_down_pct", "max_entry_gap_up_pct", "max_entry_intraday_drop_pct"):
@@ -49,6 +60,11 @@ class MomentumConfig:
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not 0 <= value <= 20 or not math.isfinite(value)):
                 raise ValueError(f"{name} 必须为 [0, 20] 之间的有限数值")
+        for name in ("trailing_stop_activation_pct", "trailing_stop_drop_pct", "breakeven_activation_pct", "breakeven_buffer_pct"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not 0 <= value <= 100 or not math.isfinite(value)):
+                raise ValueError(f"{name} 必须为 [0, 100] 之间的有限数值")
         for name in ("max_positions", "rebalance_every", "rank_buffer", "min_holding_days", "cooldown_days"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool):
