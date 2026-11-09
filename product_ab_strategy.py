@@ -183,6 +183,12 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         prev_w_a = float(ledger.get("weight_a", 1.0))
         prev_w_b = float(ledger.get("weight_b", 0.0))
 
+        ret_ab = 0.0
+        ret_a = 0.0
+        ret_b = 0.0
+        prev_equity = float(ledger.get("actual_equity", initial_cash))
+        actual_daily_ret = (curr_equity / prev_equity - 1.0) if prev_equity > 0 else 0.0
+
         if last_date is not None:
             ret_a = self._calc_theoretical_return(prev_holdings_a, last_date, as_of)
             ret_b = self._calc_theoretical_return(prev_holdings_b, last_date, as_of)
@@ -193,6 +199,22 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             nav_ab = nav_ab * (1.0 + ret_ab)
 
         tracking_error_pct = (nav_actual / nav_ab - 1.0) * 100.0 if nav_ab > 0 else 0.0
+        active_return = (actual_daily_ret - ret_ab) if last_date is not None else 0.0
+
+        # 现金隔离：分别记录回测假设现金年化 2.5% 产生的收益累积 vs 真实活期利息
+        cash_wt_a = max(0.0, 1.0 - sum(prev_holdings_a.values()))
+        cash_wt_b = max(0.0, 1.0 - sum(prev_holdings_b.values()))
+        blended_cash_wt = prev_w_a * cash_wt_a + prev_w_b * cash_wt_b
+        daily_assumed_cash_pnl = blended_cash_wt * (float(self.config.annual_cash_yield) / 100.0 / 252.0) * nav_ab * initial_cash if last_date is not None else 0.0
+        cum_assumed_cash = float(ledger.get("cum_assumed_cash_pnl", 0.0)) + daily_assumed_cash_pnl
+        cum_real_cash = float(ledger.get("cum_real_cash_interest", 0.0))
+
+        # 硬性告警判定 (单日主动收益偏差 > 0.5% 或 累计净值偏离 > 1.0%)
+        alerts = []
+        if last_date is not None and abs(active_return) > 0.005:
+            alerts.append(f"单日主动收益偏差告警 ({active_return*100:+.2f}% > 0.5%)")
+        if abs(tracking_error_pct) > 1.0:
+            alerts.append(f"累计净值偏离告警 ({tracking_error_pct:+.2f}% > 1.0%)")
 
         record = {
             "date": as_of,
@@ -204,9 +226,13 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "nav_ab_theoretical": round(nav_ab, 4),
             "nav_actual": round(nav_actual, 4),
             "tracking_error_pct": round(tracking_error_pct, 2),
+            "daily_active_return_pct": round(active_return * 100.0, 4),
             "actual_equity": round(curr_equity, 2),
             "holdings_count_a": len(today_holdings_a),
-            "holdings_count_b": len(today_holdings_b)
+            "holdings_count_b": len(today_holdings_b),
+            "cum_assumed_cash_pnl": round(cum_assumed_cash, 2),
+            "cum_real_cash_interest": round(cum_real_cash, 2),
+            "alerts": alerts
         }
 
         history = ledger.setdefault("history", [])
@@ -223,6 +249,10 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         ledger["nav_ab_theoretical"] = round(nav_ab, 4)
         ledger["nav_actual"] = round(nav_actual, 4)
         ledger["tracking_error_pct"] = round(tracking_error_pct, 2)
+        ledger["daily_active_return_pct"] = round(active_return * 100.0, 4)
+        ledger["cum_assumed_cash_pnl"] = round(cum_assumed_cash, 2)
+        ledger["cum_real_cash_interest"] = round(cum_real_cash, 2)
+        ledger["alerts"] = alerts
         ledger["target_holdings_a"] = today_holdings_a
         ledger["target_holdings_b"] = today_holdings_b
         self.account.save()

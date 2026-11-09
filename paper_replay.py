@@ -382,7 +382,8 @@ def run_paper_replay(start_date: str = "2024-09-02", end_date: str = "2025-10-31
         "summary": report_summary,
         "regime_switches": regime_switch_events,
         "large_errors": large_error_events,
-        "replay_log": replay_log
+        "replay_log": replay_log,
+        "trades": account.trades
     }
 
 
