@@ -61,6 +61,18 @@ class MomentumConfig:
     regime_strong_positions: int = 5
     regime_strong_risk: float = 0.025
     regime_strong_weight: float = 0.40
+    regime_breadth_confirmation: bool = False
+    regime_strong_breadth_min: float = 0.60
+    # 动态行业轮动候选池 (Dynamic Industry Universe)
+    dynamic_universe_enabled: bool = False
+    dynamic_top_industries: int = 4
+    dynamic_stocks_per_industry: int = 12
+    dynamic_min_amount: float = 30000000.0
+    # 动量分层仓位管理 (Momentum Tiered Sizing)
+    momentum_tiered_sizing: bool = False
+    tier_a_multiplier: float = 1.0
+    tier_b_multiplier: float = 0.75
+    tier_c_multiplier: float = 0.50
 
     def __post_init__(self):
         if self.stop_loss_mode not in ("intraday", "daily_close"):
@@ -87,6 +99,27 @@ class MomentumConfig:
             val = getattr(self, name)
             if isinstance(val, bool) or not 0 <= val <= 0.1:
                 raise ValueError(f"{name} 必须在 [0, 0.1] 之间")
+        if not isinstance(self.regime_breadth_confirmation, bool):
+            raise ValueError("regime_breadth_confirmation 必须为布尔值")
+        if (isinstance(self.regime_strong_breadth_min, bool) or not isinstance(self.regime_strong_breadth_min, (int, float))
+                or not 0.0 <= self.regime_strong_breadth_min <= 1.0 or not math.isfinite(self.regime_strong_breadth_min)):
+            raise ValueError("regime_strong_breadth_min 必须在 [0.0, 1.0] 之间")
+        if not isinstance(self.dynamic_universe_enabled, bool):
+            raise ValueError("dynamic_universe_enabled 必须为布尔值")
+        for name in ("dynamic_top_industries", "dynamic_stocks_per_industry"):
+            val = getattr(self, name)
+            if not isinstance(val, int) or isinstance(val, bool) or val < 1:
+                raise ValueError(f"{name} 必须为正整数")
+        if (isinstance(self.dynamic_min_amount, bool) or not isinstance(self.dynamic_min_amount, (int, float))
+                or not 0 <= self.dynamic_min_amount <= 1e11 or not math.isfinite(self.dynamic_min_amount)):
+            raise ValueError("dynamic_min_amount 必须为非负数值")
+        if not isinstance(self.momentum_tiered_sizing, bool):
+            raise ValueError("momentum_tiered_sizing 必须为布尔值")
+        for name in ("tier_a_multiplier", "tier_b_multiplier", "tier_c_multiplier"):
+            val = getattr(self, name)
+            if (isinstance(val, bool) or not isinstance(val, (int, float))
+                    or not 0.0 < val <= 2.0 or not math.isfinite(val)):
+                raise ValueError(f"{name} 必须在 (0.0, 2.0] 之间")
         for name in ("entry_require_ma20", "refill_vacancies", "enable_realtime_guardian",
                      "trailing_stop_enabled", "breakeven_enabled", "realtime_ma20_exit", "protect_limit_up"):
             if not isinstance(getattr(self, name), bool):
@@ -247,13 +280,22 @@ def exit_reason(current_price, cost_price, signal, config, current_adjusted_pric
     return None
 
 
-def target_weight(config, signal):
+def target_weight(config, signal, rank=1):
     weight = min(config.max_stock_weight, 1.0 / config.max_positions)
     if config.risk_per_trade:
         distance = max(abs(config.stop_loss_pct) / 100, 2 * signal.get("atr_pct", 0))
         weight = min(weight, config.risk_per_trade / max(distance, .001))
     if config.volatility_target and signal.get("volatility", 0) > 0:
         weight = min(weight, config.volatility_target / signal["volatility"] / config.max_positions)
+    if getattr(config, "momentum_tiered_sizing", False):
+        sig_score = float(signal.get("score", 0) or 0)
+        if rank <= max(1, config.max_positions) or sig_score >= 120.0:
+            tier_mult = float(getattr(config, "tier_a_multiplier", 1.0))
+        elif rank <= 2 * max(1, config.max_positions) or sig_score >= 70.0:
+            tier_mult = float(getattr(config, "tier_b_multiplier", 0.75))
+        else:
+            tier_mult = float(getattr(config, "tier_c_multiplier", 0.50))
+        weight = weight * tier_mult
     return max(0.0, weight)
 
 

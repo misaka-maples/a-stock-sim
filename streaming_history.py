@@ -126,6 +126,10 @@ class StreamingStocks:
                 self.warnings.append('missing_bars_or_suspension: '+symbol)
             self.db.commit()
         engine.notify_progress('prepare', len(engine.symbols), len(engine.symbols))
+    def __contains__(self, symbol):
+        return symbol in self.info
+    def get(self, symbol, default=None):
+        return self.info.get(symbol, default)
     def __getitem__(self, symbol):
         return self.info[symbol]
     def prepare_day(self, date, previous):

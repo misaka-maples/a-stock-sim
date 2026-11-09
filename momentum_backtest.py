@@ -10,6 +10,10 @@ import math
 import re
 import statistics
 import time
+import os
+import glob
+import json
+from pathlib import Path
 
 from history_data import HistoricalDataFeed, previous_trading_day, normalize_symbol_for_tencent
 from trade_calendar import is_trading_day
@@ -21,6 +25,7 @@ from execution import match_daily
 
 
 MOMENTUM_STRATEGIES = {"Momentum_Rotation", "Momentum_Rotation_Pro"}
+_DYNAMIC_STOCKS_CACHE = None
 
 
 def _main_board(symbol):
@@ -92,6 +97,18 @@ class MomentumBacktestEngine:
         self.ignored_legacy_parameters = sorted(set(kwargs) & legacy_keys)
         self.industry_map = {normalize_symbol_for_tencent(s): industry
                              for s, industry in (industry_map or {}).items()}
+        if not self.industry_map:
+            cache_dir = getattr(self.feed, "cache_dir", None)
+            if cache_dir is not None:
+                from pathlib import Path
+                ind_path = Path(cache_dir) / "industry_map_eastmoney.json"
+                if ind_path.exists():
+                    try:
+                        raw_ind = json.loads(ind_path.read_text(encoding="utf-8"))
+                        self.industry_map = {normalize_symbol_for_tencent(s): ind
+                                             for s, ind in raw_ind.get("industries", {}).items()}
+                    except Exception:
+                        pass
         self.universe_intervals = ({normalize_symbol_for_tencent(s): intervals for s, intervals in universe_intervals.items()}
                                    if universe_intervals is not None else None)
         self.commission_rate, self.min_commission = commission_rate, min_commission
@@ -152,9 +169,52 @@ class MomentumBacktestEngine:
             signal_dates = {previous_trading_day(dt.date.fromisoformat(d)) for d in dates}
             stocks = StreamingStocks(self, warmup_start, dates, signal_dates)
             self._stream_store = stocks
+        elif self.config.dynamic_universe_enabled and getattr(self.feed, "cache_dir", None) is not None:
+            global _DYNAMIC_STOCKS_CACHE
+            if _DYNAMIC_STOCKS_CACHE is None:
+                qfq_files = glob.glob(str(Path(self.feed.cache_dir) / "*_qfq.json"))
+                dyn_symbols = []
+                for p in qfq_files:
+                    sym = os.path.basename(p).replace("_qfq.json", "")
+                    if _main_board(sym) and sym in self.industry_map:
+                        dyn_symbols.append(sym)
+                dyn_symbols.sort()
+                loaded = {}
+                for sym in dyn_symbols:
+                    p = Path(self.feed.cache_dir) / f"{sym}_qfq.json"
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                    except Exception:
+                        cached = None
+                    if cached and cached.get("bars"):
+                        bars = sorted(cached["bars"], key=lambda b: b["date"])
+                        if len(bars) >= 125 and self._raw_valid(bars[-1]):
+                            loaded[sym] = dict(cached, bars=bars)
+                _DYNAMIC_STOCKS_CACHE = loaded
+            stocks = {}
+            for sym, s_data in _DYNAMIC_STOCKS_CACHE.items():
+                bars = [b for b in s_data["bars"] if b.get("date", "") <= self.end_date]
+                if len(bars) >= 125:
+                    stocks[sym] = dict(s_data, bars=bars, by_date={b["date"]: b for b in bars},
+                                       date_to_idx={b["date"]: i for i, b in enumerate(bars)})
+            self.symbols = list(stocks.keys())
         else:
-            stocks = self.feed.fetch_universe_klines(
-                self.symbols, start_date=warmup_start, end_date=self.end_date)
+            cached_stocks = {}
+            if getattr(self.feed, "cache_dir", None) is not None:
+                for sym in self.symbols:
+                    cached = self.feed._read_cache(sym, warmup_start, self.end_date, "qfq")
+                    if cached and cached.get("bars"):
+                        bars = sorted([b for b in cached["bars"] if b.get("date", "") <= self.end_date],
+                                      key=lambda b: b["date"])
+                        if len(bars) >= 125 and self._raw_valid(bars[-1]):
+                            cached_stocks[sym] = dict(cached, bars=bars, by_date={b["date"]: b for b in bars},
+                                                      date_to_idx={b["date"]: i for i, b in enumerate(bars)})
+            if len(cached_stocks) == len(self.symbols):
+                stocks = cached_stocks
+            else:
+                stocks = self.feed.fetch_universe_klines(
+                    self.symbols, start_date=warmup_start, end_date=self.end_date)
         warnings = ["daily_open_approximation: signals use previous close; fills use next raw open",
                     "capacity_approximation: daily total volume limits fills, not opening-auction depth",
                     "corporate_actions_not_accounted: cash dividends, splits and delisting recoveries require an event feed"]
@@ -175,6 +235,9 @@ class MomentumBacktestEngine:
             if self.ignored_legacy_parameters:
                 warnings.append("ignored_legacy_parameters: " + ", ".join(self.ignored_legacy_parameters))
             warnings.extend(stocks.warnings)
+        elif self.config.dynamic_universe_enabled:
+            missing_industry = 0
+            data_coverage = {}
         else:
             missing_industry = sum(not self.industry_map.get(s) and not any(
                 b.get("industry") or b.get("sector") for b in stocks.get(s, {}).get("bars", [])
@@ -190,7 +253,8 @@ class MomentumBacktestEngine:
                               key=lambda b: b["date"])
                 if len({b["date"] for b in bars}) != len(bars):
                     raise ValueError("Duplicate stock dates: " + symbol)
-                info = dict(info, bars=bars, by_date={b["date"]: b for b in bars})
+                info = dict(info, bars=bars, by_date={b["date"]: b for b in bars},
+                            date_to_idx={b["date"]: i for i, b in enumerate(bars)})
                 stocks[symbol] = info
                 raw_missing = [b["date"] for b in bars if not self._raw_valid(b)]
                 if raw_missing:
@@ -253,11 +317,73 @@ class MomentumBacktestEngine:
         def industries_on(date):
             mapping = dict(self.industry_map)
             for symbol in self.symbols:
-                bar = stocks[symbol]["by_date"].get(date, {})
-                if "industry" in bar or "sector" in bar:
-                    mapping[symbol] = bar.get("industry") or bar.get("sector")
+                try:
+                    s_info = stocks.get(symbol) if isinstance(stocks, dict) else (stocks.info.get(symbol) if hasattr(stocks, "info") else stocks[symbol])
+                except Exception:
+                    s_info = None
+                if s_info and "by_date" in s_info:
+                    bar = s_info["by_date"].get(date, {})
+                    if "industry" in bar or "sector" in bar:
+                        mapping[symbol] = bar.get("industry") or bar.get("sector")
             return mapping
 
+        def select_dynamic_universe(as_of, dated_inds):
+            top_n_industries = getattr(self.config, "dynamic_top_industries", 4)
+            top_n_stocks_per_ind = getattr(self.config, "dynamic_stocks_per_industry", 12)
+            min_amount = getattr(self.config, "dynamic_min_amount", 30000000.0)
+
+            qualified_by_ind = {}
+            for sym, s_data in stocks.items():
+                idx = s_data.get("date_to_idx", {}).get(as_of)
+                if idx is None or idx < 125:
+                    continue
+                bars = s_data["bars"]
+                b = bars[idx]
+                name = str(b.get("name") or s_data.get("name", "")).upper()
+                if b.get("is_st") or "ST" in name or "退" in name:
+                    continue
+                recent_bars = bars[idx-19:idx+1]
+                mean_amt = sum(float(x.get("amount", 0) or 0) for x in recent_bars) / 20.0
+                if mean_amt < min_amount:
+                    continue
+                c = float(b["close"])
+                c_20 = float(bars[idx-20]["close"])
+                c_60 = float(bars[idx-60]["close"])
+                if c <= 0 or c_20 <= 0 or c_60 <= 0:
+                    continue
+                ret20 = (c / c_20 - 1.0) * 100.0
+                ret60 = (c / c_60 - 1.0) * 100.0
+                ma20 = sum(float(x["close"]) for x in recent_bars) / 20.0
+
+                score = ret20 * 2.0 + ret60 * 1.0
+                ind = dated_inds.get(sym) or s_data.get("industry") or self.industry_map.get(sym, "其他")
+                qualified_by_ind.setdefault(ind, []).append({
+                    "symbol": sym, "name": name, "ret20": ret20, "ret60": ret60,
+                    "score": score, "above_ma20": c > ma20, "amount": mean_amt
+                })
+
+            ind_stats = []
+            for ind, s_list in qualified_by_ind.items():
+                if len(s_list) < 3:
+                    continue
+                avg_ret20 = sum(s["ret20"] for s in s_list) / len(s_list)
+                breadth_ma20 = sum(1 for s in s_list if s["above_ma20"]) / len(s_list)
+                if avg_ret20 > 0 and breadth_ma20 >= 0.40:
+                    ind_score = avg_ret20 * (1.0 + breadth_ma20)
+                    ind_stats.append((ind, ind_score, s_list))
+
+            ind_stats.sort(key=lambda x: x[1], reverse=True)
+            selected_industries = ind_stats[:top_n_industries]
+
+            chosen_symbols = []
+            for ind, i_score, s_list in selected_industries:
+                s_list.sort(key=lambda x: x["score"], reverse=True)
+                chosen = s_list[:top_n_stocks_per_ind]
+                chosen_symbols.extend([s["symbol"] for s in chosen])
+
+            return chosen_symbols
+
+        active_candidates = None
         for index, date in enumerate(dates):
             self.notify_progress('replay', index, len(dates))
             day_notional = 0.0
@@ -265,11 +391,20 @@ class MomentumBacktestEngine:
             if self.streaming:
                 stocks.prepare_day(date, as_of)
             dated_industries = industries_on(date)
-            signals = {}
             rebalance = index % self.config.rebalance_every == 0
+
+            cand_symbols = self.symbols
+            if as_of and self.config.dynamic_universe_enabled:
+                if rebalance or active_candidates is None:
+                    active_candidates = select_dynamic_universe(as_of, dated_industries)
+                cand_symbols = active_candidates
+
+            signals = {}
             if as_of:
-                for symbol in self.symbols:
-                    info = stocks[symbol]
+                for symbol in cand_symbols:
+                    info = stocks.get(symbol)
+                    if not info:
+                        continue
                     signal_bar = info["by_date"].get(as_of, {})
                     name = str(signal_bar.get("name") or info.get("name", "")).upper()
                     risk_warning = (signal_bar["is_st"] if signal_bar.get("is_st") is not None
@@ -312,11 +447,34 @@ class MomentumBacktestEngine:
                         effective_risk = self.config.regime_riskon_risk
                         effective_max_stock_weight = self.config.regime_riskon_weight
                     else:
-                        regime = "STRONG_RISK_ON"
-                        market_ok = True
-                        effective_max_positions = self.config.regime_strong_positions
-                        effective_risk = self.config.regime_strong_risk
-                        effective_max_stock_weight = self.config.regime_strong_weight
+                        cand_breadth = 1.0
+                        if cand_symbols:
+                            above_120 = 0
+                            for s in cand_symbols:
+                                s_info = stocks.get(s)
+                                if not s_info:
+                                    continue
+                                s_idx = s_info.get("date_to_idx", {}).get(as_of)
+                                if s_idx is not None and s_idx >= 120:
+                                    s_ma120 = sum(float(x["close"]) for x in s_info["bars"][s_idx-119:s_idx+1]) / 120.0
+                                    s_c = float(s_info["bars"][s_idx]["close"])
+                                    if s_c > s_ma120:
+                                        above_120 += 1
+                            cand_breadth = above_120 / max(1, len(cand_symbols))
+
+                        if (getattr(self.config, "regime_breadth_confirmation", False)
+                                and cand_breadth < float(getattr(self.config, "regime_strong_breadth_min", 0.60))):
+                            regime = "RISK_ON"
+                            market_ok = True
+                            effective_max_positions = self.config.regime_riskon_positions
+                            effective_risk = self.config.regime_riskon_risk
+                            effective_max_stock_weight = self.config.regime_riskon_weight
+                        else:
+                            regime = "STRONG_RISK_ON"
+                            market_ok = True
+                            effective_max_positions = self.config.regime_strong_positions
+                            effective_risk = self.config.regime_strong_risk
+                            effective_max_stock_weight = self.config.regime_strong_weight
                 else:
                     market_ok = False
             elif self.config.market_filter:
@@ -428,9 +586,9 @@ class MomentumBacktestEngine:
                             "max_positions": effective_max_positions,
                             "risk_per_trade": effective_risk,
                             "max_stock_weight": effective_max_stock_weight})
-                        weight = target_weight(cfg_regime, signals[symbol])
+                        weight = target_weight(cfg_regime, signals[symbol], rank=ranks.get(symbol, 1))
                     else:
-                        weight = target_weight(self.config, signals[symbol])
+                        weight = target_weight(self.config, signals[symbol], rank=ranks.get(symbol, 1))
                     weights = {s: v/equity for s, v in open_values.items()}
                     if not allowed_by_sector(symbol, weight, weights, dated_industries, self.config.max_sector_weight):
                         rejections.append(dict(date=date, symbol=symbol, side="BUY", reason="industry_cap"))
@@ -597,11 +755,16 @@ class MomentumBacktestEngine:
                               benchmark_equity=round(self.initial_cash*(1+bench_return/100), 2),
                               benchmark_return_pct=round(bench_return, 2),
                               drawdown=round(peak-equity, 2), drawdown_pct=round((1-equity/peak)*100, 2),
+                              regime=regime,
                               holding_count=len(positions), traded_notional=round(day_notional, 2),
                               turnover=day_notional/(2*equity) if equity > 0 else 0,
                               gross_exposure=market_value/equity if equity > 0 else 0,
                               industry_exposure={s: v/equity if equity > 0 else 0 for s, v in industry_values.items()}))
 
+        max_win = max([t["pnl_pct"] for t in trades]) if trades else 0.0
+        strong_regime_points = [p for p in curve if p.get("regime") == "STRONG_RISK_ON"]
+        avg_strong_regime_exposure = (statistics.mean(p["gross_exposure"] for p in strong_regime_points)
+                                     if strong_regime_points else 0.0)
         win_count = sum(t["net_pnl"] > 0 for t in trades)
         loss_count = len(trades)-win_count
         avg_win = sum(t["net_pnl"] for t in trades if t["net_pnl"] > 0)/win_count if win_count else 0
@@ -639,6 +802,9 @@ class MomentumBacktestEngine:
                        total_fees=round(total_fees, 2), fill_count=len(fills),
                        avg_gross_exposure=statistics.mean(p["gross_exposure"] for p in curve),
                        max_gross_exposure=max(p["gross_exposure"] for p in curve),
+                       max_win_pct=round(max_win, 2),
+                       avg_strong_exposure=round(avg_strong_regime_exposure*100, 2),
+                       strong_regime_days=len(strong_regime_points),
                        annualized_turnover=statistics.mean(p["turnover"] for p in curve)*252,
                        total_traded_notional=round(sum(p["traded_notional"] for p in curve), 2),
                        turnover_definition="252 * mean(daily gross buy+sell notional / (2 * closing equity))",
