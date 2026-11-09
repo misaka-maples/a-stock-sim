@@ -282,8 +282,44 @@ class MomentumBacktestEngine:
             ranking = sorted(signals, key=lambda s: (-signals[s]["score"], s))
             ranks = {symbol: i + 1 for i, symbol in enumerate(ranking)}
             market_ok = True
-            if self.config.market_filter:
-                history = [b for b in benchmark if as_of and b["date"] <= as_of]
+            regime = "NORMAL"
+            effective_max_positions = self.config.max_positions
+            effective_risk = self.config.risk_per_trade
+            effective_max_stock_weight = self.config.max_stock_weight
+
+            history = [b for b in benchmark if as_of and b["date"] <= as_of] if as_of else []
+            if self.config.regime_sizing_enabled:
+                if len(history) >= 120 and as_of:
+                    hs_close = float(history[-1]["close"])
+                    ma120 = sum(float(b["close"]) for b in history[-120:]) / 120.0
+                    ma20 = sum(float(b["close"]) for b in history[-20:]) / 20.0
+                    ma60 = sum(float(b["close"]) for b in history[-60:]) / 60.0
+                    if hs_close <= ma120:
+                        regime = "RISK_OFF"
+                        market_ok = False
+                        effective_max_positions = 0
+                        effective_risk = 0.0
+                    elif hs_close <= ma20:
+                        regime = "NEUTRAL"
+                        market_ok = True
+                        effective_max_positions = self.config.regime_neutral_positions
+                        effective_risk = self.config.regime_neutral_risk
+                        effective_max_stock_weight = self.config.regime_neutral_weight
+                    elif ma20 <= ma60:
+                        regime = "RISK_ON"
+                        market_ok = True
+                        effective_max_positions = self.config.regime_riskon_positions
+                        effective_risk = self.config.regime_riskon_risk
+                        effective_max_stock_weight = self.config.regime_riskon_weight
+                    else:
+                        regime = "STRONG_RISK_ON"
+                        market_ok = True
+                        effective_max_positions = self.config.regime_strong_positions
+                        effective_risk = self.config.regime_strong_risk
+                        effective_max_stock_weight = self.config.regime_strong_weight
+                else:
+                    market_ok = False
+            elif self.config.market_filter:
                 market_ok = (len(history) >= 120 and history[-1]["date"] == as_of and float(history[-1]["close"])
                              > sum(float(b["close"]) for b in history[-120:]) / 120)
 
@@ -297,7 +333,7 @@ class MomentumBacktestEngine:
                                          signal, self.config,
                                          current_adjusted_price=signal["signal_price"])
                     if (reason is None and rebalance and index - pos["buy_index"] - 1 >= self.config.min_holding_days
-                            and ranks.get(symbol, math.inf) > self.config.max_positions + self.config.rank_buffer):
+                            and ranks.get(symbol, math.inf) > effective_max_positions + self.config.rank_buffer):
                         reason = "排名缓冲外轮动信号"
                     if reason:
                         pending_exits.setdefault(symbol, dict(reason=reason, signal_date=as_of))
@@ -366,7 +402,7 @@ class MomentumBacktestEngine:
             # still consume slots; intraday proceeds arrive after these buys.
             if (rebalance or self.config.refill_vacancies) and market_ok:
                 for symbol in ranking:
-                    if len(positions) >= self.config.max_positions:
+                    if len(positions) >= effective_max_positions:
                         break
                     if (symbol in positions or index <= cooldown.get(symbol, -1)
                             or not eligible_on(symbol, date, self.universe_intervals)):
@@ -387,7 +423,14 @@ class MomentumBacktestEngine:
                         continue
                     open_values = marks(date, opening=True)
                     equity = cash + sum(open_values.values())
-                    weight = target_weight(self.config, signals[symbol])
+                    if self.config.regime_sizing_enabled:
+                        cfg_regime = MomentumConfig(**{**asdict(self.config),
+                            "max_positions": effective_max_positions,
+                            "risk_per_trade": effective_risk,
+                            "max_stock_weight": effective_max_stock_weight})
+                        weight = target_weight(cfg_regime, signals[symbol])
+                    else:
+                        weight = target_weight(self.config, signals[symbol])
                     weights = {s: v/equity for s, v in open_values.items()}
                     if not allowed_by_sector(symbol, weight, weights, dated_industries, self.config.max_sector_weight):
                         rejections.append(dict(date=date, symbol=symbol, side="BUY", reason="industry_cap"))
@@ -460,7 +503,8 @@ class MomentumBacktestEngine:
                     positions[symbol] = dict(name=stocks[symbol].get("name", symbol), shares=shares,
                                              buy_price=price, cost_price=(amount+fee)/shares,
                                              buy_date=date, buy_index=index, remaining_buy_fees=fee,
-                                             last_price=price, peak_price=price)
+                                             last_price=price, peak_price=price,
+                                             atr_pct=float((signal.get("atr_pct", 0.035) if signal else 0.035) or 0.035))
                     fills.append(dict(date=date, symbol=symbol, side="BUY", shares=shares, price=price,
                                       fees=fee, signal_date=as_of, status=result.get("status"),
                                       entry_reason="scheduled_rotation" if rebalance else "vacancy_refill"))
@@ -490,11 +534,17 @@ class MomentumBacktestEngine:
                     # 1. 冲高回落动态跟踪止盈 (Trailing Take-Profit)
                     if (getattr(self.config, "trailing_stop_enabled", True)
                             and peak_profit >= float(getattr(self.config, "trailing_stop_activation_pct", 4.0))):
-                        trailing_drop = float(getattr(self.config, "trailing_stop_drop_pct", 2.0))
+                        trailing_mode = getattr(self.config, "trailing_stop_mode", "fixed_pct")
+                        if trailing_mode == "atr":
+                            mult = float(getattr(self.config, "atr_trailing_multiplier", 2.0))
+                            atr_pct = float(pos.get("atr_pct", 0.035) or 0.035)
+                            trailing_drop = mult * atr_pct * 100.0
+                        else:
+                            trailing_drop = float(getattr(self.config, "trailing_stop_drop_pct", 2.0))
                         trailing_stop_price = round(pos["peak_price"] * (1.0 - trailing_drop / 100.0), 2)
                         if low <= trailing_stop_price and trailing_stop_price > pos["cost_price"]:
                             stop_order = dict(
-                                reason=f"盘中动态跟踪止盈信号 (最高浮盈 +{peak_profit:.2f}%，自高点回落锁定)",
+                                reason=f"盘中动态跟踪止盈信号 ({'ATR模式' if trailing_mode == 'atr' else '固定比例'}，最高浮盈 +{peak_profit:.2f}%，自高点回落锁定)",
                                 signal_date=date, trigger_date=date, stop_price=trailing_stop_price)
 
                     # 2. 保本止损防守 (Breakeven Defense)
@@ -530,6 +580,9 @@ class MomentumBacktestEngine:
                         warnings.append("possible_corporate_action_while_held: " + symbol + " " + date)
                     if factor:
                         observed_factors[symbol] = float(factor)
+            if getattr(self.config, "annual_cash_yield", 0.0) > 0 and cash > 0:
+                daily_cash_yield = cash * (float(self.config.annual_cash_yield) / 100.0 / 252.0)
+                cash += daily_cash_yield
             market_value = sum(marks(date).values())
             equity = cash + market_value
             industry_values = {}

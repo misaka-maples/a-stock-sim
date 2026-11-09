@@ -47,10 +47,46 @@ class MomentumConfig:
     breakeven_buffer_pct: float = 0.3
     realtime_ma20_exit: bool = True
     protect_limit_up: bool = True
+    trailing_stop_mode: str = "fixed_pct"
+    atr_trailing_multiplier: float = 2.0
+    annual_cash_yield: float = 0.0
+    # 市场状态动态仓位守护 (Market Regime Sizing)
+    regime_sizing_enabled: bool = False
+    regime_neutral_positions: int = 2
+    regime_neutral_risk: float = 0.012
+    regime_neutral_weight: float = 0.25
+    regime_riskon_positions: int = 4
+    regime_riskon_risk: float = 0.020
+    regime_riskon_weight: float = 0.35
+    regime_strong_positions: int = 5
+    regime_strong_risk: float = 0.025
+    regime_strong_weight: float = 0.40
 
     def __post_init__(self):
         if self.stop_loss_mode not in ("intraday", "daily_close"):
             raise ValueError("stop_loss_mode 必须为 intraday 或 daily_close")
+        if self.trailing_stop_mode not in ("atr", "fixed_pct"):
+            raise ValueError("trailing_stop_mode 必须为 atr 或 fixed_pct")
+        if (isinstance(self.atr_trailing_multiplier, bool) or not isinstance(self.atr_trailing_multiplier, (int, float))
+                or not 0.1 <= self.atr_trailing_multiplier <= 10.0 or not math.isfinite(self.atr_trailing_multiplier)):
+            raise ValueError("atr_trailing_multiplier 必须为 [0.1, 10.0] 之间的有限数值")
+        if (isinstance(self.annual_cash_yield, bool) or not isinstance(self.annual_cash_yield, (int, float))
+                or not 0.0 <= self.annual_cash_yield <= 20.0 or not math.isfinite(self.annual_cash_yield)):
+            raise ValueError("annual_cash_yield 必须为 [0.0, 20.0] 之间的有限数值")
+        if not isinstance(self.regime_sizing_enabled, bool):
+            raise ValueError("regime_sizing_enabled 必须为布尔值")
+        for name in ("regime_neutral_positions", "regime_riskon_positions", "regime_strong_positions"):
+            val = getattr(self, name)
+            if not isinstance(val, int) or isinstance(val, bool) or not 1 <= val <= 50:
+                raise ValueError(f"{name} 必须为 1 到 50 之间的整数")
+        for name in ("regime_neutral_weight", "regime_riskon_weight", "regime_strong_weight"):
+            val = getattr(self, name)
+            if isinstance(val, bool) or not 0 < val <= 1:
+                raise ValueError(f"{name} 必须在 (0, 1] 之间")
+        for name in ("regime_neutral_risk", "regime_riskon_risk", "regime_strong_risk"):
+            val = getattr(self, name)
+            if isinstance(val, bool) or not 0 <= val <= 0.1:
+                raise ValueError(f"{name} 必须在 [0, 0.1] 之间")
         for name in ("entry_require_ma20", "refill_vacancies", "enable_realtime_guardian",
                      "trailing_stop_enabled", "breakeven_enabled", "realtime_ma20_exit", "protect_limit_up"):
             if not isinstance(getattr(self, name), bool):

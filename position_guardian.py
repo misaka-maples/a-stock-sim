@@ -200,6 +200,21 @@ def compute_live_ma20(symbol: str, current_price: float, history_cache: Dict[str
     return round((sum(recent_closes) + valid_cp) / 20.0, 3)
 
 
+def compute_live_atr(symbol: str, history_cache: Dict[str, Any], period: int = 14) -> Optional[float]:
+    bars = _get_history_bars(symbol, history_cache)
+    if not bars or len(bars) < period + 1:
+        return None
+    true_ranges = []
+    for i in range(len(bars) - period, len(bars)):
+        hi = _valid_price(bars[i].get("high"))
+        lo = _valid_price(bars[i].get("low"))
+        prev_c = _valid_price(bars[i - 1].get("close"))
+        if hi is None or lo is None or prev_c is None:
+            return None
+        true_ranges.append(max(hi - lo, abs(hi - prev_c), abs(lo - prev_c)))
+    return round(sum(true_ranges) / len(true_ranges), 3)
+
+
 def evaluate_position_realtime_rules(
     symbol: str,
     pos: Dict[str, Any],
@@ -240,7 +255,14 @@ def evaluate_position_realtime_rules(
 
     # 1. 移动止盈与保本防守参考价测算
     trailing_activation = float(getattr(config, "trailing_stop_activation_pct", 4.0) or 4.0)
-    trailing_drop = float(getattr(config, "trailing_stop_drop_pct", 2.0) or 2.0)
+    trailing_mode = getattr(config, "trailing_stop_mode", "fixed_pct")
+    if trailing_mode == "atr":
+        mult = float(getattr(config, "atr_trailing_multiplier", 2.0) or 2.0)
+        live_atr = compute_live_atr(symbol, history_cache, period=14)
+        atr_pct = (live_atr / current_price) if (live_atr and current_price > 0) else float(pos.get("atr_pct", 0.035) or 0.035)
+        trailing_drop = mult * atr_pct * 100.0
+    else:
+        trailing_drop = float(getattr(config, "trailing_stop_drop_pct", 2.0) or 2.0)
     trailing_stop_price = round(peak_price * (1.0 - trailing_drop / 100.0), 2)
     trailing_stop_active = bool(getattr(config, "trailing_stop_enabled", True) and peak_profit >= trailing_activation)
 
