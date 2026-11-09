@@ -73,6 +73,10 @@ class MomentumConfig:
     tier_a_multiplier: float = 1.0
     tier_b_multiplier: float = 0.75
     tier_c_multiplier: float = 0.50
+    # Strong Regime 仓位爬坡 (Strong Regime Ramp-Up)
+    regime_ramp_up_enabled: bool = False
+    regime_ramp_up_days: int = 3
+    regime_ramp_min_mult: float = 0.50
 
     def __post_init__(self):
         if self.stop_loss_mode not in ("intraday", "daily_close"):
@@ -120,6 +124,14 @@ class MomentumConfig:
             if (isinstance(val, bool) or not isinstance(val, (int, float))
                     or not 0.0 < val <= 2.0 or not math.isfinite(val)):
                 raise ValueError(f"{name} 必须在 (0.0, 2.0] 之间")
+        if not isinstance(self.regime_ramp_up_enabled, bool):
+            raise ValueError("regime_ramp_up_enabled 必须为布尔值")
+        if (not isinstance(self.regime_ramp_up_days, int) or isinstance(self.regime_ramp_up_days, bool)
+                or self.regime_ramp_up_days < 1):
+            raise ValueError("regime_ramp_up_days 必须为正整数")
+        if (isinstance(self.regime_ramp_min_mult, bool) or not isinstance(self.regime_ramp_min_mult, (int, float))
+                or not 0.0 < self.regime_ramp_min_mult <= 1.0 or not math.isfinite(self.regime_ramp_min_mult)):
+            raise ValueError("regime_ramp_min_mult 必须在 (0.0, 1.0] 之间")
         for name in ("entry_require_ma20", "refill_vacancies", "enable_realtime_guardian",
                      "trailing_stop_enabled", "breakeven_enabled", "realtime_ma20_exit", "protect_limit_up"):
             if not isinstance(getattr(self, name), bool):

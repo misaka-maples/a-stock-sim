@@ -384,6 +384,7 @@ class MomentumBacktestEngine:
             return chosen_symbols
 
         active_candidates = None
+        consecutive_strong_days = 0
         for index, date in enumerate(dates):
             self.notify_progress('replay', index, len(dates))
             day_notional = 0.0
@@ -480,6 +481,26 @@ class MomentumBacktestEngine:
             elif self.config.market_filter:
                 market_ok = (len(history) >= 120 and history[-1]["date"] == as_of and float(history[-1]["close"])
                              > sum(float(b["close"]) for b in history[-120:]) / 120)
+
+            if regime == "STRONG_RISK_ON":
+                consecutive_strong_days += 1
+            else:
+                consecutive_strong_days = 0
+
+            if getattr(self.config, "regime_ramp_up_enabled", False) and regime == "STRONG_RISK_ON":
+                ramp_days = max(1, int(getattr(self.config, "regime_ramp_up_days", 3)))
+                min_mult = float(getattr(self.config, "regime_ramp_min_mult", 0.50))
+                if consecutive_strong_days <= 1:
+                    ramp_factor = min_mult
+                    effective_max_positions = min(effective_max_positions, 2)
+                elif consecutive_strong_days < ramp_days:
+                    step = (1.0 - min_mult) / max(1, ramp_days - 1)
+                    ramp_factor = min_mult + step * (consecutive_strong_days - 1)
+                    effective_max_positions = min(effective_max_positions, max(2, self.config.regime_strong_positions - 1))
+                else:
+                    ramp_factor = 1.0
+                effective_risk = effective_risk * ramp_factor
+                effective_max_stock_weight = effective_max_stock_weight * ramp_factor
 
             # Orders only inspect completed bars. Failed/partial exits persist.
             if as_of:
