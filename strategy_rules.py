@@ -26,7 +26,7 @@ class MomentumConfig:
     alpha_high: float = 0.95
     risk_adjusted: bool = False
     rebalance_every: int = 5
-    refill_vacancies: bool = True
+    refill_vacancies: bool = False
     rank_buffer: int = 3
     min_holding_days: int = 5
     cooldown_days: int = 3

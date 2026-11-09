@@ -460,7 +460,7 @@ class MomentumBacktestEngine:
                     positions[symbol] = dict(name=stocks[symbol].get("name", symbol), shares=shares,
                                              buy_price=price, cost_price=(amount+fee)/shares,
                                              buy_date=date, buy_index=index, remaining_buy_fees=fee,
-                                             last_price=price)
+                                             last_price=price, peak_price=price)
                     fills.append(dict(date=date, symbol=symbol, side="BUY", shares=shares, price=price,
                                       fees=fee, signal_date=as_of, status=result.get("status"),
                                       entry_reason="scheduled_rotation" if rebalance else "vacancy_refill"))
@@ -469,21 +469,61 @@ class MomentumBacktestEngine:
             # proceeds must never finance an earlier opening buy. A same-day
             # acquisition can trigger an intent, but T+1 delays its execution.
             if self.config.stop_loss_mode == "intraday":
-                for symbol, pos in positions.items():
+                for symbol, pos in list(positions.items()):
                     bar = stocks[symbol]["by_date"].get(date)
                     if not bar:
                         continue
-                    stop = pos["cost_price"] * (1 + self.config.stop_loss_pct / 100)
-                    if float(bar["raw_low"]) <= stop:
-                        pending_exits.setdefault(symbol, dict(
-                            reason="盘中成本止损信号", signal_date=date,
-                            trigger_date=date, stop_price=stop))
+                    high = float(bar.get("raw_high", bar.get("high", 0)))
+                    low = float(bar.get("raw_low", bar.get("low", 0)))
+                    pos["peak_price"] = max(pos.get("peak_price", pos["cost_price"]), high)
+                    peak_profit = ((pos["peak_price"] / pos["cost_price"]) - 1.0) * 100.0
+
+                    if self.strict_t1 and pos["buy_date"] >= date:
+                        hard_stop_price = round(pos["cost_price"] * (1 + self.config.stop_loss_pct / 100), 2)
+                        if low <= hard_stop_price:
+                            pending_exits.setdefault(symbol, dict(
+                                reason="盘中成本止损信号", signal_date=date,
+                                trigger_date=date, stop_price=hard_stop_price))
+                        continue
+
+                    stop_order = None
+                    # 1. 冲高回落动态跟踪止盈 (Trailing Take-Profit)
+                    if (getattr(self.config, "trailing_stop_enabled", True)
+                            and peak_profit >= float(getattr(self.config, "trailing_stop_activation_pct", 4.0))):
+                        trailing_drop = float(getattr(self.config, "trailing_stop_drop_pct", 2.0))
+                        trailing_stop_price = round(pos["peak_price"] * (1.0 - trailing_drop / 100.0), 2)
+                        if low <= trailing_stop_price and trailing_stop_price > pos["cost_price"]:
+                            stop_order = dict(
+                                reason=f"盘中动态跟踪止盈信号 (最高浮盈 +{peak_profit:.2f}%，自高点回落锁定)",
+                                signal_date=date, trigger_date=date, stop_price=trailing_stop_price)
+
+                    # 2. 保本止损防守 (Breakeven Defense)
+                    if (stop_order is None and getattr(self.config, "breakeven_enabled", True)
+                            and peak_profit >= float(getattr(self.config, "breakeven_activation_pct", 2.5))):
+                        be_buf = float(getattr(self.config, "breakeven_buffer_pct", 0.3))
+                        be_price = round(pos["cost_price"] * (1.0 + be_buf / 100.0), 2)
+                        if low <= be_price:
+                            stop_order = dict(
+                                reason=f"盘中保本止损防守信号 (曾最高浮盈 +{peak_profit:.2f}%，保本离场)",
+                                signal_date=date, trigger_date=date, stop_price=be_price)
+
+                    # 3. 底线硬止损防守 (Hard Stop Loss)
+                    if stop_order is None:
+                        hard_stop_price = round(pos["cost_price"] * (1 + self.config.stop_loss_pct / 100), 2)
+                        if low <= hard_stop_price:
+                            stop_order = dict(
+                                reason="盘中成本止损信号", signal_date=date,
+                                trigger_date=date, stop_price=hard_stop_price)
+
+                    if stop_order:
+                        pending_exits.setdefault(symbol, stop_order)
                 execute_exits(intraday=True)
 
             for symbol, pos in positions.items():
                 bar = stocks[symbol]["by_date"].get(date)
                 if bar:
                     pos["last_price"] = float(bar["raw_close"])
+                    pos["peak_price"] = max(pos.get("peak_price", pos["cost_price"]), float(bar.get("raw_high", bar["high"])))
                     factor = bar.get("adjustment_factor")
                     previous_factor = observed_factors.get(symbol)
                     if factor and previous_factor and abs(float(factor)/previous_factor-1) > .005:

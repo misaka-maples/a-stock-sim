@@ -7,8 +7,8 @@ from strategy_rules import (MomentumConfig, entry_guard_reason,
 
 class EntryGuardTests(unittest.TestCase):
     def test_vacancy_refill_is_enabled_by_default_and_strictly_boolean(self):
-        self.assertIs(MomentumConfig().refill_vacancies, True)
-        self.assertIs(MomentumConfig(refill_vacancies=False).refill_vacancies, False)
+        self.assertIs(MomentumConfig().refill_vacancies, False)
+        self.assertIs(MomentumConfig(refill_vacancies=True).refill_vacancies, True)
         for value in (0, 1, "true", None):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 MomentumConfig(refill_vacancies=value)

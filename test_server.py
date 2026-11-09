@@ -739,6 +739,7 @@ class TestServerAPI(unittest.TestCase):
 
 
     def test_daily_refill_configuration_is_strict_and_preserves_false(self):
+        self.ctx.strategy.config.refill_vacancies = True
         self.assertTrue(self.ctx.strategy.config.refill_vacancies)
         for invalid in ("false", 0, [], {}):
             with self.subTest(invalid=invalid):
@@ -760,6 +761,7 @@ class TestServerAPI(unittest.TestCase):
         self.assertIn("暂停", paused["wait_reason"])
 
     def test_current_backtest_snapshot_freezes_refill_policy(self):
+        self.ctx.strategy.config.refill_vacancies = True
         with patch.object(server, "run_backtest", return_value={"summary": {}}) as run:
             response = self.client.post("/api/backtest/run", json={"strategy_name": "Momentum_Rotation_Pro", "use_current_config": True, "refill_vacancies": False})
         self.assertEqual(response.status_code, 200)

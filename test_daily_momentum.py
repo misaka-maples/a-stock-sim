@@ -66,7 +66,7 @@ def account(tmp_path, clock):
 def prepared(account, symbols=None, feed=None, now=NOW, **config):
     config = {**dict(max_positions=3, max_stock_weight=.2, max_sector_weight=1.,
                     risk_per_trade=0, volatility_target=0, rebalance_every=1,
-                    min_holding_days=0, stop_loss_mode="daily_close"), **config}
+                    min_holding_days=0, stop_loss_mode="daily_close", refill_vacancies=True), **config}
     s = MomentumRotationProStrategy(account, symbols or [SYMBOL], feed=feed or StubFeed(),
                                     industry_map={}, **config)
     s.prepare(now=now, synchronous=True)
