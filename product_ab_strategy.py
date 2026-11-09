@@ -260,7 +260,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             # 来自 B 的意图 (Strong 模式 4 只，常规模式 max_positions 只)
             if w_b > 0 and signals_b:
                 cfg_b = copy.deepcopy(self.config)
-                cfg_b.max_positions = self.config.regime_strong_positions if regime == "STRONG_RISK_ON" else self.config.max_positions
+                cfg_b.max_positions = self.config.regime_strong_positions if regime == "STRONG_RISK_ON" else 3
                 for i, c in enumerate(signals_b[:cfg_b.max_positions]):
                     sym = c["symbol"]
                     wt_b = target_weight(cfg_b, c, rank=i+1)
@@ -286,7 +286,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec_wt)
                 final_wt = min(final_wt, allowed_sec)
 
-            if final_wt >= 0.05:
+            if final_wt >= 0.02:
                 sector_weights[ind] = curr_sec_wt + final_wt
                 sig = next((c for c in signals if c["symbol"] == sym), None)
                 if sig:
