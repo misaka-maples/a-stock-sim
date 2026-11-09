@@ -11,6 +11,8 @@ Product AB: 自适应混动策略实盘/模拟调度器 (Base Engine + Turbo Eng
 """
 
 import datetime as dt
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
 import math
 import copy
 import statistics
@@ -83,6 +85,30 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.symbols_a = list(core_symbols)
         all_watch = list(dict.fromkeys(self.symbols_a + self.watchlist))
         self.watchlist = all_watch
+
+        # 初始化独立前向测试账本 (Sandbox Testing Account)
+        sandbox_path = BASE_DIR / "data" / "sandbox_ab_account.json"
+        from sim_trader import SimAccount
+        if sandbox_path.exists():
+            self.sandbox_account = SimAccount(
+                initial_cash=100000.0,
+                save_path=str(sandbox_path),
+                strict_t1=True
+            )
+            self.sandbox_account.load()
+        else:
+            self.sandbox_account = SimAccount(
+                initial_cash=100000.0,
+                save_path=str(sandbox_path),
+                strict_t1=True
+            )
+            self.sandbox_account.save()
+
+        self.sandbox_state = self.state.setdefault("sandbox_state", {
+            "pending_entries": {},
+            "pending_exits": {},
+            "last_cash_yield_date": None
+        })
 
         # 初始化影子账本 (Shadow Ledger)
         self.state.setdefault("shadow_ledger", {
@@ -334,14 +360,169 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.state["planned_as_of"] = as_of
         self.state["planned_policy"] = f"Product_AB_{regime}"
 
+        # 3.5 为测试账本排定订单计划 (严格基于标准 10 万元独立基准与当前测试持仓)
+        self._plan_sandbox(as_of, execution_day, regime, w_a, w_b, signals_a, signals_b)
+
         # 4. 更新影子账本 (Shadow Ledger)
         self._update_shadow_ledger(as_of, regime, w_a, w_b, today_holdings_a, today_holdings_b)
 
-    def on_tick(self, quotes, now=None):
-        """时钟周期触发：先平仓、后开仓、闲置资金现金管理计息"""
-        super().on_tick(quotes, now=now)
+    def _plan_sandbox(self, as_of, execution_day, regime, w_a, w_b, signals_a, signals_b):
+        """为测试账本独立排定订单计划 (严格基于标准 10 万元独立基准与当前测试持仓)"""
+        if not hasattr(self, "sandbox_account") or self.sandbox_account is None:
+            return
 
-        # 每日盘后闲置现金自动计息 (Cash Overlay: 年化 2.5%)
+        sb_exits = {}
+        for sym, pos in list(self.sandbox_account.positions.items()):
+            bars = self.history_cache.get(sym, [])
+            if not bars:
+                continue
+            sig = holding_signal(bars, as_of)
+            reason = exit_reason(pos, sig, self.config)
+            if reason:
+                sb_exits[sym] = {"shares": pos["shares"], "reason": reason}
+
+        self.sandbox_state["pending_exits"] = sb_exits
+
+        sb_entries = {}
+        if regime != "RISK_OFF":
+            sb_target_weights = {}
+            if w_a > 0 and signals_a:
+                cfg_a = copy.deepcopy(self.config)
+                cfg_a.max_positions = 3
+                for c in signals_a[:3]:
+                    sym = c["symbol"]
+                    wt_a = target_weight(cfg_a, c)
+                    sb_target_weights[sym] = sb_target_weights.get(sym, 0.0) + w_a * wt_a
+
+            if w_b > 0 and signals_b:
+                cfg_b = copy.deepcopy(self.config)
+                cfg_b.max_positions = 4 if regime == "STRONG_RISK_ON" else 3
+                for i, c in enumerate(signals_b[:cfg_b.max_positions]):
+                    sym = c["symbol"]
+                    wt_b = target_weight(cfg_b, c, rank=i+1)
+                    sb_target_weights[sym] = sb_target_weights.get(sym, 0.0) + w_b * wt_b
+
+            sb_equity = self.sandbox_account.get_summary()["total_equity"]
+            sb_sec_weights = {}
+            for sym, pos in self.sandbox_account.positions.items():
+                if sym not in sb_exits:
+                    ind = self.industry_map.get(sym, "其他")
+                    sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (pos["market_value"] / sb_equity if sb_equity > 0 else 0)
+
+            for sym, raw_wt in sb_target_weights.items():
+                if sym in self.sandbox_account.positions and sym not in sb_exits:
+                    continue
+                final_wt = min(raw_wt, self.config.max_stock_weight)
+                ind = self.industry_map.get(sym, "其他")
+                curr_sec = sb_sec_weights.get(ind, 0.0)
+                allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec)
+                final_wt = min(final_wt, allowed_sec)
+
+                if final_wt >= 0.02:
+                    sb_sec_weights[ind] = curr_sec + final_wt
+                    sig = next((c for c in signals_a + signals_b if c["symbol"] == sym), None)
+                    if sig:
+                        sb_entries[sym] = dict(
+                            signal=sig,
+                            target_weight=final_wt,
+                            entry_reason=f"Sandbox_AB_{regime}",
+                            filled_shares=0
+                        )
+
+        self.sandbox_state["pending_entries"] = sb_entries
+
+    def _tick_sandbox(self, quotes: Dict[str, Dict[str, Any]], now=None):
+        """时钟推进测试账本模拟撮合与估值 (严格基于 10 万元独立账户)"""
+        if not hasattr(self, "sandbox_account") or self.sandbox_account is None:
+            return
+
+        now_dt = now or dt.datetime.now(BEIJING)
+        execution_day = now_dt.date().isoformat()
+
+        self.sandbox_account.update_market_prices(quotes, now=now_dt)
+        self.sandbox_account.update_t1_available_shares(today_str=execution_day)
+
+        from daily_momentum import is_trading_time
+        if is_trading_time(now_dt):
+            pending_exits = self.sandbox_state.get("pending_exits", {})
+            for sym, exit_info in list(pending_exits.items()):
+                pos = self.sandbox_account.positions.get(sym)
+                if not pos:
+                    pending_exits.pop(sym, None)
+                    continue
+                avail = pos.get("available_shares", 0) if self.sandbox_account.strict_t1 else pos.get("total_shares", 0)
+                if avail <= 0:
+                    continue
+                q = quotes.get(sym)
+                if not q:
+                    continue
+                price = float(q.get("price") or q.get("close") or 0.0)
+                if price <= 0:
+                    continue
+                self.sandbox_account.execute_sell(
+                    symbol=sym,
+                    price=price,
+                    shares=avail,
+                    reason=exit_info.get("reason", "趋势保护退出")
+                )
+                pending_exits.pop(sym, None)
+
+            pending_entries = self.sandbox_state.get("pending_entries", {})
+            sb_summary = self.sandbox_account.get_summary()
+            sb_equity = sb_summary["total_equity"]
+
+            for sym, entry_info in list(pending_entries.items()):
+                if sym in self.sandbox_account.positions:
+                    pending_entries.pop(sym, None)
+                    continue
+                target_wt = float(entry_info.get("target_weight", 0.0))
+                target_notional = sb_equity * target_wt
+                q = quotes.get(sym)
+                if not q:
+                    continue
+                price = float(q.get("price") or q.get("open") or q.get("close") or 0.0)
+                if price <= 0:
+                    continue
+                pre_close = float(q.get("pre_close") or price)
+                limit_up_price = round(pre_close * 1.10, 2)
+                if price >= limit_up_price:
+                    continue
+
+                shares = int(target_notional / price / 100) * 100
+                if shares < 100:
+                    pending_entries.pop(sym, None)
+                    continue
+                needed_cash = shares * price * 1.0005
+                if self.sandbox_account.cash < needed_cash:
+                    shares = int(self.sandbox_account.cash / 1.0005 / price / 100) * 100
+                    if shares < 100:
+                        continue
+
+                sig = entry_info.get("signal", {})
+                name = sig.get("name") or q.get("name") or sym
+                self.sandbox_account.execute_buy(
+                    symbol=sym,
+                    name=name,
+                    price=price,
+                    shares=shares,
+                    reason=entry_info.get("entry_reason", "Product_AB_Sandbox_Entry")
+                )
+                pending_entries.pop(sym, None)
+
+        if now_dt.time() >= dt.time(15, 0) and is_trading_day(now_dt.date()):
+            today_str = now_dt.date().isoformat()
+            if self.sandbox_state.get("last_cash_yield_date") != today_str and self.sandbox_account.cash > 0:
+                daily_yield = round(self.sandbox_account.cash * (float(self.config.annual_cash_yield) / 100.0 / 252.0), 2)
+                if daily_yield > 0:
+                    self.sandbox_account.cash += daily_yield
+                self.sandbox_state["last_cash_yield_date"] = today_str
+                self.sandbox_account.save()
+
+    def on_tick(self, quotes, now=None):
+        """时钟周期触发：主账户撮合 + 测试账本同步模拟撮合与估值"""
+        super().on_tick(quotes, now=now)
+        self._tick_sandbox(quotes, now=now)
+
         now_dt = now or dt.datetime.now(BEIJING)
         if now_dt.time() >= dt.time(15, 0) and is_trading_day(now_dt.date()):
             today_str = now_dt.date().isoformat()
@@ -353,13 +534,39 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                     self.account.save()
 
     def get_shadow_ledger(self) -> Dict[str, Any]:
-        """获取影子账本诊断详情"""
+        """获取双账本架构诊断详情：主账户 (生产历史连续) vs 测试账本 (纯净前向验证) vs 理论影子账本"""
         ledger = copy.deepcopy(self.state.get("shadow_ledger", {}))
         summary = self.account.get_summary()
-        ledger["total_equity"] = summary["total_equity"]
-        ledger["cash"] = self.account.cash
-        ledger["positions_count"] = len(self.account.positions)
-        return ledger
+        sb_summary = self.sandbox_account.get_summary() if hasattr(self, "sandbox_account") else {}
+
+        return {
+            "mode": "dual_ledger",
+            "primary_account": {
+                "name": "主账户 (生产历史连续)",
+                "initial_cash": getattr(self.account, "initial_cash", 100000.0),
+                "total_equity": summary["total_equity"],
+                "cash": self.account.cash,
+                "market_value": summary.get("market_value", 0.0),
+                "positions_count": len(self.account.positions),
+                "total_trades": len(self.account.trades),
+                "unrealized_pnl": summary.get("unrealized_pnl", 0.0),
+                "realized_pnl": summary.get("realized_pnl", 0.0),
+                "total_pnl_pct": summary.get("total_pnl_pct", 0.0),
+                "positions": {s: p.get("total_shares", p.get("shares", 0)) for s, p in self.account.positions.items()}
+            },
+            "sandbox_account": {
+                "name": "测试账本 (Product AB 纯净前向验证)",
+                "initial_cash": getattr(self.sandbox_account, "initial_cash", 100000.0) if hasattr(self, "sandbox_account") else 100000.0,
+                "total_equity": sb_summary.get("total_equity", 100000.0),
+                "cash": self.sandbox_account.cash if hasattr(self, "sandbox_account") else 100000.0,
+                "market_value": sb_summary.get("market_value", 0.0),
+                "positions_count": len(self.sandbox_account.positions) if hasattr(self, "sandbox_account") else 0,
+                "total_trades": len(self.sandbox_account.trades) if hasattr(self, "sandbox_account") else 0,
+                "total_return_pct": round((sb_summary.get("total_equity", 100000.0) / self.sandbox_account.initial_cash - 1.0) * 100.0, 2) if hasattr(self, "sandbox_account") else 0.0,
+                "positions": {s: p.get("total_shares", p.get("shares", 0)) for s, p in self.sandbox_account.positions.items()} if hasattr(self, "sandbox_account") else {}
+            },
+            "theoretical_shadow": ledger
+        }
 
     def allocation_status(self, now=None):
         """扩展状态展示：包含当前 Market Regime 与 A/B 动态权重分配"""

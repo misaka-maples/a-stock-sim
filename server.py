@@ -1182,6 +1182,26 @@ def get_strategy_shadow_ledger():
         }
 
 
+@app.get("/api/strategy/sandbox_ledger")
+def get_strategy_sandbox_ledger():
+    """获取独立测试账本 (Sandbox Ledger) 纯净前向验证数据"""
+    with ctx.lock:
+        if not ctx.strategy or not hasattr(ctx.strategy, "sandbox_account"):
+            return {"success": False, "message": "当前策略未提供独立测试账本"}
+        sb_acc = ctx.strategy.sandbox_account
+        summary = sb_acc.get_summary()
+        return {
+            "success": True,
+            "data": {
+                "summary": summary,
+                "positions": [dict(p, symbol=s) for s, p in sb_acc.positions.items()],
+                "trades": sb_acc.trades[-50:],
+                "initial_cash": sb_acc.initial_cash,
+                "total_return_pct": round((summary["total_equity"] / sb_acc.initial_cash - 1.0) * 100.0, 2)
+            }
+        }
+
+
 @app.post("/api/strategy/switch")
 def switch_strategy(req: StrategySwitchRequest):
     """在线热切换当前实盘自动模拟策略（保留现有持仓与资金安全，无需重启）"""
