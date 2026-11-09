@@ -142,7 +142,7 @@ def sync_execution_settings(participation_rate=None):
 
 def configured_strategy(strategy_id, account, watchlist, parameters):
     parameters = dict(parameters)
-    if not strategy_id.startswith("Momentum_Rotation"):
+    if not strategy_id.startswith("Momentum_Rotation") and strategy_id != "Product_AB":
         # Execution participation belongs to the broker for legacy strategies;
         # constructors without **kwargs cannot accept unrelated risk settings.
         parameters.pop("participation_rate", None)
@@ -183,7 +183,7 @@ def validate_snapshot_settings(snapshot):
     parameters = saved.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("快照策略参数必须为对象")
-    if strategy_id and strategy_id.startswith("Momentum_Rotation"):
+    if strategy_id and (strategy_id.startswith("Momentum_Rotation") or strategy_id == "Product_AB"):
         MomentumConfig.from_dict(parameters)
     else:
         risk_fields = {k: v for k, v in parameters.items() if k in MomentumConfig.__dataclass_fields__}

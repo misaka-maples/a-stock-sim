@@ -2306,8 +2306,10 @@ class ONeilCANSLIMStrategy(BaseStrategy):
 
 
 from daily_momentum import MomentumRotationStrategy, MomentumRotationProStrategy
+from product_ab_strategy import ProductABHybridStrategy
 
 STRATEGY_REGISTRY = {
+    "Product_AB": ProductABHybridStrategy,
     "Momentum_Rotation_Pro": MomentumRotationProStrategy,
     "Momentum_Rotation": MomentumRotationStrategy,
     "Minervini_SEPA": MinerviniSEPAStrategy,
