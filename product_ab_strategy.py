@@ -1,12 +1,12 @@
 """
 Product AB: 自适应混动策略实盘/模拟调度器 (Base Engine + Turbo Engine)
 - 冻结规则权重:
-    RISK_OFF: 100% A / 0% B
-    NEUTRAL:  100% A / 0% B
-    RISK_ON:  20% A / 80% B
-    STRONG_RISK_ON: 50% A / 50% B
+    RISK_OFF: 100% A / 0% B (现金防御, 不开新仓)
+    NEUTRAL:  100% A / 0% B (蓝筹底盘平稳复利)
+    RISK_ON:  20% A / 80% B (动态行业龙头全面进攻)
+    STRONG_RISK_ON: 50% A / 50% B (攻防平衡, 防假突破跳空)
 - 组合层约束: 组合单票上限 35%, 组合行业上限 35%, 统一现金收益 2.5%
-- 双向订单合并与平滑换手
+- 双向订单合并与平滑换手 (Order Merging)
 - 独立影子账本 (Shadow Ledger): 实时记录 A理论NAV、B理论NAV、AB合成NAV、实际成交NAV与执行偏差
 """
 
@@ -16,7 +16,8 @@ import copy
 import statistics
 from typing import Dict, List, Any, Optional, Tuple
 
-from strategy_rules import MomentumConfig, target_weight, allowed_by_sector
+from strategy_rules import (MomentumConfig, target_weight, allowed_by_sector,
+                            sector_of, evaluate_momentum, holding_signal, exit_reason)
 from daily_momentum import DailyMomentumStrategy, last_completed_trading_day
 from history_data import HistoricalDataFeed, PRESET_POOLS, normalize_symbol_for_tencent
 from trade_calendar import is_trading_day, BEIJING
@@ -83,7 +84,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         all_watch = list(dict.fromkeys(self.symbols_a + self.watchlist))
         self.watchlist = all_watch
 
-        # 初始化/加载影子账本 (Shadow Ledger)
+        # 初始化影子账本 (Shadow Ledger)
         self.state.setdefault("shadow_ledger", {
             "nav_a": 1.0,
             "nav_b": 1.0,
@@ -93,6 +94,8 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "current_regime": "NEUTRAL",
             "weight_a": 1.0,
             "weight_b": 0.0,
+            "target_holdings_a": {},
+            "target_holdings_b": {},
             "last_settle_date": None,
             "history": []
         })
@@ -137,86 +140,58 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         weights = FROZEN_AB_WEIGHTS.get(regime, (0.50, 0.50))
         return regime, weights[0], weights[1]
 
-    def _plan(self, as_of, execution_day):
-        """生成 Product AB 自适应混动订单计划 (A+B 双引擎合成)"""
-        regime, w_a, w_b = self.get_current_regime_and_weights(as_of)
-        self.state["current_regime"] = regime
-        self.state["weight_a"] = w_a
-        self.state["weight_b"] = w_b
+    def _calc_theoretical_return(self, holdings: Dict[str, float], date_prev: str, date_curr: str) -> float:
+        """计算指定理论持仓从 date_prev 到 date_curr 的日度收益率 (含闲置现金计息)"""
+        stock_ret_sum = 0.0
+        total_stock_weight = 0.0
+        for sym, wt in holdings.items():
+            total_stock_weight += wt
+            bars = self.history_cache.get(sym, [])
+            c_prev = next((float(b["close"]) for b in reversed(bars) if b["date"] == date_prev), None)
+            c_curr = next((float(b["close"]) for b in reversed(bars) if b["date"] == date_curr), None)
+            if c_prev and c_curr and c_prev > 0:
+                stock_ret_sum += wt * (c_curr / c_prev - 1.0)
 
-        # 1. 计算全量信号与候选排序
-        super()._plan(as_of, execution_day)
+        cash_weight = max(0.0, 1.0 - total_stock_weight)
+        cash_ret = cash_weight * (float(self.config.annual_cash_yield) / 100.0 / 252.0)
+        return stock_ret_sum + cash_ret
 
-        # 2. 区分 A 池 (Core 16 蓝筹) 与 B 池 (全市场动态动量)
-        signals = getattr(self, "latest_candidates", [])
-        signals_a = [c for c in signals if c["symbol"] in self.symbols_a]
-        signals_b = [c for c in signals if c["symbol"] not in self.symbols_a]
-
-        total_equity = self.account.get_summary()["total_equity"]
-        budget_a = total_equity * w_a
-        budget_b = total_equity * w_b
-
-        # 3. 合并订单意图 (Order Merging)
-        merged_entries = {}
-        target_weights = {}
-
-        # 来自 A 的意图
-        if w_a > 0 and signals_a:
-            cfg_a = copy.deepcopy(self.config)
-            cfg_a.max_positions = 3
-            for c in signals_a[:3]:
-                sym = c["symbol"]
-                wt_a = target_weight(cfg_a, c)
-                target_weights[sym] = target_weights.get(sym, 0.0) + w_a * wt_a
-
-        # 来自 B 的意图
-        if w_b > 0 and signals_b:
-            cfg_b = copy.deepcopy(self.config)
-            cfg_b.max_positions = self.config.regime_strong_positions if regime == "STRONG_RISK_ON" else self.config.max_positions
-            for i, c in enumerate(signals_b[:cfg_b.max_positions]):
-                sym = c["symbol"]
-                wt_b = target_weight(cfg_b, c, rank=i+1)
-                target_weights[sym] = target_weights.get(sym, 0.0) + w_b * wt_b
-
-        # 组合层约束检查 (单票上限 35%)
-        for sym, wt in target_weights.items():
-            final_wt = min(wt, self.config.max_stock_weight)
-            sig = next((c for c in signals if c["symbol"] == sym), None)
-            if sig:
-                merged_entries[sym] = dict(
-                    signal=sig,
-                    target_weight=final_wt,
-                    entry_reason=f"Product_AB_{regime}_混动配置(A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)",
-                    filled_shares=0,
-                    target_shares=None,
-                    blocked_date=None,
-                    blocked_reason=None
-                )
-
-        self.state["pending_entries"] = merged_entries
-        self.state["planned_as_of"] = as_of
-        self.state["planned_policy"] = f"Product_AB_{regime}"
-
-        # 4. 更新影子账本 (Shadow Ledger)
-        self._update_shadow_ledger(as_of, regime, w_a, w_b)
-
-    def _update_shadow_ledger(self, as_of: str, regime: str, w_a: float, w_b: float):
+    def _update_shadow_ledger(self, as_of: str, regime: str, w_a: float, w_b: float,
+                             today_holdings_a: Dict[str, float], today_holdings_b: Dict[str, float]):
         """结算并更新理论 vs 实际影子账本"""
         ledger = self.state.setdefault("shadow_ledger", {})
         last_date = ledger.get("last_settle_date")
         if last_date == as_of:
-            return  # 当日已结算
+            ledger["target_holdings_a"] = today_holdings_a
+            ledger["target_holdings_b"] = today_holdings_b
+            ledger["current_regime"] = regime
+            ledger["weight_a"] = w_a
+            ledger["weight_b"] = w_b
+            self.account.save()
+            return
 
-        # 实际净值
         initial_cash = getattr(self.account, "initial_cash", 100000.0)
         curr_equity = self.account.get_summary()["total_equity"]
         nav_actual = curr_equity / initial_cash if initial_cash > 0 else 1.0
 
-        nav_a = ledger.get("nav_a", 1.0)
-        nav_b = ledger.get("nav_b", 1.0)
-        nav_ab = ledger.get("nav_ab_theoretical", 1.0)
+        nav_a = float(ledger.get("nav_a", 1.0))
+        nav_b = float(ledger.get("nav_b", 1.0))
+        nav_ab = float(ledger.get("nav_ab_theoretical", 1.0))
 
-        # 理论收益简易递推 (基于组合收益与利差)
+        prev_holdings_a = ledger.get("target_holdings_a", {})
+        prev_holdings_b = ledger.get("target_holdings_b", {})
+        prev_w_a = float(ledger.get("weight_a", 1.0))
+        prev_w_b = float(ledger.get("weight_b", 0.0))
+
+        if last_date is not None:
+            ret_a = self._calc_theoretical_return(prev_holdings_a, last_date, as_of)
+            ret_b = self._calc_theoretical_return(prev_holdings_b, last_date, as_of)
+            ret_ab = prev_w_a * ret_a + prev_w_b * ret_b
+
+            nav_a = nav_a * (1.0 + ret_a)
+            nav_b = nav_b * (1.0 + ret_b)
+            nav_ab = nav_ab * (1.0 + ret_ab)
+
         tracking_error_pct = (nav_actual / nav_ab - 1.0) * 100.0 if nav_ab > 0 else 0.0
 
         record = {
@@ -229,7 +204,9 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "nav_ab_theoretical": round(nav_ab, 4),
             "nav_actual": round(nav_actual, 4),
             "tracking_error_pct": round(tracking_error_pct, 2),
-            "actual_equity": round(curr_equity, 2)
+            "actual_equity": round(curr_equity, 2),
+            "holdings_count_a": len(today_holdings_a),
+            "holdings_count_b": len(today_holdings_b)
         }
 
         history = ledger.setdefault("history", [])
@@ -241,9 +218,94 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         ledger["current_regime"] = regime
         ledger["weight_a"] = w_a
         ledger["weight_b"] = w_b
+        ledger["nav_a"] = round(nav_a, 4)
+        ledger["nav_b"] = round(nav_b, 4)
+        ledger["nav_ab_theoretical"] = round(nav_ab, 4)
         ledger["nav_actual"] = round(nav_actual, 4)
         ledger["tracking_error_pct"] = round(tracking_error_pct, 2)
+        ledger["target_holdings_a"] = today_holdings_a
+        ledger["target_holdings_b"] = today_holdings_b
         self.account.save()
+
+    def _plan(self, as_of, execution_day):
+        """生成 Product AB 自适应混动订单计划 (A+B 双引擎合成)"""
+        regime, w_a, w_b = self.get_current_regime_and_weights(as_of)
+        self.state["current_regime"] = regime
+        self.state["weight_a"] = w_a
+        self.state["weight_b"] = w_b
+
+        # 1. 计算全量信号与退出检查
+        super()._plan(as_of, execution_day)
+
+        # 2. 区分 A 池 (Core 16 蓝筹) 与 B 池 (动态成长动量标的)
+        signals = getattr(self, "latest_candidates", [])
+        signals_a = [c for c in signals if c["symbol"] in self.symbols_a]
+        signals_b = [c for c in signals if c["symbol"] not in self.symbols_a]
+
+        today_holdings_a = {}
+        today_holdings_b = {}
+        target_weights = {}
+
+        if regime != "RISK_OFF":
+            # 来自 A 的意图 (最多3只)
+            if w_a > 0 and signals_a:
+                cfg_a = copy.deepcopy(self.config)
+                cfg_a.max_positions = 3
+                for c in signals_a[:3]:
+                    sym = c["symbol"]
+                    wt_a = target_weight(cfg_a, c)
+                    today_holdings_a[sym] = wt_a
+                    target_weights[sym] = target_weights.get(sym, 0.0) + w_a * wt_a
+
+            # 来自 B 的意图 (Strong 模式 4 只，常规模式 max_positions 只)
+            if w_b > 0 and signals_b:
+                cfg_b = copy.deepcopy(self.config)
+                cfg_b.max_positions = self.config.regime_strong_positions if regime == "STRONG_RISK_ON" else self.config.max_positions
+                for i, c in enumerate(signals_b[:cfg_b.max_positions]):
+                    sym = c["symbol"]
+                    wt_b = target_weight(cfg_b, c, rank=i+1)
+                    today_holdings_b[sym] = wt_b
+                    target_weights[sym] = target_weights.get(sym, 0.0) + w_b * wt_b
+
+        # 3. 组合层约束检查 (单票上限 35%, 行业上限 35%) 与双向订单合并
+        merged_entries = {}
+        total_equity = self.account.get_summary()["total_equity"]
+        sector_weights = {}
+        for sym, pos in self.account.positions.items():
+            ind = sector_of(sym, self.industry_map)
+            pos_val = pos.get("shares", 0) * pos.get("cost_price", 0)
+            pos_wt = pos_val / total_equity if total_equity > 0 else 0
+            sector_weights[ind] = sector_weights.get(ind, 0.0) + pos_wt
+
+        # 按合并后权重降序排定开仓意图
+        for sym, wt in sorted(target_weights.items(), key=lambda x: -x[1]):
+            final_wt = min(wt, self.config.max_stock_weight)
+            ind = sector_of(sym, self.industry_map)
+            curr_sec_wt = sector_weights.get(ind, 0.0)
+            if curr_sec_wt + final_wt > self.config.max_sector_weight + 1e-4:
+                allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec_wt)
+                final_wt = min(final_wt, allowed_sec)
+
+            if final_wt >= 0.05:
+                sector_weights[ind] = curr_sec_wt + final_wt
+                sig = next((c for c in signals if c["symbol"] == sym), None)
+                if sig:
+                    merged_entries[sym] = dict(
+                        signal=sig,
+                        target_weight=final_wt,
+                        entry_reason=f"Product_AB_{regime}_混动配置(A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)",
+                        filled_shares=0,
+                        target_shares=None,
+                        blocked_date=None,
+                        blocked_reason=None
+                    )
+
+        self.state["pending_entries"] = merged_entries
+        self.state["planned_as_of"] = as_of
+        self.state["planned_policy"] = f"Product_AB_{regime}"
+
+        # 4. 更新影子账本 (Shadow Ledger)
+        self._update_shadow_ledger(as_of, regime, w_a, w_b, today_holdings_a, today_holdings_b)
 
     def on_tick(self, quotes, now=None):
         """时钟周期触发：先平仓、后开仓、闲置资金现金管理计息"""
@@ -286,4 +348,12 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "趋势主升浪进攻爆发 (A 20% / B 80%)" if regime == "RISK_ON" else
             "强趋势平衡攻防 (A 50% / B 50%)"
         )
+        status["shadow_ledger_summary"] = {
+            "nav_a": ledger.get("nav_a", 1.0),
+            "nav_b": ledger.get("nav_b", 1.0),
+            "nav_ab_theoretical": ledger.get("nav_ab_theoretical", 1.0),
+            "nav_actual": ledger.get("nav_actual", 1.0),
+            "tracking_error_pct": ledger.get("tracking_error_pct", 0.0),
+            "history_count": len(ledger.get("history", []))
+        }
         return status

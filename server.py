@@ -1133,6 +1133,7 @@ def list_strategies():
         current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         current_display = getattr(ctx.strategy, "display_name", current_id)
         catalog = [
+            ("Product_AB", "Product AB 自适应混动系统 (Base Engine + Turbo Engine)", "Base Engine (Core 16蓝筹) + Turbo Engine (全市场行业龙头) 自适应混动系统，包含独立影子账本与执行偏差监控。"),
             ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；支持每日空位补仓，已有持仓按周期轮动，日线信号随后交易日执行。"),
             ("Momentum_Rotation", "基础日线动量", "基础动量对照组；使用相同的数据、成交和风险框架。"),
             ("Minervini_SEPA", "趋势收缩突破实验", "借鉴SEPA思路的简化技术规则，尚未统一为日线研究模型。"),
@@ -1142,7 +1143,7 @@ def list_strategies():
             ("MomentumBreakout", "价格突破实验", "旧版价格突破规则。"),
         ]
         strategies = [{"id": sid, "name": name, "description": desc,
-                       "badge": "日线研究模型" if sid.startswith("Momentum_Rotation") else "旧版实验规则",
+                       "badge": "自适应混动旗舰" if sid == "Product_AB" else ("日线研究模型" if sid.startswith("Momentum_Rotation") else "旧版实验规则"),
                        "recommended": False, "author": "项目规则实现",
                        "one_year_return": "待验证", "win_loss_ratio": "待验证", "max_drawdown": "待验证",
                        "performance_status": "unverified"} for sid, name, desc in catalog]
@@ -1166,6 +1167,18 @@ def get_strategy_position_sizing():
         return {
             "success": True,
             "data": ctx.strategy.get_position_sizing_table(now=now)
+        }
+
+
+@app.get("/api/strategy/shadow_ledger")
+def get_strategy_shadow_ledger():
+    """获取 Product AB 影子账本 (Shadow Ledger) 理论 vs 实际跟踪数据"""
+    with ctx.lock:
+        if not ctx.strategy or not hasattr(ctx.strategy, "get_shadow_ledger"):
+            return {"success": False, "message": "当前策略未提供影子账本"}
+        return {
+            "success": True,
+            "data": ctx.strategy.get_shadow_ledger()
         }
 
 
