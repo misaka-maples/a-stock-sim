@@ -452,6 +452,11 @@ def worker_step(now=None):
                 NotificationManager().notify_daily_summary(ctx.account.get_summary(), dict(ctx.account.positions), sizing_table=sizing_tbl)
             except Exception:
                 logger.exception("最终收盘战报通知失败；收盘快照已保存")
+            if ctx.strategy and hasattr(ctx.strategy, "generate_diagnostic_report"):
+                try:
+                    ctx.strategy.generate_diagnostic_report(day)
+                except Exception:
+                    logger.exception("每日三轨收盘诊断报告自动生成失败")
         ctx.worker_last_success = checked_at
         ctx.worker_last_error = getattr(ctx.account, "_persistence_error", None) if ctx.account else None
 
@@ -1200,6 +1205,19 @@ def get_strategy_sandbox_ledger():
                 "total_return_pct": round((summary["total_equity"] / sb_acc.initial_cash - 1.0) * 100.0, 2)
             }
         }
+
+
+@app.get("/api/strategy/diagnostic_report")
+def get_strategy_diagnostic_report(date: Optional[str] = None):
+    """获取每日三轨自动诊断报告 (主账户 vs Sandbox测试账本 vs 理论影子基准)"""
+    with ctx.lock:
+        if not ctx.strategy or not hasattr(ctx.strategy, "generate_diagnostic_report"):
+            return {"success": False, "message": "当前策略不支持三轨自动诊断报告"}
+        try:
+            report_data = ctx.strategy.generate_diagnostic_report(as_of=date)
+            return {"success": True, "data": report_data}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 @app.post("/api/strategy/switch")

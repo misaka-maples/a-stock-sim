@@ -7,9 +7,14 @@ Product AB: 自适应混动策略实盘/模拟调度器 (Base Engine + Turbo Eng
     STRONG_RISK_ON: 50% A / 50% B (攻防平衡, 防假突破跳空)
 - 组合层约束: 组合单票上限 35%, 组合行业上限 35%, 统一现金收益 2.5%
 - 双向订单合并与平滑换手 (Order Merging)
+- 双账本彻底隔离:
+    主账户 (Primary Production Account): 延续历史资金 (¥95,424.63) 与 57 笔流水, 严控旧仓市值并随纪律退出
+    测试账本 (Sandbox Testing Account): 独立 10 万元起步, 纯净前向验证 Product AB v1.0
 - 独立影子账本 (Shadow Ledger): 实时记录 A理论NAV、B理论NAV、AB合成NAV、实际成交NAV与执行偏差
+- 交易幂等性: 严格校验当日订单执行标记, 防重复下单
 """
 
+import os
 import datetime as dt
 from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
@@ -86,7 +91,11 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         all_watch = list(dict.fromkeys(self.symbols_a + self.watchlist))
         self.watchlist = all_watch
 
-        # 初始化独立前向测试账本 (Sandbox Testing Account)
+        # 幂等性记录初始化 (主账户)
+        self.state.setdefault("executed_orders_today", {})
+        self.state.setdefault("position_monitors", {})
+
+        # 初始化独立前向测试账本 (Sandbox Testing Account - 严格自治隔离)
         sandbox_path = BASE_DIR / "data" / "sandbox_ab_account.json"
         from sim_trader import SimAccount
         if sandbox_path.exists():
@@ -104,9 +113,12 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             )
             self.sandbox_account.save()
 
-        self.sandbox_state = self.state.setdefault("sandbox_state", {
+        # 测试账本的自治状态直接挂载在 sandbox_account 内部策略状态中，实现彻底物理隔离
+        self.sandbox_state = self.sandbox_account.strategy_state.setdefault("sandbox_state", {
             "pending_entries": {},
             "pending_exits": {},
+            "position_monitors": {},
+            "executed_orders_today": {},
             "last_cash_yield_date": None
         })
 
@@ -290,7 +302,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.state["weight_a"] = w_a
         self.state["weight_b"] = w_b
 
-        # 1. 计算全量信号与退出检查
+        # 1. 计算全量信号与退出检查 (主账户历史持仓严格遵守退出纪律)
         super()._plan(as_of, execution_day)
 
         # 2. 区分 A 池 (Core 16 蓝筹) 与 B 池 (动态成长动量标的)
@@ -323,38 +335,58 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                     today_holdings_b[sym] = wt_b
                     target_weights[sym] = target_weights.get(sym, 0.0) + w_b * wt_b
 
-        # 3. 组合层约束检查 (单票上限 35%, 行业上限 35%) 与双向订单合并
+        # 3. 组合层约束检查 (单票上限 35%, 行业上限 35%, 市场状态总仓位硬顶)
+        # 严控历史遗留持仓 (阳光照明, 大千生态, 英力特)，其市值完全占用当前股票风险预算与行业限额
         merged_entries = {}
         total_equity = self.account.get_summary()["total_equity"]
+        current_stock_val = sum(
+            float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+            for pos in self.account.positions.values()
+        )
+        current_stock_wt = current_stock_val / total_equity if total_equity > 0 else 0.0
+
+        max_regime_total_wt = {
+            "RISK_OFF": 0.0,
+            "NEUTRAL": 0.35,
+            "RISK_ON": 0.70,
+            "STRONG_RISK_ON": 0.90
+        }.get(regime, 0.70)
+        remaining_allowed_wt = max(0.0, max_regime_total_wt - current_stock_wt)
+
         sector_weights = {}
         for sym, pos in self.account.positions.items():
             ind = sector_of(sym, self.industry_map)
-            pos_val = pos.get("shares", 0) * pos.get("cost_price", 0)
-            pos_wt = pos_val / total_equity if total_equity > 0 else 0
+            pos_val = float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+            pos_wt = pos_val / total_equity if total_equity > 0 else 0.0
             sector_weights[ind] = sector_weights.get(ind, 0.0) + pos_wt
 
-        # 按合并后权重降序排定开仓意图
-        for sym, wt in sorted(target_weights.items(), key=lambda x: -x[1]):
-            final_wt = min(wt, self.config.max_stock_weight)
-            ind = sector_of(sym, self.industry_map)
-            curr_sec_wt = sector_weights.get(ind, 0.0)
-            if curr_sec_wt + final_wt > self.config.max_sector_weight + 1e-4:
-                allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec_wt)
-                final_wt = min(final_wt, allowed_sec)
+        # 仅当组合在当前市场状态下仍有剩余股票配额时，才允许开设新仓 (防止旧仓未退、新仓猛加导致仓位穿透)
+        accumulated_new_wt = 0.0
+        if remaining_allowed_wt >= 0.02:
+            for sym, wt in sorted(target_weights.items(), key=lambda x: -x[1]):
+                if accumulated_new_wt >= remaining_allowed_wt - 1e-4:
+                    break
+                final_wt = min(wt, self.config.max_stock_weight, remaining_allowed_wt - accumulated_new_wt)
+                ind = sector_of(sym, self.industry_map)
+                curr_sec_wt = sector_weights.get(ind, 0.0)
+                if curr_sec_wt + final_wt > self.config.max_sector_weight + 1e-4:
+                    allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec_wt)
+                    final_wt = min(final_wt, allowed_sec)
 
-            if final_wt >= 0.02:
-                sector_weights[ind] = curr_sec_wt + final_wt
-                sig = next((c for c in signals if c["symbol"] == sym), None)
-                if sig:
-                    merged_entries[sym] = dict(
-                        signal=sig,
-                        target_weight=final_wt,
-                        entry_reason=f"Product_AB_{regime}_混动配置(A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)",
-                        filled_shares=0,
-                        target_shares=None,
-                        blocked_date=None,
-                        blocked_reason=None
-                    )
+                if final_wt >= 0.02:
+                    accumulated_new_wt += final_wt
+                    sector_weights[ind] = curr_sec_wt + final_wt
+                    sig = next((c for c in signals if c["symbol"] == sym), None)
+                    if sig:
+                        merged_entries[sym] = dict(
+                            signal=sig,
+                            target_weight=final_wt,
+                            entry_reason=f"Product_AB_{regime}_混动配置(A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)",
+                            filled_shares=0,
+                            target_shares=None,
+                            blocked_date=None,
+                            blocked_reason=None
+                        )
 
         self.state["pending_entries"] = merged_entries
         self.state["planned_as_of"] = as_of
@@ -379,7 +411,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             sig = holding_signal(bars, as_of)
             reason = exit_reason(pos, sig, self.config)
             if reason:
-                sb_exits[sym] = {"shares": pos["shares"], "reason": reason}
+                sb_exits[sym] = {"shares": pos.get("total_shares", pos.get("shares", 0)), "reason": reason}
 
         self.sandbox_state["pending_exits"] = sb_exits
 
@@ -407,7 +439,8 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             for sym, pos in self.sandbox_account.positions.items():
                 if sym not in sb_exits:
                     ind = self.industry_map.get(sym, "其他")
-                    sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (pos["market_value"] / sb_equity if sb_equity > 0 else 0)
+                    mv = float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+                    sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (mv / sb_equity if sb_equity > 0 else 0)
 
             for sym, raw_wt in sb_target_weights.items():
                 if sym in self.sandbox_account.positions and sym not in sb_exits:
@@ -432,7 +465,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.sandbox_state["pending_entries"] = sb_entries
 
     def _tick_sandbox(self, quotes: Dict[str, Dict[str, Any]], now=None):
-        """时钟推进测试账本模拟撮合与估值 (严格基于 10 万元独立账户)"""
+        """时钟推进测试账本模拟撮合与估值 (严格基于 10 万元独立账户与独立风控状态)"""
         if not hasattr(self, "sandbox_account") or self.sandbox_account is None:
             return
 
@@ -442,13 +475,48 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.sandbox_account.update_market_prices(quotes, now=now_dt)
         self.sandbox_account.update_t1_available_shares(today_str=execution_day)
 
+        # 维护独立幂等性注册表
+        executed_today = self.sandbox_state.setdefault("executed_orders_today", {})
+        for k in list(executed_today.keys()):
+            if not k.startswith(execution_day):
+                executed_today.pop(k, None)
+
         from daily_momentum import is_trading_time
         if is_trading_time(now_dt):
+            # 1. 测试账本独立实时风控与 ATR 动态追踪止盈 (与主账户物理隔离)
+            sb_monitors = self.sandbox_state.setdefault("position_monitors", {})
+            from position_guardian import update_position_monitors, evaluate_position_realtime_rules
+            update_position_monitors(self.sandbox_account.positions, quotes, self.history_cache, sb_monitors, now=now_dt)
+
+            for sym, pos in list(self.sandbox_account.positions.items()):
+                q = quotes.get(sym, {})
+                price = float(q.get("price") or q.get("current") or q.get("close") or 0.0)
+                if price <= 0:
+                    continue
+                avail = pos.get("available_shares", 0) if self.sandbox_account.strict_t1 else pos.get("total_shares", 0)
+                cost = float(pos.get("cost_price", 0.0))
+                buy_day = min((lot.get("date", execution_day) for lot in pos.get("buy_lots", [])), default=execution_day)
+                as_of = last_completed_trading_day(now_dt)
+
+                guard_reason, _ = evaluate_position_realtime_rules(
+                    sym, pos, q, self.history_cache, self.config, sb_monitors.get(sym, {}),
+                    now=now_dt, available_shares=avail, validated_price=price, is_past_buy=(buy_day <= as_of)
+                )
+
+                trigger_reason = guard_reason
+                if not trigger_reason and cost > 0 and (price / cost - 1.0) * 100.0 <= self.config.stop_loss_pct:
+                    trigger_reason = "盘中硬止损信号"
+
+                if trigger_reason and sym not in self.sandbox_state.get("pending_exits", {}):
+                    self.sandbox_state.setdefault("pending_exits", {})[sym] = {"shares": avail, "reason": trigger_reason}
+
+            # 2. 独立卖出撮合与幂等性校验
             pending_exits = self.sandbox_state.get("pending_exits", {})
             for sym, exit_info in list(pending_exits.items()):
                 pos = self.sandbox_account.positions.get(sym)
                 if not pos:
                     pending_exits.pop(sym, None)
+                    sb_monitors.pop(sym, None)
                     continue
                 avail = pos.get("available_shares", 0) if self.sandbox_account.strict_t1 else pos.get("total_shares", 0)
                 if avail <= 0:
@@ -459,14 +527,24 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 price = float(q.get("price") or q.get("close") or 0.0)
                 if price <= 0:
                     continue
-                self.sandbox_account.execute_sell(
+
+                idem_key = f"{execution_day}_{sym}_SELL"
+                if executed_today.get(idem_key):
+                    pending_exits.pop(sym, None)
+                    continue
+
+                res = self.sandbox_account.execute_sell(
                     symbol=sym,
                     price=price,
                     shares=avail,
                     reason=exit_info.get("reason", "趋势保护退出")
                 )
-                pending_exits.pop(sym, None)
+                if res.get("success"):
+                    executed_today[idem_key] = True
+                    pending_exits.pop(sym, None)
+                    sb_monitors.pop(sym, None)
 
+            # 3. 独立买入撮合与幂等性校验
             pending_entries = self.sandbox_state.get("pending_entries", {})
             sb_summary = self.sandbox_account.get_summary()
             sb_equity = sb_summary["total_equity"]
@@ -475,6 +553,12 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 if sym in self.sandbox_account.positions:
                     pending_entries.pop(sym, None)
                     continue
+
+                idem_key = f"{execution_day}_{sym}_BUY"
+                if executed_today.get(idem_key):
+                    pending_entries.pop(sym, None)
+                    continue
+
                 target_wt = float(entry_info.get("target_weight", 0.0))
                 target_notional = sb_equity * target_wt
                 q = quotes.get(sym)
@@ -500,15 +584,18 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
 
                 sig = entry_info.get("signal", {})
                 name = sig.get("name") or q.get("name") or sym
-                self.sandbox_account.execute_buy(
+                res = self.sandbox_account.execute_buy(
                     symbol=sym,
                     name=name,
                     price=price,
                     shares=shares,
                     reason=entry_info.get("entry_reason", "Product_AB_Sandbox_Entry")
                 )
-                pending_entries.pop(sym, None)
+                if res.get("success"):
+                    executed_today[idem_key] = True
+                    pending_entries.pop(sym, None)
 
+        # 4. 测试账本每日现金管理收益 (独立年化 2.5%, 绝不污染主账户)
         if now_dt.time() >= dt.time(15, 0) and is_trading_day(now_dt.date()):
             today_str = now_dt.date().isoformat()
             if self.sandbox_state.get("last_cash_yield_date") != today_str and self.sandbox_account.cash > 0:
@@ -519,11 +606,28 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 self.sandbox_account.save()
 
     def on_tick(self, quotes, now=None):
-        """时钟周期触发：主账户撮合 + 测试账本同步模拟撮合与估值"""
+        """时钟周期触发：主账户撮合 + 测试账本同步模拟撮合与估值 (完全隔离)"""
+        now_dt = now or dt.datetime.now(BEIJING)
+        execution_day = now_dt.date().isoformat()
+
+        # 维护主账户幂等性注册表
+        executed_today = self.state.setdefault("executed_orders_today", {})
+        for k in list(executed_today.keys()):
+            if not k.startswith(execution_day):
+                executed_today.pop(k, None)
+
         super().on_tick(quotes, now=now)
+
+        # 记录主账户今日成交幂等标记
+        for t in self.account.trades[-10:]:
+            if str(t.get("time", "")).startswith(execution_day.replace("-", "")):
+                side = "BUY" if t.get("shares", 0) > 0 else "SELL"
+                self.state["executed_orders_today"][f"{execution_day}_{t['symbol']}_{side}"] = True
+
+        # 测试账本时钟推进
         self._tick_sandbox(quotes, now=now)
 
-        now_dt = now or dt.datetime.now(BEIJING)
+        # 主账户每日闲置现金收益独立计息
         if now_dt.time() >= dt.time(15, 0) and is_trading_day(now_dt.date()):
             today_str = now_dt.date().isoformat()
             if self.state.get("last_cash_yield_date") != today_str and self.account.cash > 0:
@@ -532,6 +636,23 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                     self.account.cash += daily_yield
                     self.state["last_cash_yield_date"] = today_str
                     self.account.save()
+
+    def generate_diagnostic_report(self, as_of: Optional[str] = None) -> Dict[str, Any]:
+        """生成每日三轨自动诊断报告 (主账户 vs Sandbox测试账本 vs 理论影子基准)"""
+        from ab_diagnostic import build_diagnostic_report, format_diagnostic_markdown
+        report = build_diagnostic_report(self, as_of=as_of)
+        md_text = format_diagnostic_markdown(report)
+        md_dir = BASE_DIR / "data" / "diagnostic_reports"
+        md_dir.mkdir(parents=True, exist_ok=True)
+        md_path = md_dir / f"diagnostic_{report['report_date'].replace('-', '')}.md"
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md_text)
+
+        return {
+            "report": report,
+            "markdown": md_text,
+            "markdown_path": str(md_path)
+        }
 
     def get_shadow_ledger(self) -> Dict[str, Any]:
         """获取双账本架构诊断详情：主账户 (生产历史连续) vs 测试账本 (纯净前向验证) vs 理论影子账本"""
