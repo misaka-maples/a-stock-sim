@@ -459,32 +459,53 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                     sb_target_weights[sym] = sb_target_weights.get(sym, 0.0) + w_b * wt_b
 
             sb_equity = self.sandbox_account.get_summary()["total_equity"]
+            sb_stock_val = sum(
+                float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+                for sym, pos in self.sandbox_account.positions.items()
+                if sym not in sb_exits
+            )
+            sb_stock_wt = sb_stock_val / sb_equity if sb_equity > 0 else 0.0
+
+            max_regime_total_wt = {
+                "RISK_OFF": 0.0,
+                "NEUTRAL": 0.35,
+                "RISK_ON": 0.70,
+                "STRONG_RISK_ON": 0.90
+            }.get(regime, 0.70)
+            sb_remaining_allowed_wt = max(0.0, max_regime_total_wt - sb_stock_wt)
+
             sb_sec_weights = {}
             for sym, pos in self.sandbox_account.positions.items():
                 if sym not in sb_exits:
-                    ind = self.industry_map.get(sym, "其他")
+                    ind = sector_of(sym, self.industry_map)
                     mv = float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
                     sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (mv / sb_equity if sb_equity > 0 else 0)
 
-            for sym, raw_wt in sb_target_weights.items():
-                if sym in self.sandbox_account.positions and sym not in sb_exits:
-                    continue
-                final_wt = min(raw_wt, self.config.max_stock_weight)
-                ind = self.industry_map.get(sym, "其他")
-                curr_sec = sb_sec_weights.get(ind, 0.0)
-                allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec)
-                final_wt = min(final_wt, allowed_sec)
+            sb_accumulated_new_wt = 0.0
+            if sb_remaining_allowed_wt >= 0.02:
+                for sym, raw_wt in sorted(sb_target_weights.items(), key=lambda x: -x[1]):
+                    if sym in self.sandbox_account.positions and sym not in sb_exits:
+                        continue
+                    if sb_accumulated_new_wt >= sb_remaining_allowed_wt - 1e-4:
+                        break
+                    final_wt = min(raw_wt, self.config.max_stock_weight, sb_remaining_allowed_wt - sb_accumulated_new_wt)
+                    ind = sector_of(sym, self.industry_map)
+                    curr_sec = sb_sec_weights.get(ind, 0.0)
+                    if curr_sec + final_wt > self.config.max_sector_weight + 1e-4:
+                        allowed_sec = max(0.0, self.config.max_sector_weight - curr_sec)
+                        final_wt = min(final_wt, allowed_sec)
 
-                if final_wt >= 0.02:
-                    sb_sec_weights[ind] = curr_sec + final_wt
-                    sig = next((c for c in signals_a + signals_b if c["symbol"] == sym), None)
-                    if sig:
-                        sb_entries[sym] = dict(
-                            signal=sig,
-                            target_weight=final_wt,
-                            entry_reason=f"Sandbox_AB_{regime}",
-                            filled_shares=0
-                        )
+                    if final_wt >= 0.02:
+                        sb_accumulated_new_wt += final_wt
+                        sb_sec_weights[ind] = curr_sec + final_wt
+                        sig = next((c for c in signals_a + signals_b if c["symbol"] == sym), None)
+                        if sig:
+                            sb_entries[sym] = dict(
+                                signal=sig,
+                                target_weight=final_wt,
+                                entry_reason=f"Sandbox_AB_{regime}_混动配置(A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)",
+                                filled_shares=0
+                            )
 
         self.sandbox_state["pending_entries"] = sb_entries
 

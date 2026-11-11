@@ -347,3 +347,127 @@ def test_wechat_notification_explains_no_open_reason():
     assert "A底盘蓝筹" in content and "100%" in content
     assert "接管以来" in content
     assert "系统服务状态" in content or "系统运行与服务健康监控" in content
+
+
+def test_primary_and_sandbox_regime_total_position_limit_parity():
+    """验证主账户与 Sandbox 在相同 Market Regime 下，生成的买单计划与最终成交严格满足相同的总仓位限制 (0%, 35%, 70%, 90%)"""
+    import datetime as dt
+    from trade_calendar import BEIJING
+
+    regimes = ["RISK_OFF", "NEUTRAL", "RISK_ON", "STRONG_RISK_ON"]
+    limits = {"RISK_OFF": 0.0, "NEUTRAL": 0.35, "RISK_ON": 0.70, "STRONG_RISK_ON": 0.90}
+
+    cands = [
+        {"symbol": "sh600519", "name": "贵州茅台", "score": 95, "industry": "白酒", "signal_price": 100.0, "atr_pct": 0.02, "volatility": 0.015},
+        {"symbol": "sh601318", "name": "中国平安", "score": 90, "industry": "保险", "signal_price": 40.0, "atr_pct": 0.02, "volatility": 0.015},
+        {"symbol": "sz000858", "name": "五粮液", "score": 92, "industry": "饮料制造", "signal_price": 50.0, "atr_pct": 0.02, "volatility": 0.015},
+        {"symbol": "sz000333", "name": "美的集团", "score": 88, "industry": "白色家电", "signal_price": 60.0, "atr_pct": 0.02, "volatility": 0.015}
+    ]
+
+    quotes = {
+        "sh600519": {"symbol": "sh600519", "price": 100.0, "current": 100.0, "open": 100.0, "close": 100.0, "pre_close": 100.0},
+        "sh601318": {"symbol": "sh601318", "price": 40.0, "current": 40.0, "open": 40.0, "close": 40.0, "pre_close": 40.0},
+        "sz000858": {"symbol": "sz000858", "price": 50.0, "current": 50.0, "open": 50.0, "close": 50.0, "pre_close": 50.0},
+        "sz000333": {"symbol": "sz000333", "price": 60.0, "current": 60.0, "open": 60.0, "close": 60.0, "pre_close": 60.0}
+    }
+
+    # 1. 验证空仓起步时各 Regime 的总仓位计划与成交硬顶
+    for reg in regimes:
+        p_acc = SimAccount(100000.0, save_path=f"/tmp/p_parity_{reg}.json", ledger_only=True)
+        sb_acc = SimAccount(100000.0, save_path=f"/tmp/sb_parity_{reg}.json", ledger_only=True)
+        strat = ProductABHybridStrategy(p_acc, ["sh600519", "sh601318", "sz000858", "sz000333"], sandbox_account=sb_acc)
+        strat.latest_candidates = cands
+        strat._ranked_signals = lambda as_of: cands
+        wa, wb = FROZEN_AB_WEIGHTS[reg]
+        strat.get_current_regime_and_weights = lambda as_of, r=reg, a=wa, b=wb: (r, a, b)
+
+        strat._plan("2026-11-11", "2026-11-12")
+
+        p_wt = sum(e["target_weight"] for e in strat.state.get("pending_entries", {}).values())
+        sb_wt = sum(e["target_weight"] for e in strat.sandbox_state.get("pending_entries", {}).values())
+
+        assert p_wt <= limits[reg] + 1e-4, f"主账户在 {reg} 计划仓位 ({p_wt}) 超过总仓位上限 ({limits[reg]})"
+        assert sb_wt <= limits[reg] + 1e-4, f"Sandbox 在 {reg} 计划仓位 ({sb_wt}) 超过总仓位上限 ({limits[reg]})"
+
+        # 模拟盘中撮合执行
+        now_dt = dt.datetime(2026, 11, 12, 10, 0, 0, tzinfo=BEIJING)
+        strat._tick_sandbox(quotes, now=now_dt)
+        sb_summary = sb_acc.get_summary()
+        sb_actual_wt = sb_summary["market_value"] / sb_summary["total_equity"] if sb_summary["total_equity"] > 0 else 0.0
+
+        assert sb_actual_wt <= limits[reg] + 1e-3, f"Sandbox 在 {reg} 最终成交后实际持仓占比 ({sb_actual_wt}) 超过上限 ({limits[reg]})"
+        if reg == "RISK_OFF":
+            assert sb_actual_wt == 0.0
+            assert len(sb_acc.positions) == 0
+
+    # 2. 验证已有持仓时，新开仓被严格截断至剩余额度 (例如 NEUTRAL 下已有 20% 持仓，新开仓不得超过 15%)
+    sb_acc_exist = SimAccount(100000.0, save_path="/tmp/sb_exist_parity.json", ledger_only=True)
+    sb_acc_exist.cash = 80000.0
+    sb_acc_exist.positions = {
+        "sh600261": {"symbol": "sh600261", "name": "阳光照明", "total_shares": 4000, "cost_price": 5.0, "market_value": 20000.0}
+    }
+    strat_exist = ProductABHybridStrategy(SimAccount(100000.0, ledger_only=True), ["sh600519", "sh601318"], sandbox_account=sb_acc_exist)
+    strat_exist.latest_candidates = cands[:2]
+    strat_exist._ranked_signals = lambda as_of: cands[:2]
+    strat_exist.get_current_regime_and_weights = lambda as_of: ("NEUTRAL", 1.0, 0.0)
+
+    strat_exist._plan("2026-11-11", "2026-11-12")
+    sb_new_entries = strat_exist.sandbox_state.get("pending_entries", {})
+    sb_new_wt = sum(e["target_weight"] for e in sb_new_entries.values())
+
+    # 上限 35% - 已有 20% = 剩余配额 15%
+    assert sb_new_wt <= 0.15 + 1e-4, f"Sandbox 在已有持仓下新开仓配额 ({sb_new_wt}) 未被截断至剩余额度 15%"
+
+    quotes_with_legacy = dict(quotes)
+    quotes_with_legacy["sh600261"] = {"symbol": "sh600261", "price": 5.0, "current": 5.0, "open": 5.0, "close": 5.0, "pre_close": 5.0}
+    strat_exist._tick_sandbox(quotes_with_legacy, now=dt.datetime(2026, 11, 12, 10, 0, 0, tzinfo=BEIJING))
+
+    sb_summary_exist = sb_acc_exist.get_summary()
+    sb_total_wt_exist = sb_summary_exist["market_value"] / sb_summary_exist["total_equity"]
+    assert sb_total_wt_exist <= 0.35 + 1e-3, f"Sandbox 在已有持仓成交后总仓位 ({sb_total_wt_exist}) 突破 35% 上限"
+
+
+def test_bounded_history_cache_pinned_symbols_never_evicted_protection():
+    """验证 BoundedHistoryCache 在置顶标的达到或超过容量上限时告警且绝不静默淘汰置顶历史行情"""
+    import logging
+    from bounded_history_cache import BoundedHistoryCache
+
+    # 1. 验证 pin 达到容量上限时触发告警并动态扩容
+    cache = BoundedHistoryCache(max_capacity=5)
+    log_records = []
+    class MemoryLogHandler(logging.Handler):
+        def emit(self, record):
+            log_records.append(record.getMessage())
+
+    b_logger = logging.getLogger("bounded_history_cache")
+    handler = MemoryLogHandler()
+    b_logger.addHandler(handler)
+
+    pinned_symbols = [f"sym_{i}" for i in range(6)]
+    cache.pin(pinned_symbols)
+
+    assert any("【缓存告警】置顶标的数量" in msg for msg in log_records), "未触发置顶标的容量上限告警"
+    assert cache.max_capacity == 56, f"未正确动态扩容: {cache.max_capacity}"
+
+    # 2. 验证超出容量时优先淘汰非置顶标的，绝不淘汰置顶标的
+    cache.max_capacity = 3
+    cache._pinned_symbols = {"p1", "p2", "p3"}
+    cache._hot_cache.clear()
+    cache._hot_cache["p1"] = [{"date": "2026-11-10", "close": 10.0}]
+    cache._hot_cache["p2"] = [{"date": "2026-11-10", "close": 20.0}]
+    cache._hot_cache["p3"] = [{"date": "2026-11-10", "close": 30.0}]
+
+    # 插入非置顶标的，应淘汰该非置顶标的
+    cache["cold_stock"] = [{"date": "2026-11-10", "close": 40.0}]
+    assert "cold_stock" not in cache._hot_cache, "非置顶标的应被 LRU 机制淘汰"
+    assert set(cache._hot_cache.keys()) == {"p1", "p2", "p3"}, "置顶标的必须完全驻留"
+
+    # 3. 验证当内存中全为置顶标的时，严禁静默淘汰任何置顶标的，并触发保护告警与自动扩容
+    log_records.clear()
+    cache.max_capacity = 2  # 人为缩容至小于置顶标的数量
+    cache._evict_if_needed()
+
+    assert any("【缓存保护】内存中所有标的均为保护置顶标的" in msg for msg in log_records), "未触发全置顶保护告警"
+    assert len(cache._hot_cache) == 3, f"置顶标的遭到静默淘汰！剩余数量: {len(cache._hot_cache)}"
+    assert set(cache._hot_cache.keys()) == {"p1", "p2", "p3"}, "置顶标的键集合被破坏"
+    assert cache.max_capacity == 53, f"容量未自动安全扩容: {cache.max_capacity}"

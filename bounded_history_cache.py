@@ -75,9 +75,17 @@ class BoundedHistoryCache(MutableMapping):
 
     def pin(self, symbols):
         """置顶保护关键标的 (主账户持仓、Sandbox持仓、Top候选)，确保常驻内存"""
+        sym_list = list(symbols)
         with self._lock:
-            self._pinned_symbols.update(symbols)
-            for s in symbols:
+            self._pinned_symbols.update(sym_list)
+            if len(self._pinned_symbols) >= self.max_capacity:
+                new_cap = max(self.max_capacity, len(self._pinned_symbols) + 50)
+                logger.warning(
+                    f"【缓存告警】置顶标的数量 ({len(self._pinned_symbols)}) 达到或超过容量上限 ({self.max_capacity})！"
+                    f"启动动态保护扩容至 {new_cap}，严禁静默淘汰置顶历史行情。"
+                )
+                self.max_capacity = new_cap
+            for s in sym_list:
                 if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s)):
                     _ = self.get(s)
 
@@ -131,7 +139,13 @@ class BoundedHistoryCache(MutableMapping):
             if evicted_key is not None:
                 self._hot_cache.pop(evicted_key)
             else:
-                self._hot_cache.popitem(last=False)
+                new_cap = len(self._hot_cache) + 50
+                logger.warning(
+                    f"【缓存保护】内存中所有标的均为保护置顶标的 ({len(self._hot_cache)} 只)，"
+                    f"达到或超过容量上限 ({self.max_capacity})！阻止静默淘汰置顶行情，动态扩容至 {new_cap}。"
+                )
+                self.max_capacity = new_cap
+                break
 
     def __getitem__(self, sym: str) -> List[Dict[str, Any]]:
         with self._lock:
