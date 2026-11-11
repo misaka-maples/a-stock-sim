@@ -153,6 +153,32 @@ def build_diagnostic_report(strategy, as_of: Optional[str] = None) -> Dict[str, 
         "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "regime": regime,
         "weights": {"product_a": w_a, "product_b": w_b},
+        "primary_account": {
+            "total_equity": p_equity,
+            "cash": p_cash,
+            "market_value": p_market_val,
+            "stock_weight_pct": p_stock_weight_pct,
+            "daily_return_pct": p_daily_ret_pct,
+            "takeover_return_pct": p_takeover_ret_pct,
+            "positions_count": len(primary_acc.positions) if primary_acc else 0,
+            "trades_count": len(p_today_trades)
+        },
+        "sandbox_account": {
+            "total_equity": sb_equity,
+            "cash": sb_cash,
+            "market_value": sb_market_val,
+            "stock_weight_pct": sb_stock_weight_pct,
+            "daily_return_pct": sb_daily_ret_pct,
+            "cum_return_pct": sb_cum_ret_pct,
+            "positions_count": len(sandbox_acc.positions) if sandbox_acc else 0,
+            "trades_count": len(sb_today_trades)
+        },
+        "theoretical_benchmark": {
+            "nav": nav_theo,
+            "daily_return_pct": theo_daily_ret_pct,
+            "cum_return_pct": theo_cum_ret_pct,
+            "target_stock_weight_pct": theo_target_stock_wt_pct,
+        },
         "metrics_table": metrics_table,
         "attribution": {
             "legacy_drag": {

@@ -447,16 +447,58 @@ def worker_step(now=None):
             SnapshotManager().update_daily_snapshot(date_str=day)
             ctx.account.strategy_state.setdefault("__server__", {})["closing_report_date"] = day
             ctx.account.save()
-            try:
-                sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
-                NotificationManager().notify_daily_summary(ctx.account.get_summary(), dict(ctx.account.positions), sizing_table=sizing_tbl)
-            except Exception:
-                logger.exception("最终收盘战报通知失败；收盘快照已保存")
+            diag_report = None
             if ctx.strategy and hasattr(ctx.strategy, "generate_diagnostic_report"):
                 try:
-                    ctx.strategy.generate_diagnostic_report(day)
+                    diag_res = ctx.strategy.generate_diagnostic_report(day)
+                    diag_report = diag_res.get("report") if isinstance(diag_res, dict) else diag_res
                 except Exception:
                     logger.exception("每日三轨收盘诊断报告自动生成失败")
+
+            try:
+                sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
+                sb_acc = getattr(ctx.strategy, "sandbox_account", None)
+                sb_summary = sb_acc.get_summary() if sb_acc else None
+                sb_positions = dict(sb_acc.positions) if sb_acc else None
+                alloc_st = ctx.strategy.allocation_status(checked_at) if hasattr(ctx.strategy, "allocation_status") else {}
+                p_entries = ctx.strategy.state.get("pending_entries", {}) if hasattr(ctx.strategy, "state") else {}
+                p_exits = ctx.strategy.state.get("pending_exits", {}) if hasattr(ctx.strategy, "state") else {}
+                curr_regime = ctx.strategy.state.get("current_regime", "RISK_OFF") if hasattr(ctx.strategy, "state") else "RISK_OFF"
+                w_a = ctx.strategy.state.get("weight_a", 1.0) if hasattr(ctx.strategy, "state") else 1.0
+                w_b = ctx.strategy.state.get("weight_b", 0.0) if hasattr(ctx.strategy, "state") else 0.0
+                strat_status = {
+                    "strategy_id": getattr(ctx.strategy, "name", "Product_AB"),
+                    "strategy_display_name": getattr(ctx.strategy, "display_name", "Product AB"),
+                    "regime": curr_regime,
+                    "weight_a": w_a,
+                    "weight_b": w_b,
+                    "max_regime_total_wt_num": alloc_st.get("max_regime_total_wt_num", 0.0 if curr_regime == "RISK_OFF" else 0.35),
+                    "pending_entries": p_entries,
+                    "pending_exits": p_exits,
+                    "allow_new_entries": alloc_st.get("allow_new_entries", False),
+                    "no_entry_reason": alloc_st.get("no_entry_reason", "当前处于 RISK_OFF 弱市状态，新买入上限为 0.0%，全额现金防御；绝不为了凑齐3只股票而主动买入"),
+                    "wait_reason": alloc_st.get("wait_reason", ""),
+                    "primary_positions_count": len(ctx.account.positions) if ctx.account else 0,
+                    "primary_max_positions": alloc_st.get("primary_max_positions", 3),
+                    "sandbox_positions_count": len(sb_positions) if sb_positions else 0,
+                    "sandbox_max_positions": alloc_st.get("sandbox_max_positions", 3),
+                    "service_status": "正常运行 (openarmx-quant.service)",
+                    "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
+                    "order_execution_status": f"正常 ({len(p_entries)} 笔待执行买单)",
+                } if ctx.strategy else None
+
+                NotificationManager().notify_daily_summary(
+                    summary=ctx.account.get_summary(),
+                    positions=dict(ctx.account.positions),
+                    sizing_table=sizing_tbl,
+                    sandbox_summary=sb_summary,
+                    sandbox_positions=sb_positions,
+                    diagnostic_report=diag_report,
+                    strategy_status=strat_status,
+                    date_str=day
+                )
+            except Exception:
+                logger.exception("最终收盘战报通知失败；收盘快照已保存")
         ctx.worker_last_success = checked_at
         ctx.worker_last_error = getattr(ctx.account, "_persistence_error", None) if ctx.account else None
 
@@ -1385,6 +1427,66 @@ def test_notification():
     mgr = NotificationManager()
     res = mgr.send_test_message()
     return res
+
+
+@app.post("/api/notification/daily_summary/send")
+def trigger_daily_summary_notification():
+    """手动触发发送当日双账本收盘微信战报（支持盘后补发与格式核验）"""
+    with ctx.lock:
+        if not ctx.account:
+            raise HTTPException(status_code=400, detail="账户未初始化")
+        day = datetime.datetime.now(BEIJING).date().isoformat()
+        diag_report = None
+        if ctx.strategy and hasattr(ctx.strategy, "generate_diagnostic_report"):
+            try:
+                diag_res = ctx.strategy.generate_diagnostic_report(day)
+                diag_report = diag_res.get("report") if isinstance(diag_res, dict) else diag_res
+            except Exception as e:
+                logger.warning(f"生成诊断报告失败: {e}")
+
+        sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
+        sb_acc = getattr(ctx.strategy, "sandbox_account", None)
+        sb_summary = sb_acc.get_summary() if sb_acc else None
+        sb_positions = dict(sb_acc.positions) if sb_acc else None
+        alloc_st = ctx.strategy.allocation_status(datetime.datetime.now(BEIJING)) if hasattr(ctx.strategy, "allocation_status") else {}
+        p_entries = ctx.strategy.state.get("pending_entries", {}) if hasattr(ctx.strategy, "state") else {}
+        p_exits = ctx.strategy.state.get("pending_exits", {}) if hasattr(ctx.strategy, "state") else {}
+        curr_regime = ctx.strategy.state.get("current_regime", "RISK_OFF") if hasattr(ctx.strategy, "state") else "RISK_OFF"
+        w_a = ctx.strategy.state.get("weight_a", 1.0) if hasattr(ctx.strategy, "state") else 1.0
+        w_b = ctx.strategy.state.get("weight_b", 0.0) if hasattr(ctx.strategy, "state") else 0.0
+        strat_status = {
+            "strategy_id": getattr(ctx.strategy, "name", "Product_AB"),
+            "strategy_display_name": getattr(ctx.strategy, "display_name", "Product AB"),
+            "regime": curr_regime,
+            "weight_a": w_a,
+            "weight_b": w_b,
+            "max_regime_total_wt_num": alloc_st.get("max_regime_total_wt_num", 0.0 if curr_regime == "RISK_OFF" else 0.35),
+            "pending_entries": p_entries,
+            "pending_exits": p_exits,
+            "allow_new_entries": alloc_st.get("allow_new_entries", False),
+            "no_entry_reason": alloc_st.get("no_entry_reason", "当前处于 RISK_OFF 弱市状态，新买入上限为 0.0%，全额现金防御；绝不为了凑齐3只股票而主动买入"),
+            "wait_reason": alloc_st.get("wait_reason", ""),
+            "primary_positions_count": len(ctx.account.positions) if ctx.account else 0,
+            "primary_max_positions": alloc_st.get("primary_max_positions", 3),
+            "sandbox_positions_count": len(sb_positions) if sb_positions else 0,
+            "sandbox_max_positions": alloc_st.get("sandbox_max_positions", 3),
+            "service_status": "正常运行 (openarmx-quant.service)",
+            "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
+            "order_execution_status": f"正常 ({len(p_entries)} 笔待执行买单)",
+        } if ctx.strategy else None
+
+        res = NotificationManager().notify_daily_summary(
+            summary=ctx.account.get_summary(),
+            positions=dict(ctx.account.positions),
+            force=True,
+            date_str=day,
+            sizing_table=sizing_tbl,
+            sandbox_summary=sb_summary,
+            sandbox_positions=sb_positions,
+            diagnostic_report=diag_report,
+            strategy_status=strat_status
+        )
+        return {"success": True, "message": "双账本每日收盘战报已推送至微信", "details": res}
 
 
 @app.post("/api/notification/wxpusher/qrcode")

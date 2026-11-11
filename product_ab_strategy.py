@@ -51,6 +51,8 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.feed = feed or HistoricalDataFeed()
         self.account = account
         self.name = name
+        self._custom_sandbox_account = kwargs.pop("sandbox_account", None)
+        self._custom_sandbox_path = kwargs.pop("sandbox_path", None)
 
         # 核心默认配置 (兼顾 A 底盘与 B 爆发)
         config_kwargs = {
@@ -96,22 +98,32 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         self.state.setdefault("position_monitors", {})
 
         # 初始化独立前向测试账本 (Sandbox Testing Account - 严格自治隔离)
-        sandbox_path = BASE_DIR / "data" / "sandbox_ab_account.json"
+        sandbox_account = self._custom_sandbox_account
+        sandbox_path = self._custom_sandbox_path
         from sim_trader import SimAccount
-        if sandbox_path.exists():
+        if sandbox_account is not None:
+            self.sandbox_account = sandbox_account
+        elif getattr(account, "save_path", None) is None and sandbox_path is None:
             self.sandbox_account = SimAccount(
                 initial_cash=100000.0,
-                save_path=str(sandbox_path),
                 strict_t1=True
             )
-            self.sandbox_account.load()
         else:
-            self.sandbox_account = SimAccount(
-                initial_cash=100000.0,
-                save_path=str(sandbox_path),
-                strict_t1=True
-            )
-            self.sandbox_account.save()
+            sb_path = Path(sandbox_path) if sandbox_path else (BASE_DIR / "data" / "sandbox_ab_account.json")
+            if sb_path.exists():
+                self.sandbox_account = SimAccount(
+                    initial_cash=100000.0,
+                    save_path=str(sb_path),
+                    strict_t1=True
+                )
+                self.sandbox_account.load()
+            else:
+                self.sandbox_account = SimAccount(
+                    initial_cash=100000.0,
+                    save_path=str(sb_path),
+                    strict_t1=True
+                )
+                self.sandbox_account.save()
 
         # 测试账本的自治状态直接挂载在 sandbox_account 内部策略状态中，实现彻底物理隔离
         self.sandbox_state = self.sandbox_account.strategy_state.setdefault("sandbox_state", {
@@ -295,6 +307,10 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         ledger["target_holdings_b"] = today_holdings_b
         self.account.save()
 
+    def _plan_policy(self):
+        regime = self.state.get("current_regime", "RISK_OFF")
+        return f"Product_AB_{regime}"
+
     def _plan(self, as_of, execution_day):
         """生成 Product AB 自适应混动订单计划 (A+B 双引擎合成)"""
         regime, w_a, w_b = self.get_current_regime_and_weights(as_of)
@@ -341,7 +357,8 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         total_equity = self.account.get_summary()["total_equity"]
         current_stock_val = sum(
             float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
-            for pos in self.account.positions.values()
+            for sym, pos in self.account.positions.items()
+            if sym not in self.state.get("pending_exits", {})
         )
         current_stock_wt = current_stock_val / total_equity if total_equity > 0 else 0.0
 
@@ -364,6 +381,8 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         accumulated_new_wt = 0.0
         if remaining_allowed_wt >= 0.02:
             for sym, wt in sorted(target_weights.items(), key=lambda x: -x[1]):
+                if sym in self.account.positions and sym not in self.state.get("pending_exits", {}):
+                    continue
                 if accumulated_new_wt >= remaining_allowed_wt - 1e-4:
                     break
                 final_wt = min(wt, self.config.max_stock_weight, remaining_allowed_wt - accumulated_new_wt)
@@ -397,6 +416,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
 
         # 4. 更新影子账本 (Shadow Ledger)
         self._update_shadow_ledger(as_of, regime, w_a, w_b, today_holdings_a, today_holdings_b)
+        self.account.save()
 
     def _plan_sandbox(self, as_of, execution_day, regime, w_a, w_b, signals_a, signals_b):
         """为测试账本独立排定订单计划 (严格基于标准 10 万元独立基准与当前测试持仓)"""
@@ -409,7 +429,11 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             if not bars:
                 continue
             sig = holding_signal(bars, as_of)
-            reason = exit_reason(pos, sig, self.config)
+            if not sig:
+                continue
+            cost = float(pos.get("cost_price", 0.0))
+            price = float(sig.get("raw_signal_price", cost))
+            reason = exit_reason(price, cost, sig, self.config)
             if reason:
                 sb_exits[sym] = {"shares": pos.get("total_shares", pos.get("shares", 0)), "reason": reason}
 
@@ -686,7 +710,9 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 "total_return_pct": round((sb_summary.get("total_equity", 100000.0) / self.sandbox_account.initial_cash - 1.0) * 100.0, 2) if hasattr(self, "sandbox_account") else 0.0,
                 "positions": {s: p.get("total_shares", p.get("shares", 0)) for s, p in self.sandbox_account.positions.items()} if hasattr(self, "sandbox_account") else {}
             },
-            "theoretical_shadow": ledger
+            "theoretical_shadow": ledger,
+            "total_equity": summary["total_equity"],
+            **ledger
         }
 
     def allocation_status(self, now=None):
@@ -696,10 +722,58 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         regime, w_a, w_b = self.get_current_regime_and_weights(as_of)
         ledger = self.state.get("shadow_ledger", {})
 
+        target_pos_count = 4 if regime == "STRONG_RISK_ON" else 3
+        active_pos_count = len([s for s in self.account.positions if s not in self.state.get("pending_exits", {})])
+        vacant = max(0, target_pos_count - active_pos_count)
+        pending_cnt = len(self.state.get("pending_entries", {}))
+
+        max_regime_total_wt = {
+            "RISK_OFF": 0.0,
+            "NEUTRAL": 0.35,
+            "RISK_ON": 0.70,
+            "STRONG_RISK_ON": 0.90
+        }.get(regime, 0.70)
+
+        total_equity = self.account.get_summary()["total_equity"]
+        current_stock_val = sum(
+            float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+            for sym, pos in self.account.positions.items()
+            if sym not in self.state.get("pending_exits", {})
+        )
+        current_stock_wt = current_stock_val / total_equity if total_equity > 0 else 0.0
+        remaining_allowed_wt = max(0.0, max_regime_total_wt - current_stock_wt)
+
+        allow_new_entries = bool(regime != "RISK_OFF" and remaining_allowed_wt >= 0.02)
+        if regime == "RISK_OFF":
+            no_entry_reason = "当前市场处于 RISK_OFF 弱市状态，新买入上限为 0.0%，全额现金防御；绝不为了凑齐3只股票而主动买入"
+            wait_reason = "当前处于 RISK_OFF 弱市状态，股票仓位上限为 0%，严格禁止任何新增开仓；已有持仓正常执行风控，空位保留现金防御"
+        elif remaining_allowed_wt < 0.02:
+            no_entry_reason = f"当前股票仓位已达上限 ({current_stock_wt*100:.1f}% / 上限 {max_regime_total_wt*100:.1f}%)，无剩余买入配额"
+            wait_reason = f"股票仓位已达上限 ({current_stock_wt*100:.1f}%)，暂停新开仓"
+        else:
+            no_entry_reason = "允许按调仓周期与选股门槛开仓"
+            wait_reason = f"允许新开仓（最多 {target_pos_count} 只，当前在持 {active_pos_count} 只，不强制补齐）"
+
         status["hybrid_mode"] = True
         status["market_regime"] = regime
         status["weight_product_a"] = f"{w_a*100:.0f}%"
         status["weight_product_b"] = f"{w_b*100:.0f}%"
+        status["max_regime_total_wt"] = f"{max_regime_total_wt*100:.1f}%"
+        status["max_regime_total_wt_num"] = max_regime_total_wt
+        status["allow_new_entries"] = allow_new_entries
+        status["no_entry_reason"] = no_entry_reason
+        status["vacant_slots"] = vacant
+        status["pending_entry_count"] = pending_cnt
+        status["refill_enabled"] = False
+        status["can_refill"] = False
+        status["wait_reason"] = wait_reason
+        status["target_positions_count"] = target_pos_count
+        status["primary_positions_count"] = active_pos_count
+        status["primary_max_positions"] = target_pos_count
+        sb_active_cnt = len(self.sandbox_account.positions) if hasattr(self, "sandbox_account") else 0
+        status["sandbox_positions_count"] = sb_active_cnt
+        status["sandbox_max_positions"] = target_pos_count
+
         status["tracking_error_pct"] = f"{ledger.get('tracking_error_pct', 0.0):+.2f}%"
         status["regime_description"] = (
             "全额大盘蓝筹与安全垫防守 (A 100%)" if regime in ("RISK_OFF", "NEUTRAL") else

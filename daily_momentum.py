@@ -13,6 +13,7 @@ from pathlib import Path
 from dataclasses import asdict
 
 from history_data import cache_freshness, HistoricalDataFeed, previous_trading_day, last_completed_trading_day, normalize_symbol_for_tencent
+from bounded_history_cache import BoundedHistoryCache
 from strategy_rules import (MomentumConfig, evaluate_momentum, holding_signal,
                             exit_reason, target_weight, allowed_by_sector, sector_of,
                             entry_guard_reason, compute_risk_sizing_row,
@@ -63,7 +64,9 @@ class DailyMomentumStrategy:
         self.state.setdefault("position_monitors", {})
         if feed is None and hasattr(self.feed, "compact_limit"):
             self.feed.compact_limit = 126
-        self.history_cache = {}
+        self.history_cache = BoundedHistoryCache(feed=self.feed, max_capacity=150)
+        self._latest_metrics_table = {}
+        self._known_valid_series = set()
         self.latest_candidates = []
         self.data_status = {"status": "not_loaded", "requested": len(self.watchlist), "loaded": 0}
         self._history_date = None
@@ -169,7 +172,7 @@ class DailyMomentumStrategy:
 
     def _history_issue(self, item, as_of):
         bars, meta = item.get("bars", []), item.get("metadata", {})
-        count = len({bar.get("date") for bar in bars if bar.get("date", "") <= as_of})
+        count = item.get("bar_count") or len({bar.get("date") for bar in bars if bar.get("date", "") <= as_of})
         details = dict(last_date=bars[-1].get("date") if bars else None, actual_bars=count)
         ttl = getattr(self.feed, "CACHE_TTL", dt.timedelta(hours=24)).total_seconds()
         if not bars:
@@ -227,9 +230,29 @@ class DailyMomentumStrategy:
             errors = {sym: errors[sym] for sym in old_order} | {sym: error for sym, error in errors.items() if sym not in old_order}
         self._history_items = {sym: dict(name=items.get(sym, {}).get("name", sym),
                                         bars=items.get(sym, {}).get("bars", []),
+                                        bar_count=items.get(sym, {}).get("bar_count"),
                                         metadata=items.get(sym, {}).get("metadata", {}),
                                         error=items.get(sym, {}).get("error")) for sym in symbols}
-        self.history_cache = {sym: item["bars"] for sym, item in self._history_items.items()}
+        if hasattr(self.history_cache, "register_known_symbols"):
+            self.history_cache.register_known_symbols(symbols)
+            self.history_cache.set_as_of(as_of)
+            pinned = set(self.account.positions)
+            if hasattr(self, "sandbox_account") and self.sandbox_account:
+                pinned.update(self.sandbox_account.positions)
+            if hasattr(self, "symbols_a"):
+                pinned.update(self.symbols_a)
+
+            is_small_or_test = (len(symbols) <= 150 or not hasattr(self.feed, "peek_universe"))
+            for sym in symbols:
+                b = items.get(sym, {}).get("bars", [])
+                if b and (is_small_or_test or len(b) > 1 or sym in pinned):
+                    self.history_cache[sym] = b
+            if is_small_or_test:
+                self.history_cache.pin(symbols)
+            else:
+                self.history_cache.pin(pinned)
+        else:
+            self.history_cache = {sym: item["bars"] for sym, item in self._history_items.items()}
         self._stock_names = {sym: item["name"] for sym, item in self._history_items.items()}
         self._history_errors = errors
         self._benchmark, self._benchmark_valid = benchmark, benchmark_valid
@@ -247,7 +270,7 @@ class DailyMomentumStrategy:
                       if key in self.data_status}
         self.data_status = dict(**scheduling, status="ready" if not unavailable and benchmark_valid else "partial" if eligible else "failed",
                                 as_of=as_of, requested=len(symbols), loaded=len(eligible), usable_history=len(eligible),
-                                latest_raw_history=latest_raw, retained_history=sum(bool(b) for b in self.history_cache.values()),
+                                latest_raw_history=latest_raw, retained_history=(len(self.history_cache._known_symbols) if hasattr(self.history_cache, "_known_symbols") and self.history_cache._known_symbols else sum(bool(b) for b in self.history_cache.values())),
                                 unavailable=unavailable, unavailable_reason_counts=counts,
                                 errors=samples, coverage_gaps=gaps[:10], coverage_gap_count=len(gaps),
                                 benchmark_available=benchmark_valid, refreshing=False,
@@ -258,6 +281,10 @@ class DailyMomentumStrategy:
                                 entry_rejections=self.state["entry_rejections"][-20:])
         matches = self._ranked_signals(as_of)
         self.latest_candidates = matches[:50]
+        if hasattr(self.history_cache, "pin"):
+            self.history_cache.pin([c["symbol"] for c in self.latest_candidates])
+        if hasattr(self.history_cache, "trim"):
+            self.history_cache.trim()
         self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
         self.data_status["ranking_coverage"] = self._ranking_coverage()
         self.data_status["rotation_ready"] = self._ranking_coverage() >= .95
@@ -266,8 +293,11 @@ class DailyMomentumStrategy:
     def _ranking_coverage(self):
         # Known sufficiently long series are expected to update as a group.
         # Dead/unlisted codes with no history do not prevent a useful quorum.
-        expected = {sym for sym, bars in self.history_cache.items()
-                    if sym in self.watchlist and len(bars) >= 125}
+        if self._known_valid_series:
+            expected = {sym for sym in self._known_valid_series if sym in self.watchlist}
+        else:
+            expected = {sym for sym, bars in self.history_cache.items()
+                        if sym in self.watchlist and len(bars) >= 125}
         return len(expected & self._entry_eligible)/len(expected) if expected else 0.
 
     def _prioritize_updates(self, symbols):
@@ -538,7 +568,50 @@ class DailyMomentumStrategy:
                     # Publish verified disk data before a retired/unknown name
                     # can hold the first batch open for minutes. Holdings first.
                     priority = list(dict.fromkeys(list(self.account.positions)+symbols))
-                    cached = self.feed.peek_universe(priority, start_date=start, end_date=as_of)
+                    if len(priority) > 100:
+                        batch_size = 100
+                        cached = {}
+                        delisted = getattr(self, "_delisted", set())
+                        pinned_now = set(self.account.positions)
+                        if hasattr(self, "sandbox_account") and self.sandbox_account:
+                            pinned_now.update(self.sandbox_account.positions)
+                        if hasattr(self, "symbols_a"):
+                            pinned_now.update(self.symbols_a)
+
+                        self._latest_metrics_table = {}
+                        for i in range(0, len(priority), batch_size):
+                            batch = priority[i:i + batch_size]
+                            batch_cached = self.feed.peek_universe(batch, start_date=start, end_date=as_of)
+                            for sym in batch:
+                                item = batch_cached.get(sym, {})
+                                bars = item.get("bars", [])
+                                if not bars:
+                                    cached[sym] = item
+                                    continue
+                                bar_count = len(bars)
+                                if bar_count >= 125:
+                                    self._known_valid_series.add(sym)
+                                if sym not in delisted:
+                                    code = sym[-6:]
+                                    if code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+                                        name = item.get("name", sym)
+                                        risk_flag = bars[-1].get("is_st") if bars else None
+                                        if not (risk_flag is True or (risk_flag is not False and "ST" in name.upper()) or "退" in name or name.upper().startswith("PT")):
+                                            sig = evaluate_momentum(bars, as_of, self.config)
+                                            if sig and sig.get("raw_signal_price") and sig.get("adjustment_factor"):
+                                                self._latest_metrics_table[sym] = dict(symbol=sym, code=code, name=name, current=sig["raw_signal_price"], **sig)
+                                if sym in pinned_now:
+                                    cached[sym] = item
+                                else:
+                                    cached[sym] = {
+                                        "name": item.get("name", sym),
+                                        "bars": [bars[-1]],
+                                        "bar_count": bar_count,
+                                        "metadata": item.get("metadata", {}),
+                                        "error": item.get("error")
+                                    }
+                    else:
+                        cached = self.feed.peek_universe(priority, start_date=start, end_date=as_of)
                     if hasattr(self.feed, "peek_industry_map"):
                         industries = {**self.feed.peek_industry_map(), **self._industry_overrides}
                     retry_industry = self._industry_refresh_required(symbols)
@@ -694,6 +767,13 @@ class DailyMomentumStrategy:
         signals = []
         if self._history_date != as_of or not self._new_risk_data_valid():
             return signals
+        if self._latest_metrics_table:
+            for sym, cand in self._latest_metrics_table.items():
+                if sym not in self.watchlist or sym not in self._entry_eligible or sym in self._delisted:
+                    continue
+                signals.append(dict(cand))
+            signals.sort(key=lambda candidate: (-candidate["score"], candidate["symbol"]))
+            return signals
         for sym, bars in self.history_cache.items():
             if sym not in self.watchlist or sym not in self._entry_eligible or sym in self._delisted:
                 continue
@@ -794,6 +874,11 @@ class DailyMomentumStrategy:
 
     def allocation_status(self, now=None):
         """Read-only allocation explanation; no downloads, planning or writes."""
+        if isinstance(now, str):
+            try:
+                now = dt.datetime.fromisoformat(now)
+            except Exception:
+                now = dt.datetime.combine(dt.date.fromisoformat(now), dt.time(15, 0), BEIJING)
         now = now or dt.datetime.now(BEIJING)
         as_of = last_completed_trading_day(now)
         execution_day = now.date().isoformat()
@@ -867,7 +952,8 @@ class DailyMomentumStrategy:
                     wait_reason=reason, last_rebalance=last,
                     next_rebalance_signal_date=signal_day, next_execution_date=day.isoformat(),
                     entry_signal_date=as_of if self._history_date == as_of else None,
-                    position_sizing=self.get_position_sizing_table(now))
+                    position_sizing=self.get_position_sizing_table(now),
+                    cache_stats=self.history_cache.stats() if hasattr(self.history_cache, "stats") else None)
 
     def get_position_sizing_table(self, now=None):
         """生成当前持仓的风控头寸测算明细表（含 ATR%、2×ATR、风险预算权重上限、耗资及仓位占比）"""
