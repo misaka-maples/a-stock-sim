@@ -150,17 +150,18 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "history": []
         })
 
-    def get_max_regime_total_wt(self) -> float:
-        """获取当前市场状态下的总仓位硬顶上限 (RISK_OFF: 0%, NEUTRAL: 35%, RISK_ON: 70%, STRONG: 90%)"""
-        regime = self.state.get("current_regime")
-        if not regime:
-            regime = "RISK_OFF"
-        return {
+    def get_max_regime_total_wt(self, regime: Optional[str] = None) -> float:
+        """获取当前市场状态下的总仓位硬顶上限 (RISK_OFF: 0%, NEUTRAL: 35%, RISK_ON: 70%, STRONG: 90%)
+        执行安全防护：若市场状态异常或无法识别，默认返回 0.0%，严格禁止任何新增开仓。
+        """
+        r = self.state.get("current_regime", "RISK_OFF") if regime is None else regime
+        regime_caps = {
             "RISK_OFF": 0.0,
             "NEUTRAL": 0.35,
             "RISK_ON": 0.70,
             "STRONG_RISK_ON": 0.90
-        }.get(regime, 0.70)
+        }
+        return regime_caps.get(r, 0.0)
 
     def get_current_regime_and_weights(self, as_of: str) -> Tuple[str, float, float]:
         """依据沪深300趋势与候选池市场宽度判定当前市场状态与冻结权重"""
@@ -199,7 +200,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 else:
                     regime = "STRONG_RISK_ON"
 
-        weights = FROZEN_AB_WEIGHTS.get(regime, (0.50, 0.50))
+        weights = FROZEN_AB_WEIGHTS.get(regime, (1.00, 0.00))
         return regime, weights[0], weights[1]
 
     def _calc_theoretical_return(self, holdings: Dict[str, float], date_prev: str, date_curr: str) -> float:
@@ -373,12 +374,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         )
         current_stock_wt = current_stock_val / total_equity if total_equity > 0 else 0.0
 
-        max_regime_total_wt = {
-            "RISK_OFF": 0.0,
-            "NEUTRAL": 0.35,
-            "RISK_ON": 0.70,
-            "STRONG_RISK_ON": 0.90
-        }.get(regime, 0.70)
+        max_regime_total_wt = self.get_max_regime_total_wt(regime)
         remaining_allowed_wt = max(0.0, max_regime_total_wt - current_stock_wt)
 
         sector_weights = {}
@@ -476,12 +472,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             )
             sb_stock_wt = sb_stock_val / sb_equity if sb_equity > 0 else 0.0
 
-            max_regime_total_wt = {
-                "RISK_OFF": 0.0,
-                "NEUTRAL": 0.35,
-                "RISK_ON": 0.70,
-                "STRONG_RISK_ON": 0.90
-            }.get(regime, 0.70)
+            max_regime_total_wt = self.get_max_regime_total_wt(regime)
             sb_remaining_allowed_wt = max(0.0, max_regime_total_wt - sb_stock_wt)
 
             sb_sec_weights = {}
@@ -781,12 +772,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         vacant = max(0, target_pos_count - active_pos_count)
         pending_cnt = len(self.state.get("pending_entries", {}))
 
-        max_regime_total_wt = {
-            "RISK_OFF": 0.0,
-            "NEUTRAL": 0.35,
-            "RISK_ON": 0.70,
-            "STRONG_RISK_ON": 0.90
-        }.get(regime, 0.70)
+        max_regime_total_wt = self.get_max_regime_total_wt(regime)
 
         total_equity = self.account.get_summary()["total_equity"]
         current_stock_val = sum(

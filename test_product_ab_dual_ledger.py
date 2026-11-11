@@ -569,3 +569,42 @@ def test_dynamic_top50_updates_over_60_days_bounded_pinned():
     assert "stock_d1_0" not in cache._pinned_symbols, "历史过时候选未被解除置顶"
     assert "stock_d1_0" not in cache._hot_cache, "历史过时候选未被 LRU 机制淘汰释放"
     assert len(cache._pinned_symbols) == 53, f"60天运行后置顶总数异常: {len(cache._pinned_symbols)}"
+
+
+def test_unknown_or_abnormal_regime_defaults_to_zero_position_budget():
+    """验证未知或异常市场状态下总仓位上限默认返回 0.0%，严格禁止任何新增开仓"""
+    p_acc = SimAccount(100000.0, ledger_only=True)
+    sb_acc = SimAccount(100000.0, ledger_only=True)
+    strat = ProductABHybridStrategy(p_acc, ["sh600519"], sandbox_account=sb_acc)
+
+    # 1. 验证 get_max_regime_total_wt 对各种异常/未知输入的 fail-safe 行为 (返回 0.0)
+    assert strat.get_max_regime_total_wt("UNKNOWN_STATE") == 0.0
+    assert strat.get_max_regime_total_wt("CORRUPTED") == 0.0
+    assert strat.get_max_regime_total_wt("") == 0.0
+    strat.state["current_regime"] = "CORRUPTED"
+    assert strat.get_max_regime_total_wt() == 0.0
+    assert strat.get_max_regime_total_wt(None) == 0.0
+
+    # 2. 验证正常市场状态完全保持原冻结设定
+    assert strat.get_max_regime_total_wt("RISK_OFF") == 0.0
+    assert strat.get_max_regime_total_wt("NEUTRAL") == 0.35
+    assert strat.get_max_regime_total_wt("RISK_ON") == 0.70
+    assert strat.get_max_regime_total_wt("STRONG_RISK_ON") == 0.90
+
+    # 3. 模拟异常市场状态下生成买入计划
+    strat.latest_candidates = [{
+        "symbol": "sh600519", "name": "贵州茅台", "score": 95,
+        "industry": "白酒", "signal_price": 100.0, "atr_pct": 0.02, "volatility": 0.015
+    }]
+    strat._ranked_signals = lambda as_of: strat.latest_candidates
+    strat.get_current_regime_and_weights = lambda as_of: ("CORRUPTED_REGIME", 1.0, 0.0)
+
+    strat._plan("2026-11-11", "2026-11-12")
+    assert len(strat.state.get("pending_entries", {})) == 0, "主账户在未知/异常市场状态下严禁生成买单"
+    assert len(strat.sandbox_state.get("pending_entries", {})) == 0, "Sandbox 在未知/异常市场状态下严禁生成买单"
+
+    # 4. 验证 allocation_status 报告中准确禁止开仓
+    strat.state["current_regime"] = "CORRUPTED_REGIME"
+    alloc = strat.allocation_status()
+    assert alloc["allow_new_entries"] is False
+    assert alloc["max_regime_total_wt_num"] == 0.0
