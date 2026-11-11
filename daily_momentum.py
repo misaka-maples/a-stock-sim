@@ -281,8 +281,27 @@ class DailyMomentumStrategy:
                                 entry_rejections=self.state["entry_rejections"][-20:])
         matches = self._ranked_signals(as_of)
         self.latest_candidates = matches[:50]
-        if hasattr(self.history_cache, "pin"):
-            self.history_cache.pin([c["symbol"] for c in self.latest_candidates])
+
+        # 每日动态刷新置顶名单：严格限定在真实持仓、待执行订单、当日Top50与核心底盘标的
+        daily_pinned = set(self.account.positions)
+        if is_small_or_test:
+            daily_pinned.update(symbols)
+        if hasattr(self, "sandbox_account") and self.sandbox_account is not None:
+            daily_pinned.update(self.sandbox_account.positions)
+        if hasattr(self, "symbols_a"):
+            daily_pinned.update(self.symbols_a)
+        daily_pinned.update(self.state.get("pending_entries", {}))
+        daily_pinned.update(self.state.get("pending_exits", {}))
+        if hasattr(self, "sandbox_state"):
+            daily_pinned.update(self.sandbox_state.get("pending_entries", {}))
+            daily_pinned.update(self.sandbox_state.get("pending_exits", {}))
+        daily_pinned.update(c["symbol"] for c in self.latest_candidates)
+
+        if hasattr(self.history_cache, "sync_pinned"):
+            self.history_cache.sync_pinned(daily_pinned)
+        elif hasattr(self.history_cache, "pin"):
+            self.history_cache.pin(daily_pinned)
+
         if hasattr(self.history_cache, "trim"):
             self.history_cache.trim()
         self.data_status.update(candidate_count=len(matches), preview_count=len(self.latest_candidates))
@@ -1290,16 +1309,24 @@ class DailyMomentumStrategy:
             if reason:
                 self._reject_entry(sym, intent, execution_day, reason)
                 continue
-            weight = target_weight(self.config, intent["signal"])
+            weight = float(intent.get("target_weight", 0.0)) or target_weight(self.config, intent["signal"])
             if intent["target_shares"] is None or not intent["filled_shares"]:
                 # An initially unaffordable lot must not freeze target=0 for
                 # the whole day; recompute until the first actual fill.
                 intent["target_shares"] = int(total * weight / price / 100) * 100
             remaining = intent["target_shares"] - intent["filled_shares"]
-            # Recheck growing position value, cash, risk budget and sector cap on every retry.
+            # Recheck growing position value, cash, risk budget, regime budget and sector cap on every retry.
             existing = self.account.positions.get(sym, {}).get("market_value", 0)
-            remaining = min(remaining, int(max(0, total * weight - existing) / price / 100) * 100,
-                            int(self.account.cash / (price * 1.002) / 100) * 100)
+            regime_cap_wt = self.get_max_regime_total_wt() if hasattr(self, "get_max_regime_total_wt") else 1.0
+            curr_stock_val = sum(float(p.get("market_value", 0.0) or (p.get("total_shares", 0) * p.get("cost_price", 0.0))) for p in self.account.positions.values())
+            rem_regime_val = max(0.0, total * regime_cap_wt - curr_stock_val)
+
+            remaining = min(
+                remaining,
+                int(max(0, total * weight - existing) / price / 100) * 100,
+                int(rem_regime_val / price / 100) * 100,
+                int(self.account.cash / (price * 1.002) / 100) * 100
+            )
             if remaining < 100 or not allowed_by_sector(sym, remaining * price / total, weights,
                                                        self.industry_map, self.config.max_sector_weight):
                 continue

@@ -205,6 +205,21 @@ def build_diagnostic_report(strategy, as_of: Optional[str] = None) -> Dict[str, 
         "alerts": alerts
     }
 
+    # 记录长周期系统健康与内存指标
+    try:
+        from runtime_resources import memory_snapshot
+        mem = memory_snapshot()
+        rss_mb = round((mem.get("rss_bytes") or 0) / 1024 / 1024, 2)
+        cache_stats = strategy.history_cache.stats() if hasattr(strategy, "history_cache") and hasattr(strategy.history_cache, "stats") else {}
+        report["system_health"] = {
+            "rss_mb": rss_mb,
+            "rss_bytes": mem.get("rss_bytes"),
+            "available_mb": round((mem.get("available_bytes") or 0) / 1024 / 1024, 2),
+            "cache_stats": cache_stats
+        }
+    except Exception as e:
+        report["system_health"] = {"error": str(e)}
+
     # 持久化落盘
     report_file = REPORTS_DIR / f"{report_date}.json"
     latest_file = REPORTS_DIR / "latest.json"
@@ -223,14 +238,22 @@ def format_diagnostic_markdown(report: Dict[str, Any]) -> str:
     w_a = report["weights"]["product_a"] * 100
     w_b = report["weights"]["product_b"] * 100
 
+    sh = report.get("system_health", {})
+    cs = sh.get("cache_stats", {})
+    health_line = f"> **系统健康监控**：常驻内存(RSS): `{sh.get('rss_mb', 'N/A')} MB` | 缓存容量: `{cs.get('capacity', 150)}` 只 (热点 `{cs.get('hot_count', 0)}` / 置顶 `{cs.get('pinned_count', 0)}` / 磁盘 `{cs.get('disk_count', 0)}`) | 命中率: `{cs.get('hit_rate_pct', 0)}%`" if "rss_mb" in sh else ""
+
     lines = [
         f"# Product AB 每日收盘自动诊断报告 ({d})",
         f"> **生成时间**：{report['generated_at']} | **市场状态**：`{regime}` (A配置: {w_a:.0f}% / B配置: {w_b:.0f}%)",
+    ]
+    if health_line:
+        lines.append(health_line)
+    lines.extend([
         "",
         "## 1. 主账户 vs Sandbox测试账本 vs 理论基准 三轨监控矩阵",
         "| 监控指标 | 主账户 (生产连续) | Sandbox (测试账本) | 理论影子基准 |",
         "| :--- | :---: | :---: | :---: |"
-    ]
+    ])
     for row in report["metrics_table"]:
         lines.append(f"| **{row['metric']}** | {row['primary']} | {row['sandbox']} | {row['theoretical']} |")
 

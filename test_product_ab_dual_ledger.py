@@ -471,3 +471,101 @@ def test_bounded_history_cache_pinned_symbols_never_evicted_protection():
     assert len(cache._hot_cache) == 3, f"置顶标的遭到静默淘汰！剩余数量: {len(cache._hot_cache)}"
     assert set(cache._hot_cache.keys()) == {"p1", "p2", "p3"}, "置顶标的键集合被破坏"
     assert cache.max_capacity == 53, f"容量未自动安全扩容: {cache.max_capacity}"
+
+
+def test_unfilled_sell_does_not_release_position_budget():
+    """验证卖单未实际成交时绝不提前释放仓位预算，且买单撮合前动态重检确保组合总仓位不发生穿透"""
+    import datetime as dt
+    from trade_calendar import BEIJING
+
+    # 1. 模拟初始持有 30% 市值 (30,000 元)
+    sb_acc = SimAccount(100000.0, save_path="/tmp/sb_unfilled_test.json", ledger_only=True)
+    sb_acc.cash = 70000.0
+    sb_acc.positions = {
+        "sh600261": {"symbol": "sh600261", "name": "阳光照明", "total_shares": 6000, "cost_price": 5.0, "market_value": 30000.0}
+    }
+    p_acc = SimAccount(100000.0, save_path="/tmp/p_unfilled_test.json", ledger_only=True)
+    p_acc.cash = 70000.0
+    p_acc.positions = {
+        "sh600261": {"symbol": "sh600261", "name": "阳光照明", "total_shares": 6000, "cost_price": 5.0, "market_value": 30000.0}
+    }
+
+    cands = [
+        {"symbol": "sh600519", "name": "贵州茅台", "score": 95, "industry": "白酒", "signal_price": 100.0, "atr_pct": 0.02, "volatility": 0.015}
+    ]
+
+    quotes = {
+        "sh600261": {"symbol": "sh600261", "price": 5.0, "current": 5.0, "open": 5.0, "close": 5.0, "pre_close": 5.0},
+        "sh600519": {"symbol": "sh600519", "price": 100.0, "current": 100.0, "open": 100.0, "close": 100.0, "pre_close": 100.0}
+    }
+
+    strat = ProductABHybridStrategy(p_acc, ["sh600519"], sandbox_account=sb_acc)
+    strat.latest_candidates = cands
+    strat._ranked_signals = lambda as_of: cands
+    strat.get_current_regime_and_weights = lambda as_of: ("NEUTRAL", 1.0, 0.0)
+
+    # 模拟产生卖出计划 (计划卖出 4,000 股，折合 20,000 元 / 20%)
+    strat.state["pending_exits"] = {"sh600261": "技术指标退出"}
+    strat.sandbox_state["pending_exits"] = {"sh600261": {"shares": 4000, "reason": "技术指标退出"}}
+
+    # 排定买单计划：因持仓未实际卖出，系统必须按实际持有 30% 计算，NEUTRAL 上限 35%，剩余配额严格为 5%
+    strat._plan("2026-11-11", "2026-11-12")
+
+    sb_entries = strat.sandbox_state.get("pending_entries", {})
+    p_entries = strat.state.get("pending_entries", {})
+
+    sb_wt = sum(e["target_weight"] for e in sb_entries.values())
+    p_wt = sum(e["target_weight"] for e in p_entries.values())
+
+    assert sb_wt <= 0.05 + 1e-4, f"Sandbox 提前释放了未成交卖单的预算: 实际排定 {sb_wt}"
+    assert p_wt <= 0.05 + 1e-4, f"主账户提前释放了未成交卖单的预算: 实际排定 {p_wt}"
+
+    # 2. 模拟盘中卖单未成交 (停牌或跌停)，买单尝试撮合
+    now_dt = dt.datetime(2026, 11, 12, 10, 0, 0, tzinfo=BEIJING)
+    # 人为设置一个 25% 的买单需求，测试撮合前动态重检机制
+    strat.sandbox_state["pending_exits"] = {}  # 卖单未成交，退出标记清除或未移除持仓
+    strat.sandbox_state["pending_entries"]["sh600519"] = {"target_weight": 0.25, "signal": {"name": "贵州茅台"}}
+
+    strat._tick_sandbox(quotes, now=now_dt)
+    sb_summary = sb_acc.get_summary()
+    total_wt = sb_summary["market_value"] / sb_summary["total_equity"]
+
+    # 验证最终总仓位绝不突破 35% (不会发生 30% 旧仓 + 25% 新仓 = 55% 的穿透)
+    assert total_wt <= 0.35 + 1e-3, f"卖单未成交时买单发生仓位穿透，实际总仓位达 {total_wt}"
+
+
+def test_dynamic_top50_updates_over_60_days_bounded_pinned():
+    """验证连续 60 天动态更新 Top50 候选标的，置顶标的数量严格受限，绝不发生无限累积与内存膨胀"""
+    from bounded_history_cache import BoundedHistoryCache
+
+    cache = BoundedHistoryCache(max_capacity=150)
+    assert cache.max_capacity == 150
+    assert cache.default_capacity == 150
+
+    for day in range(1, 61):
+        # 模拟每日候选轮动：30 只稳态保留，20 只换手新进标的
+        day_candidates = [f"stock_steady_{i}" for i in range(30)] + [f"stock_d{day}_{i}" for i in range(20)]
+        daily_pinned = set(day_candidates)
+        daily_pinned.add("sh600261")  # 主账户当前持仓
+        daily_pinned.add("sh603955")  # Sandbox当前持仓
+        daily_pinned.add("sh600519")  # Core 16 蓝筹观察
+
+        # 每日调用 sync_pinned 刷新
+        cache.sync_pinned(daily_pinned)
+
+        # 模拟盘中热点访问与写入
+        for s in daily_pinned:
+            cache[s] = [{"date": f"2026-11-{day:02d}", "close": 10.0}]
+        cache.trim()
+
+        # 严格验证：每日置顶标的数量完全受控，等于当期真实需要置顶的 53 只
+        assert len(cache._pinned_symbols) == 53, f"第 {day} 天置顶标的发生累积: {len(cache._pinned_symbols)}"
+        # 容量绝不异常扩容
+        assert cache.max_capacity == 150, f"第 {day} 天缓存容量发生非预期扩容: {cache.max_capacity}"
+        # 热点缓存中条目数严格受控
+        assert len(cache._hot_cache) <= 150, f"第 {day} 天热点缓存条目超标: {len(cache._hot_cache)}"
+
+    # 60 天后，第 1 天被淘汰的股票绝不留在置顶集合与热点缓存中
+    assert "stock_d1_0" not in cache._pinned_symbols, "历史过时候选未被解除置顶"
+    assert "stock_d1_0" not in cache._hot_cache, "历史过时候选未被 LRU 机制淘汰释放"
+    assert len(cache._pinned_symbols) == 53, f"60天运行后置顶总数异常: {len(cache._pinned_symbols)}"

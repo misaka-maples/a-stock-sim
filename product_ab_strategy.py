@@ -150,6 +150,18 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             "history": []
         })
 
+    def get_max_regime_total_wt(self) -> float:
+        """获取当前市场状态下的总仓位硬顶上限 (RISK_OFF: 0%, NEUTRAL: 35%, RISK_ON: 70%, STRONG: 90%)"""
+        regime = self.state.get("current_regime")
+        if not regime:
+            regime = "RISK_OFF"
+        return {
+            "RISK_OFF": 0.0,
+            "NEUTRAL": 0.35,
+            "RISK_ON": 0.70,
+            "STRONG_RISK_ON": 0.90
+        }.get(regime, 0.70)
+
     def get_current_regime_and_weights(self, as_of: str) -> Tuple[str, float, float]:
         """依据沪深300趋势与候选池市场宽度判定当前市场状态与冻结权重"""
         bench = getattr(self, "_benchmark", [])
@@ -358,7 +370,6 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         current_stock_val = sum(
             float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
             for sym, pos in self.account.positions.items()
-            if sym not in self.state.get("pending_exits", {})
         )
         current_stock_wt = current_stock_val / total_equity if total_equity > 0 else 0.0
 
@@ -381,7 +392,7 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
         accumulated_new_wt = 0.0
         if remaining_allowed_wt >= 0.02:
             for sym, wt in sorted(target_weights.items(), key=lambda x: -x[1]):
-                if sym in self.account.positions and sym not in self.state.get("pending_exits", {}):
+                if sym in self.account.positions:
                     continue
                 if accumulated_new_wt >= remaining_allowed_wt - 1e-4:
                     break
@@ -462,7 +473,6 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
             sb_stock_val = sum(
                 float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
                 for sym, pos in self.sandbox_account.positions.items()
-                if sym not in sb_exits
             )
             sb_stock_wt = sb_stock_val / sb_equity if sb_equity > 0 else 0.0
 
@@ -476,15 +486,14 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
 
             sb_sec_weights = {}
             for sym, pos in self.sandbox_account.positions.items():
-                if sym not in sb_exits:
-                    ind = sector_of(sym, self.industry_map)
-                    mv = float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
-                    sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (mv / sb_equity if sb_equity > 0 else 0)
+                ind = sector_of(sym, self.industry_map)
+                mv = float(pos.get("market_value", 0.0) or (pos.get("total_shares", pos.get("shares", 0)) * pos.get("cost_price", 0.0)))
+                sb_sec_weights[ind] = sb_sec_weights.get(ind, 0.0) + (mv / sb_equity if sb_equity > 0 else 0)
 
             sb_accumulated_new_wt = 0.0
             if sb_remaining_allowed_wt >= 0.02:
                 for sym, raw_wt in sorted(sb_target_weights.items(), key=lambda x: -x[1]):
-                    if sym in self.sandbox_account.positions and sym not in sb_exits:
+                    if sym in self.sandbox_account.positions:
                         continue
                     if sb_accumulated_new_wt >= sb_remaining_allowed_wt - 1e-4:
                         break
@@ -617,9 +626,33 @@ class ProductABHybridStrategy(DailyMomentumStrategy):
                 if price >= limit_up_price:
                     continue
 
-                shares = int(target_notional / price / 100) * 100
+                # 撮合前实时重检三道硬防线：
+                max_regime_total_wt = self.get_max_regime_total_wt()
+                # 防线 1: 组合总仓位上限 (未实际成交的卖单绝不提前释放额度)
+                curr_sb_stock_val = sum(
+                    float(p.get("market_value", 0.0) or (p.get("total_shares", p.get("shares", 0)) * p.get("cost_price", 0.0)))
+                    for p in self.sandbox_account.positions.values()
+                )
+                rem_regime_budget = max(0.0, sb_equity * max_regime_total_wt - curr_sb_stock_val)
+                if rem_regime_budget < price * 100:
+                    continue
+
+                # 防线 2: 单票上限
+                curr_pos_val = float(self.sandbox_account.positions.get(sym, {}).get("market_value", 0.0) or 0.0)
+                rem_stock_budget = max(0.0, sb_equity * self.config.max_stock_weight - curr_pos_val)
+
+                # 防线 3: 行业上限
+                ind = sector_of(sym, self.industry_map)
+                curr_sec_val = sum(
+                    float(p.get("market_value", 0.0) or (p.get("total_shares", p.get("shares", 0)) * p.get("cost_price", 0.0)))
+                    for s_k, p in self.sandbox_account.positions.items()
+                    if sector_of(s_k, self.industry_map) == ind
+                )
+                rem_sec_budget = max(0.0, sb_equity * self.config.max_sector_weight - curr_sec_val)
+
+                max_allowed_notional = min(target_notional, rem_regime_budget, rem_stock_budget, rem_sec_budget)
+                shares = int(max_allowed_notional / price / 100) * 100
                 if shares < 100:
-                    pending_entries.pop(sym, None)
                     continue
                 needed_cash = shares * price * 1.0005
                 if self.sandbox_account.cash < needed_cash:

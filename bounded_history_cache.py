@@ -31,6 +31,7 @@ class BoundedHistoryCache(MutableMapping):
                  cache_dir: Optional[Path] = None,
                  preload: Optional[Dict[str, Any]] = None):
         self.feed = feed
+        self.default_capacity = max_capacity
         self.max_capacity = max_capacity
         self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
         self._hot_cache: collections.OrderedDict = collections.OrderedDict()
@@ -72,6 +73,28 @@ class BoundedHistoryCache(MutableMapping):
     def register_known_symbols(self, symbols):
         with self._lock:
             self._known_symbols.update(symbols)
+
+    def sync_pinned(self, symbols):
+        """每日重置并同步置顶保护标的 (主账户持仓、Sandbox持仓、待执行订单、当日Top50、Core蓝筹)
+        不再属于这些范围的历史候选股票将被自动解除置顶，允许被 LRU 机制淘汰，
+        防止置顶标的随时间无限累积并导致内存缓存持续无界扩容。
+        """
+        sym_set = set(symbols)
+        with self._lock:
+            self._pinned_symbols = sym_set
+            if len(self._pinned_symbols) >= self.default_capacity:
+                new_cap = max(self.default_capacity, len(self._pinned_symbols) + 50)
+                logger.warning(
+                    f"【缓存告警】置顶标的数量 ({len(self._pinned_symbols)}) 达到或超过默认容量上限 ({self.default_capacity})！"
+                    f"启动动态保护扩容至 {new_cap}，严禁静默淘汰置顶历史行情。"
+                )
+                self.max_capacity = new_cap
+            else:
+                self.max_capacity = self.default_capacity
+
+            for s in self._pinned_symbols:
+                if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s)):
+                    _ = self.get(s)
 
     def pin(self, symbols):
         """置顶保护关键标的 (主账户持仓、Sandbox持仓、Top候选)，确保常驻内存"""
