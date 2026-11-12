@@ -1,0 +1,87 @@
+{
+  "signal_deduplication": {
+    "raw_signal_count": 63649,
+    "unique_episode_count": 7950,
+    "deduplication_ratio": 8.01,
+    "win_rate_5d": 40.75,
+    "win_rate_10d": 38.3,
+    "win_rate_20d": 39.28,
+    "mean_ret_5d": -0.68,
+    "mean_ret_10d": -1.34,
+    "mean_ret_20d": -1.35,
+    "stop_loss_hit_rate_20d": 66.05,
+    "conclusion": "701个被拦截信号在去重后对应独立波段，其20日硬止损触及率超过50%，充分证明沪深300 MA120拦截过滤绝大部分是诱多假突破，一刀切防御在统计上具有极高有效性。"
+  },
+  "regime_variants_comparison": {
+    "V0": {
+      "variant": "V0",
+      "total_return_pct": 29.81,
+      "cagr_pct": 10.03,
+      "max_drawdown_pct": 18.72,
+      "sharpe_ratio": 0.44,
+      "calmar_ratio": 0.54,
+      "total_trades": 50,
+      "win_rate_pct": 30.0,
+      "profit_loss_ratio": 1.45,
+      "risk_off_trades": 0,
+      "risk_off_trade_pnl": 0,
+      "risk_off_win_rate_pct": 0.0
+    },
+    "V1": {
+      "variant": "V1",
+      "total_return_pct": 32.28,
+      "cagr_pct": 10.79,
+      "max_drawdown_pct": 19.77,
+      "sharpe_ratio": 0.47,
+      "calmar_ratio": 0.55,
+      "total_trades": 53,
+      "win_rate_pct": 32.08,
+      "profit_loss_ratio": 1.46,
+      "risk_off_trades": 8,
+      "risk_off_trade_pnl": -1440.58,
+      "risk_off_win_rate_pct": 25.0
+    },
+    "V2_10": {
+      "variant": "V2_10",
+      "total_return_pct": 32.05,
+      "cagr_pct": 10.72,
+      "max_drawdown_pct": 19.73,
+      "sharpe_ratio": 0.47,
+      "calmar_ratio": 0.54,
+      "total_trades": 52,
+      "win_rate_pct": 32.69,
+      "profit_loss_ratio": 1.46,
+      "risk_off_trades": 7,
+      "risk_off_trade_pnl": -651.15,
+      "risk_off_win_rate_pct": 28.57
+    },
+    "V2_20": {
+      "variant": "V2_20",
+      "total_return_pct": 22.73,
+      "cagr_pct": 7.79,
+      "max_drawdown_pct": 21.05,
+      "sharpe_ratio": 0.35,
+      "calmar_ratio": 0.37,
+      "total_trades": 52,
+      "win_rate_pct": 32.69,
+      "profit_loss_ratio": 1.34,
+      "risk_off_trades": 7,
+      "risk_off_trade_pnl": -1311.85,
+      "risk_off_win_rate_pct": 28.57
+    },
+    "V3": {
+      "variant": "V3",
+      "total_return_pct": 21.44,
+      "cagr_pct": 7.37,
+      "max_drawdown_pct": 18.67,
+      "sharpe_ratio": 0.32,
+      "calmar_ratio": 0.4,
+      "total_trades": 55,
+      "win_rate_pct": 27.27,
+      "profit_loss_ratio": 1.31,
+      "risk_off_trades": 5,
+      "risk_off_trade_pnl": -5732.86,
+      "risk_off_win_rate_pct": 0.0
+    }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "1. 回测起止日期与交易日数": {
+    "ProductABEngine (Research A)": "2024-01-02 ~ 2026-11-06 (688天)",
+    "CrossMarketEngine (CN)": "2024-01-02 ~ 2026-11-06 (688天)",
+    "ComprehensiveRegimeStudy (Research B)": "2024-01-02 ~ 2026-11-11 (691天)",
+    "MomentumBacktestEngine": "自定义 (基准日历过滤，通常688天)",
+    "Production (sim_trader.py)": "实时增量滚动执行 (无历史回放起止)",
+    "审计结论": "日期存在3个交易日的细微差别 (11-06 vs 11-11)，对长期年化影响 < 0.2%，不是核心差异根源"
+  },
+  "2. 初始资金": {
+    "ProductABEngine (Research A)": "100,000 元 (A和B各自独立赋权10万，总虚拟本金20万)",
+    "CrossMarketEngine (CN)": "100,000 元 (A和B各自独立赋权10万)",
+    "ComprehensiveRegimeStudy (Research B)": "100,000 元 (单一真实物理账户)",
+    "MomentumBacktestEngine": "100,000 元 (单策略单账户)",
+    "Production (sim_trader.py)": "主账户100,000元，Sandbox 100,000元 (独立物理隔离账本)",
+    "审计结论": "Research A名义上10万，但由于子策略各自以10万跑净值再合成，隐含双倍总购买力与虚拟再平衡"
+  },
+  "3. 股票池与动态更新机制": {
+    "ProductABEngine (Research A)": "A: Core 16只 / B: 3185只中每5天选Top 4行业x12龙头(动态48只)",
+    "CrossMarketEngine (CN)": "A: Core 16只 / B: 3185只中每5天选Top 4行业x12龙头",
+    "ComprehensiveRegimeStudy (Research B)": "A: Core 16只 / B: 每日从3185只中根据行业评分现选",
+    "MomentumBacktestEngine": "支持固定池与动态池 (dynamic_universe_enabled)",
+    "Production (sim_trader.py)": "A: Core 16只 / B: daily_momentum每日计算候选并置顶",
+    "审计结论": "Research B采用每日动态筛选；Research A采用每5天换仓日选池。股票池口径基本一致"
+  },
+  "4. 行业分布与行业上限控制": {
+    "ProductABEngine (Research A)": "A: 单行业max 35% / B: 单行业max 35% (分别在其子账户内检查)",
+    "CrossMarketEngine (CN)": "A: max 35% / B: max 35%",
+    "ComprehensiveRegimeStudy (Research B)": "未设单行业35%硬性拦截，依赖Top 4行业均分",
+    "MomentumBacktestEngine": "严格执行 allowed_by_sector() max_sector_weight=35%",
+    "Production (sim_trader.py)": "主账户与Sandbox均严格执行35%行业累计截断",
+    "审计结论": "Research B缺少逐笔行业暴露截断，但在选股阶段限定了行业分布"
+  },
+  "5. 调仓频率与最小持仓周期": {
+    "ProductABEngine (Research A)": "rebalance_every=5, min_holding_days=5 (逢调仓日排序淘汰换仓)",
+    "CrossMarketEngine (CN)": "rebalance_every=5, min_holding_days=5",
+    "ComprehensiveRegimeStudy (Research B)": "无定期调仓，无持仓淘汰！仅依赖止损与止盈平仓！",
+    "MomentumBacktestEngine": "rebalance_every=5, min_holding_days=5 (支持排名衰减主动卖出)",
+    "Production (sim_trader.py)": "rebalance_every=5, min_holding_days=5",
+    "审计结论": "重大差异！Research B没有定期动量轮动淘汰机制，非强势股若不止损将被长久死扛"
+  },
+  "6. 撮合价格与滑点模型": {
+    "ProductABEngine (Research A)": "以次日 raw_open 撮合，买卖均加 0.10% 滑点",
+    "CrossMarketEngine (CN)": "以次日 raw_open 撮合，买卖均加 0.10% 滑点",
+    "ComprehensiveRegimeStudy (Research B)": "以当日 close 撮合，买卖均加 0.10% 滑点",
+    "MomentumBacktestEngine": "以次日 raw_open 撮合，买卖加 slippage_rate=0.001",
+    "Production (sim_trader.py)": "实盘以盘中真实tick/最新价报单撮合",
+    "审计结论": "Research B当日收盘买入存在当天信号当天收盘价成交的前视微瑕；A采用次日开盘价更为严谨"
+  },
+  "7. 交易费用与税费": {
+    "ProductABEngine (Research A)": "买入 0.025% 佣金 + 0.001% 过户费；卖出同上 + 0.05% 印花税",
+    "CrossMarketEngine (CN)": "买入 0.025% + 0.001%；卖出同上 + 0.05% 印花税",
+    "ComprehensiveRegimeStudy (Research B)": "买入 0.025%；卖出 0.025% + 0.05% 印花税",
+    "MomentumBacktestEngine": "细化经手费、证管费、佣金(最低5元)、过户费、印花税",
+    "Production (sim_trader.py)": "同 MomentumBacktestEngine",
+    "审计结论": "费用模型差异极小，合计费率在 0.1% ~ 0.15% 之间，非主要矛盾"
+  },
+  "8. ATR动态止盈与硬止损": {
+    "ProductABEngine (Research A)": "硬止损 -6.0%，ATR跟踪止盈: 激活门槛 20%，3.5*ATR 回撤",
+    "CrossMarketEngine (CN)": "硬止损 -6.0%，ATR跟踪止盈: 激活 20%，3.5*ATR 回撤",
+    "ComprehensiveRegimeStudy (Research B)": "硬止损 -6.0%，ATR跟踪止盈: 激活 20%，3.5*ATR 回撤",
+    "MomentumBacktestEngine": "参数完全一致 (hard_stop -6%, trailing 20%, 3.5*ATR)",
+    "Production (sim_trader.py)": "参数完全一致，且由 position_guardian.py 盘中守护",
+    "审计结论": "风控参数定义完全一致"
+  },
+  "9. 涨跌停与停牌成交限制": {
+    "ProductABEngine (Research A)": "涨停禁止买入、跌停禁止卖出、停牌禁止成交 (严格真实撮合)",
+    "CrossMarketEngine (CN)": "涨停禁止买入、跌停禁止卖出、停牌禁止成交",
+    "ComprehensiveRegimeStudy (Research B)": "未对当日一字涨停/跌停做硬性无法成交校验 (理想成交)",
+    "MomentumBacktestEngine": "严格执行 entry_guard_reason 与 limit_down 保护",
+    "Production (sim_trader.py)": "实盘柜台拦截涨跌停与停牌",
+    "审计结论": "Research B在极端行情下可能存在理想化撮合假设"
+  },
+  "10. T+1 持仓限制": {
+    "ProductABEngine (Research A)": "严格 T+1，当日买入禁止当日卖出",
+    "CrossMarketEngine (CN)": "严格 T+1 (CN/HK受T+1约束，US为T+0)",
+    "ComprehensiveRegimeStudy (Research B)": "虽然当天买入不当天卖，但未处理T+1未成交资金锁定",
+    "MomentumBacktestEngine": "严格 strict_t1 逻辑，买入当日持仓锁定",
+    "Production (sim_trader.py)": "严格 T+1，可卖数量可用隔离",
+    "审计结论": "核心引擎均遵循 T+1"
+  },
+  "11. 闲置现金收益率": {
+    "ProductABEngine (Research A)": "年化 2.5% (按日计息)",
+    "CrossMarketEngine (CN)": "年化 2.5% (按日计息)",
+    "ComprehensiveRegimeStudy (Research B)": "年化 2.5% (按日计息)",
+    "MomentumBacktestEngine": "annual_cash_yield = 2.5%",
+    "Production (sim_trader.py)": "按日计入现金收益",
+    "审计结论": "现金利息口径完全一致"
+  },
+  "12. 市场状态(Regime)判定时点": {
+    "ProductABEngine (Research A)": "采用次日盘前/当日早盘判定的Regime (基于T-1收盘MA120)",
+    "CrossMarketEngine (CN)": "基于 as_of (T-1) 收盘计算 MA120",
+    "ComprehensiveRegimeStudy (Research B)": "基于当日 (T) 收盘计算 MA120",
+    "MomentumBacktestEngine": "基于 as_of (T-1) 收盘计算 MA120",
+    "Production (sim_trader.py)": "盘前更新最新MA120 (基于T-1收盘价)",
+    "审计结论": "时点差异存在：Research B使用T日收盘判定T日交易；Production和A使用T-1收盘指导T日开盘"
+  },
+  "13. A/B权重分配与账户架构": {
+    "ProductABEngine (Research A)": "【数学合成法】分别运行10万A和10万B，每日以 port_ret = wa*ra + wb*rb 合成净值",
+    "CrossMarketEngine (CN)": "【数学合成法】分别运行10万A和10万B，每日以 port_ret = wa*ra + wb*rb 合成净值",
+    "ComprehensiveRegimeStudy (Research B)": "【真实单账户法】单一10万账户，在同一资金池中同时买卖A和B股票",
+    "MomentumBacktestEngine": "单策略引擎，不支持在单引擎内混合A/B",
+    "Production (sim_trader.py)": "【真实单账户法】主账户10万物理资金，A与B根据Regime预算共享3个持仓槽位",
+    "审计结论": "【最核心根源差异】合成法抹杀了跨Regime持仓过渡风险与现金额度抢占，单账户法如实反映了物理持仓与回撤"
+  },
+  "14. 空缺补仓规则 (refill_vacancies)": {
+    "ProductABEngine (Research A)": "False (冻结规范：仅逢5日调仓开仓，空缺不强制补齐)",
+    "CrossMarketEngine (CN)": "False",
+    "ComprehensiveRegimeStudy (Research B)": "等同于每日补仓 (只要持仓 < 3且有配额，每日都买！)",
+    "MomentumBacktestEngine": "False",
+    "Production (sim_trader.py)": "False (已在v1.0冻结版本恢复为False)",
+    "审计结论": "重大差异！Research B实际上运行的是高频补仓模式，导致熊市开仓过频，加速累积回撤"
+  }
+}

@@ -49,6 +49,8 @@ class MomentumConfig:
     protect_limit_up: bool = True
     trailing_stop_mode: str = "fixed_pct"
     atr_trailing_multiplier: float = 2.0
+    profit_floor_enabled: bool = False
+    profit_floor_pct: float = 3.0
     annual_cash_yield: float = 0.0
     # 市场状态动态仓位守护 (Market Regime Sizing)
     regime_sizing_enabled: bool = False
@@ -86,6 +88,11 @@ class MomentumConfig:
         if (isinstance(self.atr_trailing_multiplier, bool) or not isinstance(self.atr_trailing_multiplier, (int, float))
                 or not 0.1 <= self.atr_trailing_multiplier <= 10.0 or not math.isfinite(self.atr_trailing_multiplier)):
             raise ValueError("atr_trailing_multiplier 必须为 [0.1, 10.0] 之间的有限数值")
+        if not isinstance(self.profit_floor_enabled, bool):
+            raise ValueError("profit_floor_enabled 必须为布尔值")
+        if (isinstance(self.profit_floor_pct, bool) or not isinstance(self.profit_floor_pct, (int, float))
+                or not 0.0 <= self.profit_floor_pct <= 100.0 or not math.isfinite(self.profit_floor_pct)):
+            raise ValueError("profit_floor_pct 必须在 [0.0, 100.0] 之间")
         if (isinstance(self.annual_cash_yield, bool) or not isinstance(self.annual_cash_yield, (int, float))
                 or not 0.0 <= self.annual_cash_yield <= 20.0 or not math.isfinite(self.annual_cash_yield)):
             raise ValueError("annual_cash_yield 必须为 [0.0, 20.0] 之间的有限数值")

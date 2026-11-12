@@ -549,12 +549,21 @@ class NotificationManager:
             if diagnostic_report and "attribution" in diagnostic_report:
                 tracking_error_pct = float(diagnostic_report["attribution"].get("execution_drag", {}).get("cum_tracking_error_pct", 0.0))
 
-            title = f"【Product AB双账本】{pnl_icon} {today_str} 收盘战报 (主账户{today_pnl_pct:+.2f}% | 测试{sb_pnl_pct:+.2f}%)"
-            summary_text = (
-                f"主账户 ¥{total_equity:,.2f} ({today_pnl_pct:+.2f}%) | "
-                f"Sandbox ¥{sb_equity:,.2f} ({sb_pnl_pct:+.2f}%) | "
-                f"模式: {regime} (A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)"
-            )
+            is_v2 = (strategy_status and strategy_status.get("strategy_id") in ("Product_AB_Balanced_v2", "Product_B_Aggressive_v2"))
+            if is_v2:
+                title = f"【Product AB v2.0双账户】{pnl_icon} {today_str} 收盘战报 (Balanced稳健{today_pnl_pct:+.2f}% | Aggressive进攻{sb_pnl_pct:+.2f}%)"
+                summary_text = (
+                    f"Balanced稳健 ¥{total_equity:,.2f} ({today_pnl_pct:+.2f}%) | "
+                    f"Aggressive进攻 ¥{sb_equity:,.2f} ({sb_pnl_pct:+.2f}%) | "
+                    f"状态: {regime} (A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)"
+                )
+            else:
+                title = f"【Product AB双账本】{pnl_icon} {today_str} 收盘战报 (主账户{today_pnl_pct:+.2f}% | 测试{sb_pnl_pct:+.2f}%)"
+                summary_text = (
+                    f"主账户 ¥{total_equity:,.2f} ({today_pnl_pct:+.2f}%) | "
+                    f"Sandbox ¥{sb_equity:,.2f} ({sb_pnl_pct:+.2f}%) | "
+                    f"模式: {regime} (A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)"
+                )
 
             regime_desc_map = {
                 "RISK_OFF": "防守避险 (A底盘100% 严控回撤，新买入上限0%，全额现金防御)",
@@ -575,19 +584,24 @@ class NotificationManager:
             sb_pos_cnt = st.get("sandbox_positions_count", len(sb_positions))
             sb_max_pos = st.get("sandbox_max_positions", target_pos_count)
 
+            account1_header = "### 1️⃣ 🛡️ Balanced 稳健账户 (主账户 · 中等风险稳健增长)" if is_v2 else "### 1️⃣ 主账户 (生产历史连续)"
+            header_title = f"# 📊 Product AB v2.0 双账户每日对账战报 ({today_str})" if is_v2 else f"# 📊 Product AB 每日收盘对账战报 ({today_str})"
+
             lines = [
-                f"# 📊 Product AB 每日收盘对账战报 ({today_str})",
+                header_title,
                 f"> **市场状态**：`{regime}` ({regime_desc})",
                 f"> **策略配置**：A底盘蓝筹 **{w_a*100:.0f}%** / B行业动量 **{w_b*100:.0f}%** | 股票上限: **{max_stock_wt_pct:.0f}%**",
                 "",
                 "---",
                 "",
-                "### 1️⃣ 主账户 (生产历史连续)",
+                account1_header,
                 f"- **总资产(权益)**：**¥{total_equity:,.2f}**",
                 f"- **今日盈亏**：**{today_pnl:+,.2f} 元 ({today_pnl_pct:+.2f}%)**",
                 f"- **接管以来累计收益**：**{takeover_ret_pct:+.2f}%** (自 2026-11-09 接管，全历史 {total_pnl_pct:+.2f}%)",
                 f"- **可用现金**：¥{cash:,.2f} (实际股票仓位: **{primary_stock_wt:.1f}%**，闲置资金防御: {100-primary_stock_wt:.1f}%)",
-                f"- **当前持仓数量**：**{primary_pos_cnt} / {primary_max_pos} 只** (最多持有 {primary_max_pos} 只，不强制补齐)",
+                f"- **持仓数量约束**：**{primary_pos_cnt} / {primary_max_pos} 只** (上限 {primary_max_pos} 只，单票<=15%，行业<=30%)",
+                f"- **风控纪律**：-6%硬止损 | 盘中跌破MA20趋势避险 | 3.5×ATR跟踪止盈 | +3%浮盈保护底线",
+                f"- **组合回撤风控**：当前回撤 {st.get('drawdown_pct', 0.0):.2f}% (预警线 8%，复核线 12%)",
                 f"- **持仓市值**：¥{market_value:,.2f}",
                 "- **持仓明细**："
             ]
@@ -604,17 +618,22 @@ class NotificationManager:
                     pnl_pct = float(pos.get("pnl_pct", 0.0))
                     lines.append(f"  - **{p_name}** (`{sym}`): {shares:,}股 | 成本 ¥{cost:.2f} → 现价 ¥{last:.2f} | 浮盈 **{pnl:+,.2f}元 ({pnl_pct:+.2f}%)**")
 
+            account2_header = "### 2️⃣ ⚡ Aggressive 进攻账户 (第二账户 · 高风险积极进攻)" if is_v2 else "### 2️⃣ 测试账本 (Sandbox 纯净前向验证)"
+            account2_desc = f"- **策略与选股**：纯 Product B 动态行业动量进攻 (100% B, 0% A) | 单票<=25% | 行业<=40%" if is_v2 else f"- **累计净值跟踪偏离**：**{tracking_error_pct:+.2f}%** (与理论无摩擦混动基准对照，受控正常)"
+            account2_risk = f"- **风控纪律**：-6%硬止损 | 连续2日收盘跌破MA20退出 | 4.5×ATR宽幅跟踪(不设底线) | 组合回撤 {st.get('sandbox_drawdown_pct', 0.0):.2f}% (预警线15%, 复核线20%)" if is_v2 else f"- **接管以来累计收益**：**{sb_cum_ret_pct:+.2f}%** (标准 100,000.00 元起步纯净独立核算)"
+
             lines.extend([
                 "",
                 "---",
                 "",
-                "### 2️⃣ 测试账本 (Sandbox 纯净前向验证)",
+                account2_header,
                 f"- **总资产(权益)**：**¥{sb_equity:,.2f}**",
                 f"- **今日盈亏**：**{sb_pnl:+,.2f} 元 ({sb_pnl_pct:+.2f}%)**",
                 f"- **接管以来累计收益**：**{sb_cum_ret_pct:+.2f}%** (标准 100,000.00 元起步纯净独立核算)",
                 f"- **可用现金**：¥{sb_cash:,.2f} (实际股票仓位: **{sb_stock_wt:.1f}%**)",
-                f"- **当前持仓数量**：**{sb_pos_cnt} / {sb_max_pos} 只** (最多持有 {sb_max_pos} 只，不强制补齐)",
-                f"- **累计净值跟踪偏离**：**{tracking_error_pct:+.2f}%** (与理论无摩擦混动基准对照，受控正常)",
+                f"- **持仓数量约束**：**{sb_pos_cnt} / {sb_max_pos} 只** (上限 {sb_max_pos} 只，不强制补齐)",
+                account2_desc,
+                account2_risk,
                 "- **持仓明细**："
             ])
 

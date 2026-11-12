@@ -47,7 +47,7 @@ from history_data import PRESET_POOLS, normalize_symbol_for_tencent
 from notifier import NotificationManager, WxPusherClient
 from snapshot_manager import SnapshotManager, SNAPSHOTS_DIR
 from dataclasses import asdict
-from strategy_rules import MomentumConfig
+from strategy_rules import MomentumConfig, sector_of
 from history_data import last_completed_trading_day
 from trade_calendar import is_trading_day
 from api_auth import install_auth
@@ -142,7 +142,7 @@ def sync_execution_settings(participation_rate=None):
 
 def configured_strategy(strategy_id, account, watchlist, parameters):
     parameters = dict(parameters)
-    if not strategy_id.startswith("Momentum_Rotation") and strategy_id != "Product_AB":
+    if not strategy_id.startswith("Momentum_Rotation") and strategy_id not in ("Product_AB", "Product_AB_Balanced_v2", "Product_B_Aggressive_v2"):
         # Execution participation belongs to the broker for legacy strategies;
         # constructors without **kwargs cannot accept unrelated risk settings.
         parameters.pop("participation_rate", None)
@@ -183,7 +183,7 @@ def validate_snapshot_settings(snapshot):
     parameters = saved.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("快照策略参数必须为对象")
-    if strategy_id and (strategy_id.startswith("Momentum_Rotation") or strategy_id == "Product_AB"):
+    if strategy_id and (strategy_id.startswith("Momentum_Rotation") or strategy_id in ("Product_AB", "Product_AB_Balanced_v2", "Product_B_Aggressive_v2")):
         MomentumConfig.from_dict(parameters)
     else:
         risk_fields = {k: v for k, v in parameters.items() if k in MomentumConfig.__dataclass_fields__}
@@ -1180,6 +1180,8 @@ def list_strategies():
         current_id = getattr(ctx.strategy, "name", "Momentum_Rotation")
         current_display = getattr(ctx.strategy, "display_name", current_id)
         catalog = [
+            ("Product_AB_Balanced_v2", "Product AB Balanced v2.0 (稳健增长)", "中等风险、稳健增长。A/B混动底盘，Regime仓位硬顶(30%~80%)，单票15%，单行业30%，+3%浮盈保护底线与3.5ATR跟踪。"),
+            ("Product_B_Aggressive_v2", "Product B Aggressive v2.0 (激进进攻)", "高风险、积极进攻。纯Product B全市场动态行业动量，Regime仓位硬顶(50%~100%)，单票25%，单行业40%，4.5ATR宽幅跟踪，连续2日收盘跌破MA20退出。"),
             ("Product_AB", "Product AB 自适应混动系统 (Base Engine + Turbo Engine)", "Base Engine (Core 16蓝筹) + Turbo Engine (全市场行业龙头) 自适应混动系统，包含独立影子账本与执行偏差监控。"),
             ("Momentum_Rotation_Pro", "日线动量增强（MA120 / 高位过滤）", "20/60日动量排序、风险预算、行业限仓；支持每日空位补仓，已有持仓按周期轮动，日线信号随后交易日执行。"),
             ("Momentum_Rotation", "基础日线动量", "基础动量对照组；使用相同的数据、成交和风险框架。"),
@@ -1246,6 +1248,147 @@ def get_strategy_sandbox_ledger():
                 "initial_cash": sb_acc.initial_cash,
                 "total_return_pct": round((summary["total_equity"] / sb_acc.initial_cash - 1.0) * 100.0, 2)
             }
+        }
+
+
+
+def extract_account_v2_status(strat, acc, risk_level, default_regime_caps):
+    if not strat or not acc:
+        return None
+    summary = acc.get_summary()
+    equity = float(summary.get("total_equity", 100000.0))
+    cash = float(acc.cash)
+    mkt_val = float(summary.get("market_value", 0.0))
+    init_cash = float(acc.initial_cash or 100000.0)
+    total_ret_pct = round((equity / init_cash - 1.0) * 100.0, 2)
+    stock_wt = round(mkt_val / equity, 4) if equity > 0 else 0.0
+
+    alloc_st = strat.allocation_status() if hasattr(strat, "allocation_status") else {}
+    regime = strat.state.get("current_regime", "RISK_OFF")
+    max_cap = strat.get_max_regime_total_wt(regime) if hasattr(strat, "get_max_regime_total_wt") else default_regime_caps.get(regime, 0.0)
+
+    cfg = getattr(strat, "config", None)
+    max_pos = getattr(cfg, "max_positions", 3)
+    max_stk_wt = getattr(cfg, "max_stock_weight", 0.15)
+    max_sec_wt = getattr(cfg, "max_sector_weight", 0.30)
+
+    w_a = float(strat.state.get("weight_a", 0.70)) if hasattr(strat, "symbols_a") else 0.0
+    w_b = float(strat.state.get("weight_b", 0.30)) if hasattr(strat, "symbols_a") else 1.0
+
+    peak_eq = float(strat.state.get("peak_equity", equity))
+    dd_pct = round(((peak_eq - equity) / peak_eq * 100.0) if peak_eq > 0 else 0.0, 2)
+    is_alert = alloc_st.get("is_risk_alert", False)
+    is_freeze = alloc_st.get("is_risk_freeze", False)
+    risk_status_desc = "冻结新增开仓" if is_freeze else ("回撤预警" if is_alert else "正常")
+
+    allow_entries = alloc_st.get("allow_new_entries", False)
+    no_entry_reason = alloc_st.get("no_entry_reason", "")
+
+    monitors = strat.state.get("position_monitors", {})
+    pos_list = []
+    top_single_stock_wt = 0.0
+    sector_weights = {}
+    for sym, pos in acc.positions.items():
+        pos_val = float(pos.get("market_value", 0.0) or (pos.get("total_shares", 0) * pos.get("cost_price", 0.0)))
+        p_wt = round(pos_val / equity, 4) if equity > 0 else 0.0
+        top_single_stock_wt = max(top_single_stock_wt, p_wt)
+        ind = sector_of(sym, getattr(strat, "industry_map", None)) if hasattr(strat, "industry_map") else "其他"
+        sector_weights[ind] = sector_weights.get(ind, 0.0) + p_wt
+
+        mon = monitors.get(sym, {})
+        cost = float(pos.get("cost_price", 0.0))
+        cur_p = float(pos.get("last_price", cost))
+        pnl_pct = round(((cur_p / cost) - 1.0) * 100.0, 2) if cost > 0 else 0.0
+
+        pos_list.append({
+            "symbol": sym,
+            "name": pos.get("name", sym),
+            "sector": ind,
+            "shares": pos.get("total_shares", 0),
+            "available_shares": pos.get("available_shares", 0),
+            "cost_price": cost,
+            "last_price": cur_p,
+            "market_value": pos_val,
+            "weight": p_wt,
+            "pnl_pct": pnl_pct,
+            "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0)),
+            "peak_price": mon.get("peak_price", cost),
+            "peak_profit_pct": round(mon.get("peak_profit_pct", 0.0), 2),
+            "trailing_stop_line": mon.get("trailing_stop_line", 0.0),
+            "hard_stop_line": round(cost * 0.94, 2),
+            "profit_floor_locked": mon.get("trailing_locked_profit", (mon.get("trailing_stop_line", 0.0) >= cost * 1.03))
+        })
+
+    top_single_sector_wt = max(sector_weights.values()) if sector_weights else 0.0
+
+    today_iso = datetime.datetime.now(BEIJING).date().isoformat()
+    today_trades = [t for t in acc.trades if t.get("time", "").startswith(today_iso)]
+    today_turnover = sum(float(t.get("amount", 0.0)) for t in today_trades)
+    today_fees = sum(float(t.get("fees", 0.0)) for t in today_trades)
+
+    return {
+        "strategy_id": strat.name,
+        "strategy_display_name": getattr(strat, "display_name", strat.name),
+        "risk_level": risk_level,
+        "regime": regime,
+        "max_regime_total_wt": max_cap,
+        "current_stock_weight": stock_wt,
+        "positions_count": len(acc.positions),
+        "max_positions": max_pos,
+        "max_stock_weight": max_stk_wt,
+        "max_sector_weight": max_sec_wt,
+        "top_single_stock_weight": round(top_single_stock_wt, 4),
+        "top_single_sector_weight": round(top_single_sector_wt, 4),
+        "weight_a": w_a,
+        "weight_b": w_b,
+        "total_pnl_pct": total_ret_pct,
+        "total_equity": equity,
+        "cash": cash,
+        "market_value": mkt_val,
+        "peak_equity": peak_eq,
+        "current_drawdown_pct": dd_pct,
+        "risk_status": risk_status_desc,
+        "is_alert": is_alert,
+        "is_freeze": is_freeze,
+        "allow_new_entries": allow_entries,
+        "no_entry_reason": no_entry_reason,
+        "positions": pos_list,
+        "pending_entries": strat.state.get("pending_entries", {}),
+        "pending_exits": strat.state.get("pending_exits", {}),
+        "today_stats": {
+            "today_trades_count": len(today_trades),
+            "today_turnover": round(today_turnover, 2),
+            "today_fees": round(today_fees, 2)
+        },
+        "summary": summary
+    }
+
+
+@app.get("/api/strategy/dual_accounts")
+def get_strategy_dual_accounts():
+    """获取 Product AB v2.0 稳健账户 (Balanced) 与 进攻账户 (Aggressive) 18维全景对账数据"""
+    with ctx.lock:
+        if not ctx.strategy:
+            return {"success": False, "message": "当前未载入策略"}
+
+        # 主账户 (Balanced v2.0)
+        bal_strat = ctx.strategy
+        bal_acc = ctx.account
+        bal_caps = {"RISK_OFF": 0.30, "NEUTRAL": 0.45, "RISK_ON": 0.65, "STRONG_RISK_ON": 0.80}
+        primary_info = extract_account_v2_status(bal_strat, bal_acc, "中等风险、稳健增长", bal_caps)
+
+        # 第二账户 (Aggressive v2.0)
+        agg_strat = getattr(ctx.strategy, "aggressive_strategy", getattr(ctx.strategy, "sandbox_strategy", None))
+        agg_acc = getattr(ctx.strategy, "sandbox_account", None)
+        agg_caps = {"RISK_OFF": 0.50, "NEUTRAL": 0.70, "RISK_ON": 0.90, "STRONG_RISK_ON": 1.00}
+        secondary_info = extract_account_v2_status(agg_strat, agg_acc, "高风险、积极进攻", agg_caps) if (agg_strat and agg_acc) else None
+
+        return {
+            "success": True,
+            "version": "v2.0",
+            "active_strategy": getattr(ctx.strategy, "name", "Product_AB_Balanced_v2"),
+            "primary": primary_info,
+            "secondary": secondary_info
         }
 
 

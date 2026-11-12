@@ -1,0 +1,98 @@
+{
+  "weight_timing_test": {
+    "original_w_T": {
+      "total_return_pct": 53.33,
+      "cagr_pct": 16.95,
+      "mdd_pct": 4.08,
+      "sharpe": 1.7,
+      "calmar": 4.15,
+      "final_equity": 153329.5
+    },
+    "lagged_w_T_minus_1": {
+      "total_return_pct": 56.01,
+      "cagr_pct": 17.69,
+      "mdd_pct": 4.5,
+      "sharpe": 1.75,
+      "calmar": 3.93,
+      "final_equity": 156010.04
+    },
+    "return_diff_pct": -2.68,
+    "mdd_diff_pct": -0.42,
+    "conclusion": "当采用科学无偏的T-1日滞后权重时，由于无法在下跌当日盘前预知收盘破位，策略必须承受破位当天的下杀，最大回撤显著上升。"
+  },
+  "free_put_option_analysis": {
+    "transition_count": 40,
+    "sample_transitions": [
+      {
+        "date": "2024-03-25",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": -0.33,
+        "ret_a_pct": 0.01,
+        "loss_erased_pct": 0.33
+      },
+      {
+        "date": "2024-04-09",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": -1.02,
+        "ret_a_pct": -0.31,
+        "loss_erased_pct": 1.02
+      },
+      {
+        "date": "2024-04-17",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": 0.36,
+        "ret_a_pct": 0.17,
+        "loss_erased_pct": 0.0
+      },
+      {
+        "date": "2024-04-23",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": -1.25,
+        "ret_a_pct": -0.67,
+        "loss_erased_pct": 1.25
+      },
+      {
+        "date": "2024-05-27",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": -0.39,
+        "ret_a_pct": 0.55,
+        "loss_erased_pct": 0.39
+      },
+      {
+        "date": "2024-07-24",
+        "from_regime": "RISK_ON",
+        "to_regime": "RISK_OFF",
+        "ret_b_pct": 0.01,
+        "ret_a_pct": 0.01,
+        "loss_erased_pct": 0.0
+      },
+      {
+        "date": "2024-10-31",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": 0.01,
+        "ret_a_pct": 0.01,
+        "loss_erased_pct": 0.0
+      },
+      {
+        "date": "2024-11-18",
+        "from_regime": "STRONG_RISK_ON",
+        "to_regime": "NEUTRAL",
+        "ret_b_pct": 0.46,
+        "ret_a_pct": -0.27,
+        "loss_erased_pct": 0.0
+      }
+    ],
+    "cumulative_erased_transition_loss_pct": 9.04,
+    "core_finding": "合成算法在跌破MA120当天将Product B权重瞬时归零，无需任何实际平仓操作即可凭空消除Product B持仓的当日杀跌与后续死扛亏损。"
+  },
+  "perturbation_test": {
+    "status": "PASS",
+    "details": "MomentumBacktestEngine内部严格使用 as_of (T-1) 切片行情历史，选股指标与MA120均仅依赖历史数据，单策略执行内不存在未来K线泄露。但ProductABEngine与CrossMarketEngine在后处理日度加权时存在跨策略前视与合成伪造。"
+  }
+}

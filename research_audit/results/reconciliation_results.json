@@ -1,0 +1,58 @@
+{
+  "first_divergence": {
+    "date": "2024-03-01",
+    "synth_equity": 100367.72,
+    "v0_equity": 103691.14473716615,
+    "diff_pct": -3.32,
+    "synth_regime": "RISK_ON",
+    "v0_regime": "STRONG_RISK_ON",
+    "synth_ret_today": 0.0099,
+    "v0_exposure_today": 89.4611441306142
+  },
+  "stress_period_performance": {
+    "2024_Q1_Crash": {
+      "start_date": "2024-01-02",
+      "end_date": "2024-02-08",
+      "synth_return_pct": 0.27,
+      "research_b_v0_return_pct": 0.27,
+      "diff_pct": -0.0
+    },
+    "2024_Apr_New9": {
+      "start_date": "2024-04-01",
+      "end_date": "2024-04-30",
+      "synth_return_pct": 1.52,
+      "research_b_v0_return_pct": 2.75,
+      "diff_pct": -1.23
+    },
+    "2024_Sep_924Rally": {
+      "start_date": "2024-09-24",
+      "end_date": "2024-10-08",
+      "synth_return_pct": 4.57,
+      "research_b_v0_return_pct": 16.03,
+      "diff_pct": -11.46
+    },
+    "2024_Oct_Post924": {
+      "start_date": "2024-10-09",
+      "end_date": "2024-11-06",
+      "synth_return_pct": 1.34,
+      "research_b_v0_return_pct": -3.98,
+      "diff_pct": 5.31
+    }
+  },
+  "summary_comparison": {
+    "Research_A_Synthetic_Blending": {
+      "total_return_pct": 53.33,
+      "cagr_pct": 16.95,
+      "mdd_pct": 4.08,
+      "sharpe": 1.7,
+      "calmar": 4.15
+    },
+    "Research_B_Single_Account_V0": {
+      "total_return_pct": 29.81,
+      "cagr_pct": 10.03,
+      "mdd_pct": 18.72,
+      "sharpe": 0.44,
+      "calmar": 0.54
+    }
+  }
+}
