@@ -675,6 +675,50 @@
     </div>
   </header>
 
+<div class="panel" id="dualAccountsPanel" style="margin-bottom: 20px; border: 1px solid rgba(56, 189, 248, 0.35); background: rgba(15, 23, 42, 0.85);">
+    <div class="panel-header" style="flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <div class="panel-title" style="font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+          <span>⚖️ Product AB v2.0 双账户量化控制台</span>
+          <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid #6366f1;">双账户独立策略 · 物理隔离运行</span>
+        </div>
+        <div class="tab-group" id="dualAccountTabGroup">
+          <button id="tabBtnDualSplit" class="tab-btn active" onclick="switchDualAccountTab('split')">⚖️ 并列全景对比</button>
+          <button id="tabBtnDualBalanced" class="tab-btn" onclick="switchDualAccountTab('balanced')">🛡️ Balanced 稳健账户 (主账户)</button>
+          <button id="tabBtnDualAggressive" class="tab-btn" onclick="switchDualAccountTab('aggressive')">⚡ Aggressive 进攻账户 (第二账户)</button>
+        </div>
+      </div>
+      <div id="dualAccountGlobalStatus" style="font-size: 12px; color: var(--text-muted); display: flex; gap: 12px; align-items: center;">
+        <span id="dualRegimeBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #38bdf8;">市场状态: 载入中...</span>
+        <span id="dualSwitchTime" style="font-size: 11px;">v2.0 运行中</span>
+      </div>
+    </div>
+
+    <!-- 并列展示区 (Grid) -->
+    <div id="dualViewSplit" class="dual-view-content" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap: 16px; padding: 16px;">
+      <div id="balancedCardSplit" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 14px;">
+        <div style="color:var(--text-muted); font-size:12px;">正在加载 Balanced 稳健账户...</div>
+      </div>
+      <div id="aggressiveCardSplit" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; padding: 14px;">
+        <div style="color:var(--text-muted); font-size:12px;">正在加载 Aggressive 进攻账户...</div>
+      </div>
+    </div>
+
+    <!-- 单独展示区: Balanced 独享视图 -->
+    <div id="dualViewBalanced" class="dual-view-content" style="display: none; padding: 16px;">
+      <div id="balancedCardSingle" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 16px;">
+      </div>
+    </div>
+
+    <!-- 单独展示区: Aggressive 独享视图 -->
+    <div id="dualViewAggressive" class="dual-view-content" style="display: none; padding: 16px;">
+      <div id="aggressiveCardSingle" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; padding: 16px;">
+      </div>
+    </div>
+  </div>
+
+
+
   <!-- 核心资产看板 (6维全景指标) -->
   <div class="metrics-grid">
     <div class="metric-card">
@@ -1214,47 +1258,7 @@
 
 
   <!-- 🛡️ Product AB v2.0 双账户量化对账控制台 (Balanced 稳健账户 vs Aggressive 进攻账户) -->
-  <div class="panel" id="dualAccountsPanel" style="margin-bottom: 20px; border: 1px solid rgba(56, 189, 248, 0.35); background: rgba(15, 23, 42, 0.85);">
-    <div class="panel-header" style="flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
-      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-        <div class="panel-title" style="font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-          <span>⚖️ Product AB v2.0 双账户量化控制台</span>
-          <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid #6366f1;">双账户独立策略 · 物理隔离运行</span>
-        </div>
-        <div class="tab-group" id="dualAccountTabGroup">
-          <button id="tabBtnDualSplit" class="tab-btn active" onclick="switchDualAccountTab('split')">⚖️ 并列全景对比</button>
-          <button id="tabBtnDualBalanced" class="tab-btn" onclick="switchDualAccountTab('balanced')">🛡️ Balanced 稳健账户 (主账户)</button>
-          <button id="tabBtnDualAggressive" class="tab-btn" onclick="switchDualAccountTab('aggressive')">⚡ Aggressive 进攻账户 (第二账户)</button>
-        </div>
-      </div>
-      <div id="dualAccountGlobalStatus" style="font-size: 12px; color: var(--text-muted); display: flex; gap: 12px; align-items: center;">
-        <span id="dualRegimeBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #38bdf8;">市场状态: 载入中...</span>
-        <span id="dualSwitchTime" style="font-size: 11px;">v2.0 运行中</span>
-      </div>
-    </div>
-
-    <!-- 并列展示区 (Grid) -->
-    <div id="dualViewSplit" class="dual-view-content" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap: 16px; padding: 16px;">
-      <div id="balancedCardSplit" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 14px;">
-        <div style="color:var(--text-muted); font-size:12px;">正在加载 Balanced 稳健账户...</div>
-      </div>
-      <div id="aggressiveCardSplit" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; padding: 14px;">
-        <div style="color:var(--text-muted); font-size:12px;">正在加载 Aggressive 进攻账户...</div>
-      </div>
-    </div>
-
-    <!-- 单独展示区: Balanced 独享视图 -->
-    <div id="dualViewBalanced" class="dual-view-content" style="display: none; padding: 16px;">
-      <div id="balancedCardSingle" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 16px;">
-      </div>
-    </div>
-
-    <!-- 单独展示区: Aggressive 独享视图 -->
-    <div id="dualViewAggressive" class="dual-view-content" style="display: none; padding: 16px;">
-      <div id="aggressiveCardSingle" style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; padding: 16px;">
-      </div>
-    </div>
-  </div>
+  
 
   <!-- 主体工作区 -->
   <div class="main-grid">
@@ -1491,10 +1495,14 @@
       startStockQuoteRefresh();
       loadBacktestConfiguration().catch(() => {});
       restoreBacktestJob().catch(() => {});
+      fetchDualAccounts();
       fetchData();
       fetchNotifyStatus();
       if (timerId) clearInterval(timerId);
-      timerId = setInterval(fetchData, refreshInterval);
+      timerId = setInterval(() => {
+        fetchData();
+        fetchDualAccounts();
+      }, refreshInterval);
     }
 
     async function initializeAuth() {
@@ -4159,6 +4167,7 @@
         if (data.success) {
           cachedDualData = data;
           renderDualAccounts(data);
+          updateTopMetricsWithDual(data);
         }
       } catch (err) {
         console.error('获取双账户对账数据异常:', err);
@@ -4172,32 +4181,35 @@
       const themeColor = isAggressive ? '#fbbf24' : '#38bdf8';
       const themeBg = isAggressive ? 'rgba(245, 158, 11, 0.12)' : 'rgba(56, 189, 248, 0.12)';
       const themeBorder = isAggressive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)';
-      const pnlUp = acc.total_pnl_pct >= 0;
+      const pnlPct = Number(acc.total_pnl_pct || 0);
+      const pnlUp = pnlPct >= 0;
 
       const riskBadgeStyle = acc.is_freeze ? 'background:#ef4444; color:#fff;' : (acc.is_alert ? 'background:#f59e0b; color:#fff;' : 'background:rgba(16,185,129,0.2); color:#10b981;');
       const allowBadgeStyle = acc.allow_new_entries ? 'background:rgba(16,185,129,0.2); color:#10b981;' : 'background:rgba(239,68,68,0.2); color:#ef4444;';
 
-      const budgetDesc = isAggressive ? '100% Product B 纯动态动量' : `A蓝筹 ${(acc.weight_a*100).toFixed(0)}% / B动量 ${(acc.weight_b*100).toFixed(0)}%`;
+      const weightA = Number(acc.weight_a || 0);
+      const weightB = Number(acc.weight_b || 0);
+      const budgetDesc = isAggressive ? '100% Product B 纯动态动量' : `A蓝筹 ${(weightA*100).toFixed(0)}% / B动量 ${(weightB*100).toFixed(0)}%`;
       const ruleDesc = isAggressive ? '-6%硬止损 · 连续2日跌破MA20退出 · 4.5×ATR宽幅跟踪(无底线)' : '-6%硬止损 · 盘中跌破MA20趋势退出 · 3.5×ATR跟踪 · +3%浮盈保护底线';
       const ddLineDesc = isAggressive ? '回撤15%预警 / 20%复核冻结' : '回撤8%预警 / 12%复核冻结';
 
-      // 持仓列表行
+      const positions = Array.isArray(acc.positions) ? acc.positions : [];
       let posRows = '';
-      if (!acc.positions || acc.positions.length === 0) {
-        posRows = `<tr><td colspan="8" class="text-center" style="color:var(--text-muted); padding:10px;">当前空仓，全额现金防御</td></tr>`;
+      if (positions.length === 0) {
+        posRows = `<tr><td colspan="8" class="text-center" style="color:var(--text-muted); padding:16px;">当前空仓，全额现金防御 (随时可根据市场状态开仓)</td></tr>`;
       } else {
-        posRows = acc.positions.map(p => {
-          const up = p.pnl_pct >= 0;
+        posRows = positions.map(p => {
+          const up = Number(p.pnl_pct || 0) >= 0;
           const floorText = isAggressive ? '<span style="color:var(--text-muted)">宽幅无底线</span>' : (p.profit_floor_locked ? '<span style="color:#10b981; font-weight:600;">🔒 +3%锁定</span>' : '<span style="color:var(--text-muted)">待冲高20%</span>');
-          const stopLine = p.trailing_stop_line > 0 ? `¥${p.trailing_stop_line.toFixed(2)}` : `--`;
+          const stopLine = p.trailing_stop_line > 0 ? `¥${Number(p.trailing_stop_line).toFixed(2)}` : `--`;
           return `
             <tr>
-              <td><strong>${p.name}</strong><br><span style="font-size:10px; color:var(--text-muted)">${p.symbol} · ${p.sector}</span></td>
-              <td class="text-right">${p.shares.toLocaleString()} 股<br><span style="font-size:10px; color:var(--text-muted)">可卖:${p.available_shares}</span></td>
-              <td class="text-right">¥${p.cost_price.toFixed(2)}</td>
-              <td class="text-right">¥${p.last_price.toFixed(2)}</td>
-              <td class="text-right ${up?'up':'down'}"><strong>${up?'+':''}${p.pnl_pct.toFixed(2)}%</strong></td>
-              <td class="text-right">${(p.weight*100).toFixed(1)}%</td>
+              <td><strong>${p.name || p.symbol}</strong><br><span style="font-size:10px; color:var(--text-muted)">${p.symbol} · ${p.sector || '全市场'}</span></td>
+              <td class="text-right">${(p.shares || 0).toLocaleString()} 股<br><span style="font-size:10px; color:var(--text-muted)">可卖:${p.available_shares || 0}</span></td>
+              <td class="text-right">¥${Number(p.cost_price || 0).toFixed(2)}</td>
+              <td class="text-right">¥${Number(p.last_price || 0).toFixed(2)}</td>
+              <td class="text-right ${up?'up':'down'}"><strong>${up?'+':''}${Number(p.pnl_pct || 0).toFixed(2)}%</strong></td>
+              <td class="text-right">${(Number(p.weight || 0)*100).toFixed(1)}%</td>
               <td class="text-right">${stopLine}</td>
               <td class="text-center">${floorText}</td>
             </tr>
@@ -4205,7 +4217,6 @@
         }).join('');
       }
 
-      // 待买待卖订单
       const pendEntries = Object.entries(acc.pending_entries || {});
       const pendExits = Object.entries(acc.pending_exits || {});
       let ordersHtml = '';
@@ -4214,25 +4225,42 @@
       } else {
         ordersHtml = [
           ...pendExits.map(([s, e]) => `<span class="badge" style="background:rgba(239,68,68,0.2); color:#ef4444;">🔴 卖出 ${s} (${e.reason||'退出'})</span>`),
-          ...pendEntries.map(([s, e]) => `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981;">🟢 买入 ${s} (目标:${(e.target_weight*100).toFixed(1)}%)</span>`)
+          ...pendEntries.map(([s, e]) => `<span class="badge" style="background:rgba(16,185,129,0.2); color:#10b981;">🟢 买入 ${s} (目标:${(Number(e.target_weight||0)*100).toFixed(1)}%)</span>`)
         ].join(' ');
       }
+
+      const todayStats = acc.today_stats || {};
+      const tradesCount = todayStats.today_trades_count || 0;
+      const turnover = Number(todayStats.today_turnover || 0).toLocaleString();
+      const fees = Number(todayStats.today_fees || 0).toFixed(2);
+      const totalEquity = Number(acc.total_equity || 0);
+      const cash = Number(acc.cash || 0);
+      const marketValue = Number(acc.market_value || 0);
+      const currentStockWeight = Number(acc.current_stock_weight || 0);
+      const maxRegimeTotalWt = Number(acc.max_regime_total_wt || 0);
+      const positionsCount = Number(acc.positions_count || 0);
+      const maxPositions = Number(acc.max_positions || (isAggressive ? 5 : 3));
+      const maxStockWeight = Number(acc.max_stock_weight || (isAggressive ? 0.25 : 0.15));
+      const maxSectorWeight = Number(acc.max_sector_weight || (isAggressive ? 0.40 : 0.30));
+      const topSingleStockWeight = Number(acc.top_single_stock_weight || 0);
+      const topSingleSectorWeight = Number(acc.top_single_sector_weight || 0);
+      const currentDrawdownPct = Number(acc.current_drawdown_pct || 0);
 
       return `
         <div>
           <!-- 账户标题与模式 -->
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
             <div>
               <div style="display:flex; align-items:center; gap:8px;">
-                <h3 style="margin:0; font-size:16px; color:#fff;">${acc.strategy_display_name}</h3>
-                <span class="dual-acc-badge ${isAggressive?'badge-agg':'badge-bal'}">${acc.risk_level}</span>
+                <h3 style="margin:0; font-size:16px; color:#fff; font-weight:700;">${acc.strategy_display_name || acc.strategy_id}</h3>
+                <span class="dual-acc-badge ${isAggressive?'badge-agg':'badge-bal'}">${acc.risk_level || (isAggressive?'高风险进攻':'中等风险稳健')}</span>
               </div>
               <div style="font-size:11px; color:var(--text-muted); margin-top:3px;">
-                策略ID: <code>${acc.strategy_id}</code> | 状态硬顶: <strong>${(acc.max_regime_total_wt*100).toFixed(0)}%</strong>
+                策略ID: <code>${acc.strategy_id}</code> | 状态硬顶: <strong>${(maxRegimeTotalWt*100).toFixed(0)}%</strong>
               </div>
             </div>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <span class="dual-acc-badge" style="${riskBadgeStyle}">${acc.risk_status}</span>
+              <span class="dual-acc-badge" style="${riskBadgeStyle}">风控: ${acc.risk_status || '正常'}</span>
               <span class="dual-acc-badge" style="${allowBadgeStyle}">${acc.allow_new_entries?'🟢 允许新开仓':'🔴 禁止新开仓'}</span>
             </div>
           </div>
@@ -4241,39 +4269,39 @@
           <div class="dual-kpi-grid">
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">总资产 (权益)</div>
-              <div class="dual-kpi-val">¥${acc.total_equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
-              <div class="dual-kpi-sub">现金: ¥${acc.cash.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
+              <div class="dual-kpi-val">¥${totalEquity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
+              <div class="dual-kpi-sub">现金: ¥${cash.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
             </div>
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">累计收益率</div>
-              <div class="dual-kpi-val ${pnlUp?'up':'down'}">${pnlUp?'+':''}${acc.total_pnl_pct.toFixed(2)}%</div>
-              <div class="dual-kpi-sub">市值: ¥${acc.market_value.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
+              <div class="dual-kpi-val ${pnlUp?'up':'down'}">${pnlUp?'+':''}${pnlPct.toFixed(2)}%</div>
+              <div class="dual-kpi-sub">市值: ¥${marketValue.toLocaleString('zh-CN', {minimumFractionDigits:2})}</div>
             </div>
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">实际仓位 / 状态上限</div>
-              <div class="dual-kpi-val">${(acc.current_stock_weight*100).toFixed(1)}% / ${(acc.max_regime_total_wt*100).toFixed(0)}%</div>
-              <div class="dual-kpi-sub">闲置现金防御: ${(100 - acc.current_stock_weight*100).toFixed(1)}%</div>
+              <div class="dual-kpi-val">${(currentStockWeight*100).toFixed(1)}% / ${(maxRegimeTotalWt*100).toFixed(0)}%</div>
+              <div class="dual-kpi-sub">闲置现金防御: ${(100 - currentStockWeight*100).toFixed(1)}%</div>
             </div>
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">持仓数量 / 上限</div>
-              <div class="dual-kpi-val">${acc.positions_count} / ${acc.max_positions} 只</div>
-              <div class="dual-kpi-sub">单票上限: ${(acc.max_stock_weight*100).toFixed(0)}%</div>
+              <div class="dual-kpi-val">${positionsCount} / ${maxPositions} 只</div>
+              <div class="dual-kpi-sub">单票上限: ${(maxStockWeight*100).toFixed(0)}%</div>
             </div>
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">历史峰值 / 当前回撤</div>
-              <div class="dual-kpi-val" style="color:${acc.current_drawdown_pct>8?'#ef4444':'#fff'}">${acc.current_drawdown_pct.toFixed(2)}%</div>
+              <div class="dual-kpi-val" style="color:${currentDrawdownPct>8?'#ef4444':'#fff'}">${currentDrawdownPct.toFixed(2)}%</div>
               <div class="dual-kpi-sub">${ddLineDesc}</div>
             </div>
             <div class="dual-kpi-item">
               <div class="dual-kpi-title">今日成交 / 税费</div>
-              <div class="dual-kpi-val">${acc.today_stats.today_trades_count} 笔</div>
-              <div class="dual-kpi-sub">额:¥${acc.today_stats.today_turnover.toLocaleString()} | 税费:¥${acc.today_stats.today_fees}</div>
+              <div class="dual-kpi-val">${tradesCount} 笔</div>
+              <div class="dual-kpi-sub">额:¥${turnover} | 费:¥${fees}</div>
             </div>
           </div>
 
           <!-- 风控与配额监控横条 -->
           <div style="background:rgba(15,23,42,0.65); border:1px solid rgba(51,65,85,0.7); border-radius:6px; padding:8px 12px; margin-bottom:10px; font-size:11px; line-height:1.6;">
-            <div>⚖️ <strong>配置与集中度</strong>: 预算: <code>${budgetDesc}</code> | 单票最高: <strong>${(acc.top_single_stock_weight*100).toFixed(1)}%</strong> (上限${(acc.max_stock_weight*100).toFixed(0)}%) | 行业最高: <strong>${(acc.top_single_sector_weight*100).toFixed(1)}%</strong> (上限${(acc.max_sector_weight*100).toFixed(0)}%)</div>
+            <div>⚖️ <strong>配置与集中度</strong>: 预算: <code>${budgetDesc}</code> | 单票最高: <strong>${(topSingleStockWeight*100).toFixed(1)}%</strong> (上限${(maxStockWeight*100).toFixed(0)}%) | 行业最高: <strong>${(topSingleSectorWeight*100).toFixed(1)}%</strong> (上限${(maxSectorWeight*100).toFixed(0)}%)</div>
             <div>🛡️ <strong>止盈止损机制</strong>: ${ruleDesc}</div>
             ${acc.no_entry_reason ? `<div style="color:#f59e0b; margin-top:2px;">⚠️ <strong>开仓限制原因</strong>: ${acc.no_entry_reason}</div>` : ''}
             <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">📋 <strong>挂起待执行订单</strong>: ${ordersHtml}</div>
@@ -4303,7 +4331,55 @@
       `;
     }
 
-    function renderDualAccounts(data) {
+
+
+    function updateTopMetricsWithDual(data) {
+      if (!data || !data.primary) return;
+      const p = data.primary;
+      const s = data.secondary || { total_equity: 100000, cash: 100000, market_value: 0 };
+      const totalCombEquity = (p.total_equity || 0) + (s.total_equity || 0);
+      const totalCombCash = (p.cash || 0) + (s.cash || 0);
+      const totalCombMv = (p.market_value || 0) + (s.market_value || 0);
+      const totalInit = (p.summary?.initial_cash || 100000) + (s.summary?.initial_cash || 100000);
+      const combPnl = totalCombEquity - totalInit;
+      const combPnlPct = (combPnl / totalInit) * 100;
+
+      const totalEquityEl = document.getElementById('totalEquity');
+      if (totalEquityEl) {
+        totalEquityEl.innerText = '¥' + totalCombEquity.toLocaleString('zh-CN', {minimumFractionDigits:2});
+      }
+      const equitySubEl = document.getElementById('equitySub');
+      if (equitySubEl) {
+        equitySubEl.innerText = '双账户合计 (稳健:¥' + (p.total_equity||0).toLocaleString('zh-CN', {maximumFractionDigits:0}) + ' | 进攻:¥' + (s.total_equity||0).toLocaleString('zh-CN', {maximumFractionDigits:0}) + ')';
+      }
+      const cashPrimaryEl = document.getElementById('cashPrimary');
+      if (cashPrimaryEl) {
+        cashPrimaryEl.innerText = '¥' + totalCombCash.toLocaleString('zh-CN', {minimumFractionDigits:2});
+      }
+      const marketValEl = document.getElementById('marketValue');
+      if (marketValEl) {
+        marketValEl.innerText = '¥' + totalCombMv.toLocaleString('zh-CN', {minimumFractionDigits:2});
+      }
+      const posCountPrimaryEl = document.getElementById('positionCountPrimary');
+      if (posCountPrimaryEl) {
+        posCountPrimaryEl.innerText = '持仓标的: ' + (p.positions_count || 0) + ' 只 (稳健) + ' + (s.positions_count || 0) + ' 只 (进攻)';
+      }
+      const totalPnlEl = document.getElementById('totalPnl');
+      if (totalPnlEl) {
+        const isUp = combPnl >= 0;
+        totalPnlEl.innerText = (isUp?'+':'') + '¥' + combPnl.toLocaleString('zh-CN', {minimumFractionDigits:2});
+        totalPnlEl.className = 'value ' + (isUp?'up':'down');
+      }
+      const totalPnlPctEl = document.getElementById('totalPnlPct');
+      if (totalPnlPctEl) {
+        const isUp = combPnlPct >= 0;
+        totalPnlPctEl.innerText = '总收益率: ' + (isUp?'+':'') + combPnlPct.toFixed(2) + '% (稳健:' + (p.total_pnl_pct||0).toFixed(2) + '% 进攻:' + (s.total_pnl_pct||0).toFixed(2) + '%)';
+        totalPnlPctEl.className = 'sub ' + (isUp?'up':'down');
+      }
+    }
+
+
+function renderDualAccounts(data) {
       if (!data || !data.success) return;
       const primary = data.primary;
       const secondary = data.secondary;
