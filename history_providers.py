@@ -195,6 +195,23 @@ def normalize_baostock(raw_rows, adjusted_rows, adjustment="qfq"):
     return result
 
 
+
+
+def normalize_akshare(raw_rows, adjusted_rows, adjustment="qfq"):
+    """AKShare daily vol is shares; amount yuan; source Sina Finance."""
+    raws = {_day(r["date"]): r for r in raw_rows}
+    adjusted = {_day(r["date"]): r for r in adjusted_rows}
+    if set(raws) != set(adjusted):
+        raise HistoryNotCurrent("raw_adjusted_dates_mismatch")
+    result = []
+    for date in sorted(raws):
+        raw = dict(raws[date])
+        adj = adjusted[date] if adjustment == "qfq" else raw
+        raw["volume"] = _number(raw["volume"]) / 100
+        bar = _bar(raw, adj, "akshare", date, raw.get("preclose") or raw.get("pre_close"))
+        result.append(bar)
+    return result
+
 def normalize_tushare(raw_rows, factor_rows, adjustment="qfq"):
     """Tushare daily vol is lots, amount thousand yuan; factor is cumulative."""
     raws = {_day(r["trade_date"]): r for r in raw_rows}
@@ -402,6 +419,7 @@ class SourceRouter:
             except (OSError, ValueError, TypeError, AttributeError):
                 pass
         self._bao_available = importlib.util.find_spec("baostock") is not None
+        self._ak_available = importlib.util.find_spec("akshare") is not None
         self._budget = MarketRequestBudget()
         self._daily_memory = {}
         self._bao_stream = baostock_stream
@@ -424,7 +442,7 @@ class SourceRouter:
         if restriction.get("retry_after_seconds", 0):
             current = circuits.setdefault("baostock", {"failures": 0, "last_error": None})
             current.update(state="open", retry_after_seconds=max(current.get("retry_after_seconds", 0), restriction["retry_after_seconds"]), blocked_until=restriction["blocked_until"], last_error_code="sdk_error_10001011")
-        return {"tushare": {"configured": bool(self._token)}, "baostock": dict(installed=self._bao_available, **restriction), "circuits": circuits, "failure_diagnostics": diagnostics, "request_budget": self._budget_status()}
+        return {"tushare": {"configured": bool(self._token)}, "baostock": dict(installed=self._bao_available, **restriction), "akshare": {"installed": self._ak_available}, "circuits": circuits, "failure_diagnostics": diagnostics, "request_budget": self._budget_status()}
 
     def _bao_restriction(self):
         try:
@@ -505,7 +523,7 @@ class SourceRouter:
 
     def _budget_status(self):
         result = {}
-        for provider in ("tushare", "baostock", "eastmoney", "tencent"):
+        for provider in ("tushare", "baostock", "eastmoney", "tencent", "akshare"):
             try:
                 result[provider] = self._budget.status(provider)
             except (RequestBudgetExceeded, RequestQueueBusy, RequestBudgetUnavailable) as exc:
@@ -744,6 +762,53 @@ class SourceRouter:
         finally:
             _BAO_LOCK.release()
 
+    def _akshare(self, symbol, start, end, adjustment):
+        if not self._ak_available:
+            raise ProviderUnavailable("provider_error")
+        import akshare as ak
+        is_idx = symbol in ("sh000300", "sh000001", "sh000905") or bool(re.fullmatch(r"(?:sh000\d{3}|sz399\d{3})", symbol))
+        try:
+            if is_idx:
+                def fetch_index():
+                    return ak.stock_zh_index_daily(symbol=symbol)
+                df = self.request("akshare", fetch_index)
+                if df is None or df.empty:
+                    raise HistoryNotCurrent("empty_history")
+                df = df[(df["date"].astype(str) >= start) & (df["date"].astype(str) <= end)]
+                if df.empty:
+                    raise HistoryNotCurrent("empty_history")
+                rows = df.to_dict(orient="records")
+                return normalize_akshare(rows, rows, "none")
+            else:
+                start_str = start.replace("-", "")
+                end_str = end.replace("-", "")
+                def fetch_raw():
+                    return ak.stock_zh_a_daily(symbol=symbol, start_date=start_str, end_date=end_str, adjust="")
+                raw_df = self.request("akshare", fetch_raw)
+                if raw_df is None or raw_df.empty:
+                    raise HistoryNotCurrent("empty_history")
+                raw_rows = raw_df.to_dict(orient="records")
+
+                if adjustment == "qfq":
+                    def fetch_adj():
+                        return ak.stock_zh_a_daily(symbol=symbol, start_date=start_str, end_date=end_str, adjust="qfq")
+                    adj_df = self.request("akshare", fetch_adj)
+                    if adj_df is None or adj_df.empty:
+                        raise HistoryNotCurrent("empty_history")
+                    adj_rows = adj_df.to_dict(orient="records")
+                else:
+                    adj_rows = raw_rows
+
+                return normalize_akshare(raw_rows, adj_rows, adjustment)
+        except (ProviderBusy, HistoryNotCurrent):
+            raise
+        except KeyError as exc:
+            if str(exc).strip("'\"") == "date":
+                raise HistoryNotCurrent("empty_history") from None
+            raise ProviderUnavailable(_safe_error_code(exc)) from None
+        except Exception as exc:
+            raise ProviderUnavailable(_safe_error_code(exc)) from None
+
     def _baostock_once(self, symbol, start, end, adjustment):
         """Bounded one-shot protocol retained for standalone diagnostics."""
         command = [sys.executable, str(Path(__file__).resolve()), "--baostock-worker", symbol, start, end, adjustment]
@@ -881,6 +946,8 @@ class SourceRouter:
             providers.append(("tushare", self._tushare))
         if self._bao_available and symbol[:2] in ("sh", "sz"):
             providers.append(("baostock", self._baostock))
+        if self._ak_available and symbol[:2] in ("sh", "sz", "bj"):
+            providers.append(("akshare", self._akshare))
         for name, callback in providers:
             try:
                 bars = self.circuit.call(name, lambda cb=callback, p=name: self._validated(p, lambda: cb(symbol, start, end, adjustment), start, end))

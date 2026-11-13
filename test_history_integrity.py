@@ -31,6 +31,7 @@ def feed(tmp_path):
     instance = HistoricalDataFeed(tmp_path)
     instance.industry_file = tmp_path / "industry_map_manual.json"
     instance._sources.request = Mock(side_effect=lambda provider, callback: callback())
+    instance._sources._ak_available = False
     # A network call from these tests is always an error.
     instance.session.get = Mock(side_effect=AssertionError("offline tests must not use network"))
     return instance

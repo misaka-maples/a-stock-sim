@@ -98,7 +98,7 @@ try:
 
     print()
     print("--- [数据接口获取状态与配额] ---")
-    for name, label in [('baostock', 'BaoStock (宝塔)'), ('eastmoney', 'EastMoney(东财)'), ('tencent', 'Tencent (腾讯)'), ('tushare', 'TuShare (备用)')]:
+    for name, label in [('baostock', 'BaoStock (宝塔)'), ('eastmoney', 'EastMoney(东财)'), ('tencent', 'Tencent (腾讯)'), ('akshare', 'AKShare (开源)'), ('tushare', 'TuShare (备用)')]:
         b = rb.get(name, {})
         c = circuits.get(name, {})
         state = c.get('state', 'closed')

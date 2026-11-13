@@ -11,7 +11,7 @@ from unittest.mock import Mock, MagicMock, patch
 
 from history_providers import (CircuitBreaker, HistoryNotCurrent,
                                ProviderUnavailable, ProviderBusy, SourceRouter,
-                               normalize_baostock, normalize_tushare,
+                               normalize_baostock, normalize_tushare, normalize_akshare,
                                _bao_query, _baostock_worker, _baostock_stream, _acquire_worker_lease)
 
 
@@ -624,3 +624,40 @@ class BulkAndAdmissionTests(unittest.TestCase):
         with patch.dict('sys.modules',{'baostock':package,'baostock.util':util,'baostock.util.socketutil':transport}),self.assertRaisesRegex(ProviderBusy,'untracked_prior_usage'):
             _baostock_worker('sh600036','2026-10-14','2026-10-14','qfq')
         package.login.assert_not_called();transport.send_msg.assert_not_called()
+
+    def test_akshare_units_and_adjustment_factor(self):
+        raw_rows = [{'date': '2026-10-14', 'open': 10.0, 'high': 11.0, 'low': 9.0, 'close': 10.0, 'volume': 20000.0, 'amount': 200000.0}]
+        adj_rows = [{'date': '2026-10-14', 'open': 5.0, 'high': 5.5, 'low': 4.5, 'close': 5.0, 'volume': 20000.0, 'amount': 200000.0}]
+        bars = normalize_akshare(raw_rows, adj_rows, 'qfq')
+        self.assertEqual(len(bars), 1)
+        b = bars[0]
+        self.assertEqual(b['source'], 'akshare')
+        self.assertEqual(b['volume'], 200.0)  # 20000 shares / 100 = 200 lots
+        self.assertEqual(b['amount'], 200000.0)
+        self.assertEqual(b['close'], 5.0)
+        self.assertEqual(b['raw_close'], 10.0)
+        self.assertAlmostEqual(b['adjustment_factor'], 0.5)
+
+    def test_akshare_mismatched_dates_rejected(self):
+        raw_rows = [{'date': '2026-10-13', 'open': 10.0, 'high': 11.0, 'low': 9.0, 'close': 10.0, 'volume': 20000.0, 'amount': 200000.0}]
+        adj_rows = [{'date': '2026-10-14', 'open': 5.0, 'high': 5.5, 'low': 4.5, 'close': 5.0, 'volume': 20000.0, 'amount': 200000.0}]
+        with self.assertRaises(HistoryNotCurrent):
+            normalize_akshare(raw_rows, adj_rows, 'qfq')
+
+    def test_akshare_status_and_budget_presence(self):
+        router = self.router()
+        router._ak_available = True
+        st = router.status()
+        self.assertTrue(st['akshare']['installed'])
+        self.assertIn('akshare', st['request_budget'])
+
+    def test_akshare_failover_when_baostock_unavailable(self):
+        router = self.router()
+        router._bao_available = False
+        router._ak_available = True
+        sample_bars = [{'date': '2026-10-14', 'open': 10.0, 'raw_open': 10.0, 'high': 11.0, 'raw_high': 11.0, 'low': 9.0, 'raw_low': 9.0, 'close': 10.0, 'raw_close': 10.0, 'volume': 100.0, 'amount': 1000.0, 'adjustment_factor': 1.0, 'source': 'akshare'}]
+        router._akshare = Mock(return_value=sample_bars)
+        sym, bars, src, warnings = router.download('sh600036', '2026-10-13', '2026-10-14')
+        self.assertEqual(sym, '600036')
+        self.assertEqual(src, 'akshare')
+        self.assertEqual(bars, sample_bars)

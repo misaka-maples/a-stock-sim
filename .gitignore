@@ -27,3 +27,8 @@ a_stock.py
 
 history_update_schedule.json
 sandbox_ab_account.json*
+
+# Local research & upgrade backups
+backup_v1_0_pre_v2_upgrade/
+research_cross_market/
+research_market_regime/

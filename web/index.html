@@ -1178,7 +1178,33 @@
           </div>
         </div>
 
-        <!-- Provider 4: TuShare -->
+        <!-- Provider 4: AKShare -->
+        <div class="provider-card" id="cardAkshare">
+          <div class="provider-card-header">
+            <div class="provider-name">
+              <span id="akshareStatusDot">🟢</span>
+              <span>AKShare (开源财经)</span>
+            </div>
+            <span id="akshareCircuitBadge" class="badge badge-market">正常</span>
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted); display:flex; justify-content:space-between;">
+            <span>今日配额用量</span>
+            <span id="akshareQuotaText" style="font-weight:600; color:#fff;">-- / --</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div id="akshareQuotaBar" class="progress-bar-fill normal" style="width: 0%;"></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; flex-wrap:wrap; gap:4px;">
+            <span>剩余配额: <strong id="akshareRemainingText" style="color:#fff">--</strong></span>
+            <span>频控间隔: <strong id="akshareIntervalText" style="color:#38bdf8">1.0s</strong></span>
+            <span>失败次数: <strong id="akshareFailsText" style="color:#fff">0</strong></span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); border-top: 1px solid rgba(51,65,85,0.4); padding-top: 4px;" id="akshareNote">
+            新浪财经日K线/前复权高质量备用源
+          </div>
+        </div>
+
+        <!-- Provider 5: TuShare -->
         <div class="provider-card" id="cardTushare">
           <div class="provider-card-header">
             <div class="provider-name">
@@ -2705,6 +2731,16 @@
         const failsText = document.getElementById(`${prefix}FailsText`);
         const note = document.getElementById(`${prefix}Note`);
 
+        if (budgetName === 'akshare' && sh.akshare && !sh.akshare.installed) {
+          if (dot) dot.innerText = '⚪';
+          if (badge) {
+            badge.innerText = '未安装';
+            badge.className = 'badge badge-strategy-off';
+          }
+          if (note) note.innerText = 'Python环境未安装 akshare 库';
+          return;
+        }
+
         if (isTushare) {
           const cfg = sh.tushare?.configured;
           if (dot) dot.innerText = cfg ? '🟢' : '⚪';
@@ -2806,6 +2842,8 @@
               note.innerText = '行业分类数据映射与高可靠备用';
             } else if (budgetName === 'tencent') {
               note.innerText = '快速前复权K线校验与盘口撮合';
+            } else if (budgetName === 'akshare') {
+              note.innerText = '新浪财经日K线/前复权高质量备用源';
             }
           }
         }
@@ -2814,6 +2852,7 @@
       updateProviderCard('bao', 'baostock');
       updateProviderCard('east', 'eastmoney');
       updateProviderCard('tencent', 'tencent');
+      updateProviderCard('akshare', 'akshare');
       updateProviderCard('tushare', 'tushare');
 
       // 9. 接口诊断药丸

@@ -493,6 +493,8 @@ class DailyMomentumStrategy:
         enabled = ["eastmoney", "tencent"]
         if health.get("baostock", {}).get("installed"):
             enabled.append("baostock")
+        if health.get("akshare", {}).get("installed"):
+            enabled.append("akshare")
         if health.get("tushare", {}).get("configured"):
             enabled.append("tushare")
         states = health.get("circuits", {})
