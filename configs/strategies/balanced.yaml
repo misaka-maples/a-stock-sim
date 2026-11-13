@@ -1,0 +1,53 @@
+# configs/strategies/balanced.yaml
+strategy_id: "Product_AB_Balanced_v2"
+strategy_name: "Balanced v2.0"
+description: "稳健增长、均衡配置的 A/B 混动日线动量策略"
+version: "2.0"
+
+parameters:
+  # 仓位与标的上限 (6 x 15% = 90% >= 80% regime cap)
+  max_positions: 6
+  max_stock_weight: 0.15
+  max_sector_weight: 0.30
+
+  # 市场状态仓位上限 (Regime Exposure Caps)
+  regime_riskoff_weight: 0.30
+  regime_neutral_weight: 0.45
+  regime_riskon_weight: 0.65
+  regime_strong_weight: 0.80
+
+  # 止损止盈与风控
+  stop_loss_pct: -6.0
+  stop_loss_mode: "intraday"
+  risk_per_trade: 0.01
+  trailing_stop_enabled: true
+  trailing_stop_mode: "atr"
+  atr_trailing_multiplier: 3.5
+  profit_floor_enabled: true
+  profit_floor_pct: 3.0
+  realtime_ma20_exit: true
+  ma20_exit_consecutive_days: 1
+
+  # 轮动与调仓
+  rebalance_every: 5
+  min_holding_days: 5
+  refill_vacancies: false
+  rank_buffer: 3
+  cooldown_days: 3
+  participation_rate: 0.05
+
+  # 动量计算权重
+  momentum_w20: 2.0
+  momentum_w60: 1.0
+
+  # A/B 资金预算分配
+  allocation_budget_a:
+    RISK_OFF: 0.70
+    NEUTRAL: 0.60
+    RISK_ON: 0.20
+    STRONG_RISK_ON: 0.10
+  allocation_budget_b:
+    RISK_OFF: 0.30
+    NEUTRAL: 0.40
+    RISK_ON: 0.80
+    STRONG_RISK_ON: 0.90

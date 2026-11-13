@@ -1,0 +1,30 @@
+# configs/accounts.yaml
+# V3 Dual Accounts Definition
+version: 1.0
+
+accounts:
+  balanced:
+    account_id: "balanced"
+    display_name: "Balanced v2.0 (主账户 - 稳健增长)"
+    mode: "PAPER"
+    currency: "CNY"
+    initial_cash: 100000.00
+    strategy_id: "Product_AB_Balanced_v2"
+    strategy_config_path: "configs/strategies/balanced.yaml"
+    risk_limits:
+      max_drawdown_warn_pct: 8.0
+      max_drawdown_freeze_pct: 12.0
+      single_trade_risk_pct: 1.0
+
+  aggressive:
+    account_id: "aggressive"
+    display_name: "Aggressive v2.0 (第二账户 - 积极进攻)"
+    mode: "PAPER"
+    currency: "CNY"
+    initial_cash: 100000.00
+    strategy_id: "Product_AB_Aggressive_v2"
+    strategy_config_path: "configs/strategies/aggressive.yaml"
+    risk_limits:
+      max_drawdown_warn_pct: 15.0
+      max_drawdown_freeze_pct: 20.0
+      single_trade_risk_pct: 1.5

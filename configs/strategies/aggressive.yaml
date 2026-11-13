@@ -1,0 +1,52 @@
+# configs/strategies/aggressive.yaml
+strategy_id: "Product_AB_Aggressive_v2"
+strategy_name: "Aggressive v2.0"
+description: "积极进攻、高资金利用率的高动量双轮驱动策略"
+version: "2.0"
+
+parameters:
+  # 仓位与标的上限 (5 x 25% = 125% >= 100% regime cap)
+  max_positions: 5
+  max_stock_weight: 0.25
+  max_sector_weight: 0.40
+
+  # 市场状态仓位上限 (Regime Exposure Caps)
+  regime_riskoff_weight: 0.50
+  regime_neutral_weight: 0.70
+  regime_riskon_weight: 0.90
+  regime_strong_weight: 1.00
+
+  # 止损止盈与风控
+  stop_loss_pct: -6.0
+  stop_loss_mode: "intraday"
+  risk_per_trade: 0.015
+  trailing_stop_enabled: true
+  trailing_stop_mode: "atr"
+  atr_trailing_multiplier: 4.5
+  profit_floor_enabled: false
+  realtime_ma20_exit: true
+  ma20_exit_consecutive_days: 2
+
+  # 轮动与调仓
+  rebalance_every: 5
+  min_holding_days: 5
+  refill_vacancies: false
+  rank_buffer: 3
+  cooldown_days: 3
+  participation_rate: 0.05
+
+  # 动量计算权重
+  momentum_w20: 2.0
+  momentum_w60: 1.0
+
+  # A/B 资金预算分配
+  allocation_budget_a:
+    RISK_OFF: 0.40
+    NEUTRAL: 0.30
+    RISK_ON: 0.10
+    STRONG_RISK_ON: 0.05
+  allocation_budget_b:
+    RISK_OFF: 0.60
+    NEUTRAL: 0.70
+    RISK_ON: 0.90
+    STRONG_RISK_ON: 0.95
