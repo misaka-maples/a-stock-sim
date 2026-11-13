@@ -719,131 +719,6 @@
 
 
 
-  <!-- 核心资产看板 (6维全景指标) -->
-  <div class="metrics-grid">
-    <div class="metric-card">
-      <div class="title">总资产 (权益)</div>
-      <div id="totalEquity" class="value">¥0.00</div>
-      <div id="equitySub" class="sub">初始资金: ¥0.00</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">可用现金</div>
-      <div id="cashPrimary" class="value">¥0.00</div>
-      <div class="sub">随时可委托买入</div>
-      <div class="title">今日收益 / 收益率</div>
-      <div id="todayPnl" class="value">¥0.00</div>
-      <div id="todayPnlPct" class="sub">对比上一交易日: +0.00%</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">持仓总市值</div>
-      <div id="marketValue" class="value">¥0.00</div>
-      <div id="positionCountPrimary" class="sub">持仓标的: 0 只</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">累计浮盈 / 收益率</div>
-      <div class="title">累计总收益 / 总收益率</div>
-      <div id="totalPnl" class="value">¥0.00</div>
-      <div id="totalPnlPct" class="sub">+0.00%</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">已实现盈亏 (平仓净利)</div>
-      <div id="realizedPnl" class="value">¥0.00</div>
-      <div id="unrealizedPnlSub" class="sub">当前在持浮盈: ¥0.00</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">交易胜率 / 盈亏比</div>
-      <div id="winRate" class="value">0.0%</div>
-      <div id="plRatioSub" class="sub">0胜 0负 | 盈亏比: 0.00</div>
-    </div>
-    <div class="metric-card">
-      <div class="title">可用现金 / 持仓市值</div>
-      <div id="cash" class="value">¥0.00</div>
-      <div id="posCount" class="sub">持仓市值: ¥0.00 (0只)</div>
-    </div>
-  </div>
-
-  <!-- 📊 账户收益统计与绩效分析 -->
-  <div class="panel" style="margin-bottom: 20px;">
-    <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
-      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-        <div class="panel-title" style="font-size: 16px;">📊 收益统计与量化绩效分析</div>
-        <div class="tab-group">
-          <button id="tabBtnChart" class="tab-btn active" onclick="switchPerfTab('chart')">📈 收益走势图</button>
-          <button id="tabBtnSymbols" class="tab-btn" onclick="switchPerfTab('symbols')">🏆 标的盈亏排行</button>
-          <button id="tabBtnDaily" class="tab-btn" onclick="switchPerfTab('daily')">📅 每日盈亏明细</button>
-        </div>
-      </div>
-      <div id="chartHeaderStats" style="font-size: 12px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap;">
-        <span>历史峰值: <strong id="statPeak" style="color:#fff">--</strong></span>
-        <span>最大回撤: <strong id="statMaxDd" style="color:var(--green-down)">--</strong></span>
-        <span>盈亏比: <strong id="statPlRatio" style="color:#38bdf8">--</strong></span>
-        <span>累计规费: <strong id="statFees" style="color:var(--text-muted)">--</strong></span>
-      </div>
-    </div>
-
-    <!-- Tab 1: 走势图 -->
-    <div id="perfTabChart" class="perf-tab-content">
-      <div style="position: relative; width: 100%; height: 260px;">
-        <canvas id="equityCanvas" style="width: 100%; height: 100%; display: block;"></canvas>
-        <div id="chartTooltip" style="display:none; position:absolute; pointer-events:none; background:rgba(15,23,42,0.92); border:1px solid var(--accent-blue); padding:8px 12px; border-radius:6px; font-size:12px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.5); line-height: 1.5;"></div>
-      </div>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; font-size:11px; color:var(--text-muted); flex-wrap:wrap; gap:8px;">
-        <div>💡 提示：走势图自动实时高频采样，鼠标悬停曲线可查看各时点精确资产与盈亏明细</div>
-        <div style="display:flex; gap:12px;">
-          <span><span style="display:inline-block; width:10px; height:10px; background:#ef4444; border-radius:2px; margin-right:4px;"></span>总资产曲线</span>
-          <span><span style="display:inline-block; width:10px; height:2px; background:#64748b; margin-right:4px; vertical-align:middle;"></span>初始本金基准线</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tab 2: 标的盈亏排行 -->
-    <div id="perfTabSymbols" class="perf-tab-content" style="display: none;">
-      <div style="max-height: 280px; overflow-y: auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>股票标的</th>
-              <th class="text-center">状态</th>
-              <th class="text-right">买入总额</th>
-              <th class="text-right">卖出总额</th>
-              <th class="text-right">已实现盈亏</th>
-              <th class="text-right">当前浮动盈亏</th>
-              <th class="text-right">净收益贡献</th>
-              <th class="text-right">收益率</th>
-              <th class="text-right">交易规费</th>
-              <th class="text-center">交易笔数</th>
-            </tr>
-          </thead>
-          <tbody id="symbolStatsTbody">
-            <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在统计标的盈亏...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Tab 3: 每日盈亏明细 -->
-    <div id="perfTabDaily" class="perf-tab-content" style="display: none;">
-      <div style="max-height: 280px; overflow-y: auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>交易日期</th>
-              <th class="text-right">期初资产</th>
-              <th class="text-right">期末资产</th>
-              <th class="text-right">当日净盈亏</th>
-              <th class="text-right">日收益率</th>
-              <th class="text-center">当日成交</th>
-              <th class="text-right">产生规费</th>
-            </tr>
-          </thead>
-          <tbody id="dailyStatsTbody">
-            <tr><td colspan="7" class="text-center" style="color:var(--text-muted)">正在统计每日盈亏...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
   <!-- 🧪 策略历史回测实验台 -->
   <div class="panel" style="margin-bottom: 20px;">
     <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
@@ -1286,175 +1161,35 @@
   <!-- 🛡️ Product AB v2.0 双账户量化对账控制台 (Balanced 稳健账户 vs Aggressive 进攻账户) -->
   
 
-  <!-- 主体工作区 -->
-  <div class="main-grid">
-    <!-- 左侧：持仓与自选盘口 -->
-    <div class="left-col">
-      <!-- 当前持仓 -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">📦 当前持仓 (T+1锁仓管理)</div>
-          <span style="font-size:12px; color:var(--text-muted)">A股真实交易规费已计入成本</span>
-        </div>
-        <p style="font-size:12px;color:var(--text-muted);padding:0 16px;">盘中硬止损达到阈值时尝试卖出；日线均线与轮动信号次日执行。T+1、跌停、停牌或盘口不足可能阻塞成交，触发-6%不保证成交亏损恰为-6%。</p>
-        <div id="positionsRefreshState" role="status" style="font-size:12px;color:var(--text-muted);padding:0 16px;"></div>
-        <div class="table-responsive">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th class="text-right">总持仓</th>
-                <th class="text-right">可用(T+1)</th>
-                <th class="text-right">成本价</th>
-                <th class="text-right">估值价格 / 行情时间</th>
-                <th class="text-right">持仓市值</th>
-                <th class="text-right">浮动盈亏</th>
-                <th>止损 / 退出状态</th>
-                <th class="text-center">操作</th>
-              </tr>
-            </thead>
-            <tbody id="positionsTbody">
-              <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在加载持仓...</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <!-- 持仓调整与精准风控测算明细 -->
-        <div id="positionSizingCard" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; padding:0 16px 8px;">
-            <div style="font-weight:600; font-size:13px; color:var(--text-primary); display:flex; align-items:center; gap:8px;">
-              <span>📐 调仓精准测算 (ATR 波动率头寸管理)</span>
-              <span id="sizingTotalBadge" class="badge" style="background:rgba(59,130,246,0.15); color:var(--accent-blue); font-size:11px; padding:2px 8px; border-radius:10px;">总仓位: --</span>
-            </div>
-            <span id="sizingCashDefenseBadge" style="font-size:12px; color:var(--text-muted)">现金防御: --</span>
-          </div>
-          <div class="table-responsive">
-            <table>
-              <thead>
-                <tr>
-                  <th>持仓股票</th>
-                  <th class="text-right">日均波幅 ATR%</th>
-                  <th class="text-right">2×ATR 风险距离</th>
-                  <th class="text-right" id="thRiskBudgetCap">1% 风险预算算得权重上限</th>
-                  <th class="text-right">实际买入股数</th>
-                  <th class="text-right">耗资 (元)</th>
-                  <th class="text-right">实际仓位占比</th>
-                </tr>
-              </thead>
-              <tbody id="positionSizingTbody">
-                <tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding: 12px;">正在加载头寸风控测算...</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div style="font-size:11px; color:var(--text-muted); padding: 6px 16px 10px; line-height: 1.5;">
-            💡 <strong>风控逻辑</strong>：采用固定风险敞口模型（单票承受最大回撤 1%），标的波动率越高、建仓越轻；剩余资金保留为现金防御，避免单边系统性风险。
-          </div>
-        </div>
-      </div>
-
-      <!-- 全市场起爆共振雷达池 -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
-          <div style="font-size:12px; color:var(--accent-blue); font-weight:600">
-            <span id="radarCountBadge">策略候选：等待日线</span>
-            <span id="historyCoverageBadge" style="display:block;color:var(--text-muted)">有效历史：等待准备</span>
-            <span id="entryRejectionsBadge" style="display:block;color:#fbbf24"></span>
-          </div>
-        </div>
-        <div class="table-responsive">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th class="text-right">最新价</th>
-                <th class="text-right">今日涨跌幅</th>
-                <th class="text-right">今开盘</th>
-                <th class="text-center">买一 / 卖一</th>
-                <th class="text-center">五档委比</th>
-                <th class="text-right">成交额</th>
-                <th class="text-center">共振评分</th>
-                <th class="text-center">快速下单</th>
-              </tr>
-            </thead>
-            <tbody id="quotesTbody">
-              <tr><td colspan="10" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
-            </tbody>
-          </table>
-        </div>
+    <!-- ⚡ 沪深主板起爆共振雷达池 (严控10%主板) -->
+  <div class="panel" style="margin-bottom: 20px;">
+    <div class="panel-header">
+      <div class="panel-title">⚡ 沪深主板起爆共振雷达池 (严控10%主板)</div>
+      <div style="font-size:12px; color:var(--accent-blue); font-weight:600">
+        <span id="radarCountBadge">策略候选：等待日线</span>
+        <span id="historyCoverageBadge" style="display:block;color:var(--text-muted)">有效历史：等待准备</span>
+        <span id="entryRejectionsBadge" style="display:block;color:#fbbf24"></span>
       </div>
     </div>
-
-    <!-- 右侧：手动交易台与成交流水 -->
-    <div class="right-col">
-      <!-- 独立搜索不改变策略股票池，选中后只预填模拟委托 -->
-      <div class="panel" id="stockSearchPanel">
-        <div class="panel-header"><div class="panel-title">🔎 股票搜索 · 实时报价</div></div>
-        <div class="trade-form">
-          <div style="display:flex;gap:8px">
-            <input id="stockSearchInput" class="form-control" style="flex:1;min-width:0" placeholder="输入代码、部分代码或名称" aria-label="搜索主板股票" oninput="scheduleStockSearch()" onkeydown="if(event.key==='Enter'){event.preventDefault();searchStocks();}">
-            <button class="btn" onclick="searchStocks()">搜索</button>
-          </div>
-          <div id="stockSearchMessage" role="status" style="font-size:12px;color:var(--text-muted);margin:8px 0">仅沪深主板。请从结果中选择股票，查询不会自动下单。</div>
-          <div id="stockSearchResults" style="display:grid;gap:6px;max-height:250px;overflow:auto"></div>
-          <div id="stockQuoteDetails" style="margin-top:12px"></div>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <button id="stockQuoteBuy" class="btn btn-buy" disabled onclick="fillStockQuoteOrder('BUY')">预填买入</button>
-            <button id="stockQuoteSell" class="btn btn-sell" disabled onclick="fillStockQuoteOrder('SELL')">预填卖出</button>
-          </div>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:8px">模拟交易：买入100股整手，T+1可卖；预填后需在下方确认委托。报价约每3秒更新，盘口数量单位为手。</div>
-        </div>
-      </div>
-
-      <!-- 手动下单控制台 -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">🎯 手动委托交易台</div>
-        </div>
-        <div class="trade-form">
-          <div class="side-selector">
-            <div id="sideBuyBtn" class="side-btn active-buy" onclick="setSide('BUY')">买入委托 (整手)</div>
-            <div id="sideSellBtn" class="side-btn" onclick="setSide('SELL')">卖出委托</div>
-          </div>
-          <div class="form-group">
-            <label>股票代码 / 标的 (仅限沪深主板 3,400+ 标的搜索)</label>
-            <div style="display:flex; gap:8px;">
-              <input type="text" id="orderSymbol" class="form-control" placeholder="如 600519 或 sz002594" onchange="onSymbolChange()" style="flex:1">
-              <button class="btn" style="padding:6px 12px; font-size:12px;" onclick="searchAndFillStock()">查行情</button>
-            </div>
-          </div>
-          <div class="form-group">
-            <label>委托价格 (元，默认盘口市价撮合)</label>
-            <input type="number" id="orderPrice" step="0.01" class="form-control" placeholder="留空或0按盘口市价撮合">
-          </div>
-          <div class="form-group">
-            <label>委托股数 (买入需为100的整倍数)</label>
-            <input type="number" id="orderShares" step="100" class="form-control" value="100" oninput="updateCostPreview()">
-            <div class="quick-shares">
-              <span onclick="setShares(100)">100股</span>
-              <span onclick="setShares(200)">200股</span>
-              <span onclick="setShares(500)">500股</span>
-              <span onclick="setShares(1000)">1000股</span>
-            </div>
-          </div>
-          <div id="costPreview" class="cost-preview">
-            预估成交金额: ¥0.00<br>
-            预估税费 (佣金/过户费/印花税): ¥0.00
-          </div>
-          <button id="submitOrderBtn" class="btn btn-primary" style="width:100%; padding:10px;" onclick="submitOrder()">提交委托</button>
-        </div>
-      </div>
-
-      <!-- 最近成交记录 -->
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title">📜 最近成交记录</div>
-        </div>
-        <div id="tradesList" class="history-list">
-          <div style="text-align:center; color:var(--text-muted); font-size:12px;">暂无成交数据</div>
-        </div>
-      </div>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>代码</th>
+            <th>名称</th>
+            <th class="text-right">最新价</th>
+            <th class="text-right">今日涨跌幅</th>
+            <th class="text-right">今开盘</th>
+            <th class="text-center">买一 / 卖一</th>
+            <th class="text-center">五档委比</th>
+            <th class="text-right">成交额</th>
+            <th class="text-center">共振评分</th>
+          </tr>
+        </thead>
+        <tbody id="quotesTbody">
+          <tr><td colspan="9" class="text-center" style="color:var(--text-muted)">正在扫描全市场雷达...</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -1603,7 +1338,9 @@
     }
 
     function onSymbolChange() {
-      const sym = document.getElementById('orderSymbol').value.trim();
+      const el = document.getElementById('orderSymbol');
+      if (!el) return;
+      const sym = el.value.trim();
       if (!sym) return;
       // 从 quotes 查找或从后端拉取
       if (currentQuotes[sym] && currentQuotes[sym].current > 0) {
@@ -1613,7 +1350,9 @@
     }
 
     function updateCostPreview() {
-      const sym = document.getElementById('orderSymbol').value.trim();
+      const el = document.getElementById('orderSymbol');
+      if (!el) return;
+      const sym = el.value.trim();
       const shares = parseInt(document.getElementById('orderShares').value) || 0;
       let price = parseFloat(document.getElementById('orderPrice').value) || 0;
       const previewQuote = currentQuotes[sym] || (selectedStockQuote && selectedStockQuote.symbol === sym ? selectedStockQuote.quote : null);
@@ -1669,47 +1408,37 @@
 
     function renderSummary(s) {
       if (!s) return;
-      document.getElementById('totalEquity').innerText = `¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      document.getElementById('equitySub').innerText = `初始本金: ¥${(s.initial_cash||0).toLocaleString('zh-CN')}`;
+      const setEl = (id, text, cls) => {
+        const el = document.getElementById(id);
+        if (el) {
+          if (text !== undefined) el.innerText = text;
+          if (cls !== undefined) el.className = cls;
+        }
+      };
+      setEl('totalEquity', `¥${(s.total_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`);
+      setEl('equitySub', `初始本金: ¥${(s.initial_cash||0).toLocaleString('zh-CN')}`);
 
-      // 今日收益
-      const todayPnlEl = document.getElementById('todayPnl');
-      const todayPctEl = document.getElementById('todayPnlPct');
       const tPnl = s.today_pnl !== undefined ? s.today_pnl : (s.total_pnl || 0);
       const tPct = s.today_pnl_pct !== undefined ? s.today_pnl_pct : (s.total_pnl_pct || 0);
       const tUp = tPnl >= 0;
-      todayPnlEl.innerText = s.today_pnl_available === false ? '缺少昨收记录' : `${tUp ? '+' : ''}¥${tPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      todayPnlEl.className = `value ${tUp ? 'up' : 'down'}`;
-      todayPctEl.innerText = s.today_pnl_available === false ? '需要可靠日结记录' : `对比昨收: ${tUp ? '+' : ''}${tPct.toFixed(2)}%`;
-      todayPctEl.className = `sub ${tUp ? 'up' : 'down'}`;
+      setEl('todayPnl', s.today_pnl_available === false ? '缺少昨收记录' : `${tUp ? '+' : ''}¥${tPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`, `value ${tUp ? 'up' : 'down'}`);
+      setEl('todayPnlPct', s.today_pnl_available === false ? '需要可靠日结记录' : `对比昨收: ${tUp ? '+' : ''}${tPct.toFixed(2)}%`, `sub ${tUp ? 'up' : 'down'}`);
 
-      // 累计总收益
-      const pnlEl = document.getElementById('totalPnl');
-      const pnlPctEl = document.getElementById('totalPnlPct');
       const pnl = s.total_pnl || 0;
       const isUp = pnl >= 0;
-      pnlEl.innerText = `${isUp ? '+' : ''}¥${pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      pnlEl.className = `value ${isUp ? 'up' : 'down'}`;
-      pnlPctEl.innerText = `总收益率: ${isUp ? '+' : ''}${(s.total_pnl_pct||0).toFixed(2)}%`;
-      pnlPctEl.className = `sub ${isUp ? 'up' : 'down'}`;
+      setEl('totalPnl', `${isUp ? '+' : ''}¥${pnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`, `value ${isUp ? 'up' : 'down'}`);
+      setEl('totalPnlPct', `总收益率: ${isUp ? '+' : ''}${(s.total_pnl_pct||0).toFixed(2)}%`, `sub ${isUp ? 'up' : 'down'}`);
 
-      // 已实现盈亏 & 浮动盈亏
       const rPnl = s.realized_pnl || 0;
       const uPnl = s.unrealized_pnl || 0;
-      const rPnlEl = document.getElementById('realizedPnl');
-      rPnlEl.innerText = `${rPnl >= 0 ? '+' : ''}¥${rPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      rPnlEl.className = `value ${rPnl >= 0 ? 'up' : 'down'}`;
-      document.getElementById('unrealizedPnlSub').innerText = `持仓浮盈: ${uPnl >= 0 ? '+' : ''}¥${uPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      setEl('realizedPnl', `${rPnl >= 0 ? '+' : ''}¥${rPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`, `value ${rPnl >= 0 ? 'up' : 'down'}`);
+      setEl('unrealizedPnlSub', `持仓浮盈: ${uPnl >= 0 ? '+' : ''}¥${uPnl.toLocaleString('zh-CN', {minimumFractionDigits:2})}`);
 
-      // 胜率与盈亏比
       const winRate = s.win_rate !== undefined ? s.win_rate : 0;
-      document.getElementById('winRate').innerText = `${winRate.toFixed(1)}%`;
-      document.getElementById('plRatioSub').innerText = `${s.win_count||0}胜 ${s.loss_count||0}负 | 盈亏比: ${(s.profit_loss_ratio||0).toFixed(2)}`;
+      setEl('winRate', `${winRate.toFixed(1)}%`);
+      setEl('plRatioSub', `${s.win_count||0}胜 ${s.loss_count||0}负 | 盈亏比: ${(s.profit_loss_ratio||0).toFixed(2)}`);
 
-      // 现金与持仓
-      if (document.getElementById('marketValue')) {
-        document.getElementById('marketValue').innerText = `¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
-      }
+      setEl('marketValue', `¥${(s.market_value||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`);
       document.querySelectorAll('#cash, #cashPrimary').forEach(el => {
         el.innerText = `¥${(s.cash||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       });
@@ -1738,9 +1467,11 @@
       cachedPerfData = data;
       const s = data.summary || {};
 
-      // 头部摘要统计
+      const statPeak = document.getElementById('statPeak');
+      if (!statPeak) return; // 全局面板已移入各个账户，若不存在则跳过
+
       const peak = s.peak_equity || s.total_equity || 0;
-      document.getElementById('statPeak').innerText = `¥${peak.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
+      statPeak.innerText = `¥${peak.toLocaleString('zh-CN', {minimumFractionDigits:2})}`;
       document.getElementById('statMaxDd').innerText = `-${(s.max_drawdown_pct||0).toFixed(2)}% (-¥${(s.max_drawdown||0).toFixed(2)})`;
       document.getElementById('statPlRatio').innerText = `${(s.profit_loss_ratio||0).toFixed(2)} : 1`;
       document.getElementById('statFees').innerText = `¥${(s.total_fees||0).toFixed(2)}`;
@@ -2000,6 +1731,7 @@
 
     function renderPositions(positions) {
       const tbody = document.getElementById('positionsTbody');
+      if (!tbody) return;
       if (!Array.isArray(positions)) throw new Error('持仓响应格式无效');
       if (positions.length === 0) {
         tbody.innerHTML = '<tr><td colspan="10" class="text-center" style="color:var(--text-muted); padding: 24px;">当前账户为空仓状态</td></tr>';
@@ -2213,9 +1945,10 @@
     function renderQuotes(quotes) {
       currentQuotes = {};
       const tbody = document.getElementById('quotesTbody');
+      if (!tbody) return;
       const list = Object.values(quotes);
       if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center">正在扫描全市场雷达...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center">正在扫描全市场雷达...</td></tr>';
         return;
       }
       let html = '';
@@ -2241,9 +1974,6 @@
             <td class="text-center" style="font-weight:600; color:#38bdf8">${ratio}</td>
             <td class="text-right">${amt}</td>
             <td class="text-center">${score}</td>
-            <td class="text-center">
-              <button class="btn btn-buy" onclick="quickBuy('${q.symbol}', ${q.current})">快速买入</button>
-            </td>
           </tr>
         `;
       });
@@ -2252,6 +1982,7 @@
 
     function renderTrades(trades) {
       const container = document.getElementById('tradesList');
+      if (!container) return;
       if (!trades || !trades.length) {
         container.innerHTML = '<div style="text-align:center; color:var(--text-muted); font-size:12px; padding:20px;">暂无成交记录</div>';
         return;
@@ -2494,6 +2225,7 @@
 
     function renderPositionSizing(sizing) {
       const tbody = document.getElementById('positionSizingTbody');
+      if (!tbody) return;
       const totalBadge = document.getElementById('sizingTotalBadge');
       const cashBadge = document.getElementById('sizingCashDefenseBadge');
       const thCap = document.getElementById('thRiskBudgetCap');
@@ -2929,8 +2661,10 @@
     }
 
     function quickBuy(sym, price) {
+      const el = document.getElementById('orderSymbol');
+      if (!el) return;
       setSide('BUY');
-      document.getElementById('orderSymbol').value = sym;
+      el.value = sym;
       document.getElementById('orderPrice').value = price || '';
       document.getElementById('orderShares').value = 100;
       updateCostPreview();
@@ -2938,12 +2672,14 @@
     }
 
     function quickSell(sym, avail) {
+      const el = document.getElementById('orderSymbol');
+      if (!el) return;
       if (avail <= 0) {
         showToast('该标的当前无可用持仓 (今日买入受 T+1 规则限制)', true);
         return;
       }
       setSide('SELL');
-      document.getElementById('orderSymbol').value = sym;
+      el.value = sym;
       document.getElementById('orderShares').value = avail;
       if (currentQuotes[sym]) {
         document.getElementById('orderPrice').value = currentQuotes[sym].current;
@@ -2955,7 +2691,9 @@
     let orderSubmitting = false;
     async function submitOrder() {
       if (orderSubmitting) return;
-      const sym = document.getElementById('orderSymbol').value.trim();
+      const el = document.getElementById('orderSymbol');
+      if (!el) return;
+      const sym = el.value.trim();
       const shares = parseInt(document.getElementById('orderShares').value);
       const price = parseFloat(document.getElementById('orderPrice').value) || 0.0;
 
@@ -4213,13 +3951,241 @@
       }
     }
 
-    function renderAccountCard(acc, isAggressive) {
+    let accountPerfTabs = {};
+
+    function switchAccountPerfTab(prefix, accKey, tab) {
+      const cardId = `${prefix}_${accKey}`;
+      accountPerfTabs[cardId] = tab;
+
+      const btnChart = document.getElementById(`tabBtnChart_${cardId}`);
+      const btnSymbols = document.getElementById(`tabBtnSymbols_${cardId}`);
+      const btnDaily = document.getElementById(`tabBtnDaily_${cardId}`);
+
+      const tabChart = document.getElementById(`perfTabChart_${cardId}`);
+      const tabSymbols = document.getElementById(`perfTabSymbols_${cardId}`);
+      const tabDaily = document.getElementById(`perfTabDaily_${cardId}`);
+
+      if (btnChart) btnChart.className = 'tab-btn' + (tab === 'chart' ? ' active' : '');
+      if (btnSymbols) btnSymbols.className = 'tab-btn' + (tab === 'symbols' ? ' active' : '');
+      if (btnDaily) btnDaily.className = 'tab-btn' + (tab === 'daily' ? ' active' : '');
+
+      if (tabChart) tabChart.style.display = tab === 'chart' ? 'block' : 'none';
+      if (tabSymbols) tabSymbols.style.display = tab === 'symbols' ? 'block' : 'none';
+      if (tabDaily) tabDaily.style.display = tab === 'daily' ? 'block' : 'none';
+
+      if (tab === 'chart' && cachedDualData) {
+        const isAgg = accKey === 'agg';
+        const accData = isAgg ? cachedDualData.secondary : cachedDualData.primary;
+        if (accData) {
+          const curve = accData.performance?.equity_curve || [];
+          const initCash = accData.summary?.initial_cash || accData.initial_cash || 100000;
+          const themeColor = isAgg ? '#fbbf24' : '#38bdf8';
+          setTimeout(() => {
+            drawAccountEquityChart(`equityCanvas_${cardId}`, `chartTooltip_${cardId}`, curve, initCash, themeColor);
+          }, 30);
+        }
+      }
+    }
+
+    function drawAccountEquityChart(canvasId, tooltipId, curve, initialCash, themeColor) {
+      const canvas = document.getElementById(canvasId);
+      const tooltip = document.getElementById(tooltipId);
+      if (!canvas) return;
+      const parent = canvas.parentElement;
+      if (!parent || parent.clientWidth === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = parent.clientWidth;
+      const isMobile = window.innerWidth <= 768;
+      const h = isMobile ? 180 : 210;
+      parent.style.height = `${h}px`;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      if (!curve || curve.length < 2) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('正在积累时序净值数据...', w / 2, h / 2);
+        return;
+      }
+
+      const padding = isMobile
+        ? { top: 15, right: 12, bottom: 20, left: 50 }
+        : { top: 18, right: 25, bottom: 25, left: 65 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+
+      const equities = curve.map(d => d.equity);
+      equities.push(initialCash);
+      const minEq = Math.min(...equities) * 0.998;
+      const maxEq = Math.max(...equities) * 1.002;
+      const range = maxEq - minEq || 1;
+
+      const getX = i => padding.left + (i / (curve.length - 1 || 1)) * plotW;
+      const getY = val => padding.top + plotH - ((val - minEq) / range) * plotH;
+
+      // 1. 水平参考线与 Y 轴刻度 (4 条)
+      ctx.strokeStyle = '#273549';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+
+      for (let i = 0; i <= 3; i++) {
+        const val = minEq + (range * (i / 3));
+        const y = getY(val);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+        ctx.fillText(`¥${val.toFixed(0)}`, padding.left - 6, y);
+      }
+
+      // 2. 本金基准虚线 (initialCash / 0.0%)
+      const baseY = getY(initialCash);
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#475569';
+      ctx.beginPath();
+      ctx.moveTo(padding.left, baseY);
+      ctx.lineTo(w - padding.right, baseY);
+      ctx.stroke();
+      ctx.restore();
+
+      // 3. X 轴时间标签
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const labelIndices = [0, Math.floor((curve.length - 1) / 2), curve.length - 1];
+      const uniqueIndices = [...new Set(labelIndices)];
+      uniqueIndices.forEach(idx => {
+        if (curve[idx]) {
+          const t = curve[idx].time || '';
+          const label = t.length > 11 ? t.substring(5, 16) : t;
+          ctx.fillText(label, getX(idx), h - padding.bottom + 6);
+        }
+      });
+
+      // 4. 资产走势曲线与面积渐变
+      const lastEq = curve[curve.length - 1].equity;
+      const isUp = lastEq >= initialCash;
+      const strokeColor = themeColor || (isUp ? '#ef4444' : '#10b981');
+      const gradColor = isUp ? 'rgba(239, 68, 68, 0.22)' : 'rgba(16, 185, 129, 0.22)';
+
+      // 面积
+      ctx.beginPath();
+      ctx.moveTo(getX(0), h - padding.bottom);
+      for (let i = 0; i < curve.length; i++) {
+        ctx.lineTo(getX(i), getY(curve[i].equity));
+      }
+      ctx.lineTo(getX(curve.length - 1), h - padding.bottom);
+      ctx.closePath();
+
+      const gradient = ctx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
+      gradient.addColorStop(0, gradColor);
+      gradient.addColorStop(1, 'rgba(15, 23, 42, 0.0)');
+      ctx.fillStyle = gradient;
+      ctx.fill();
+
+      // 折线
+      ctx.beginPath();
+      for (let i = 0; i < curve.length; i++) {
+        const x = getX(i);
+        const y = getY(curve[i].equity);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 2.0;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // 终点实心圆
+      const lastX = getX(curve.length - 1);
+      const lastY = getY(lastEq);
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // 交互悬停 tooltip
+      if (tooltip && !canvas._hasHoverListener) {
+        canvas._hasHoverListener = true;
+        canvas.addEventListener('mousemove', e => {
+          const activeCurve = canvas._cachedCurve || curve;
+          const activeInit = canvas._cachedInit || initialCash;
+          if (!activeCurve || activeCurve.length < 2) return;
+          const rect = canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const plotW2 = rect.width - padding.left - padding.right;
+          if (mouseX < padding.left || mouseX > rect.width - padding.right) {
+            tooltip.style.display = 'none';
+            return;
+          }
+          const ratio = (mouseX - padding.left) / plotW2;
+          const index = Math.min(Math.max(0, Math.round(ratio * (activeCurve.length - 1))), activeCurve.length - 1);
+          const pt = activeCurve[index];
+          if (!pt) return;
+          const ptUp = pt.equity >= activeInit;
+          const pnl = pt.equity - activeInit;
+          const pnlPct = (pnl / activeInit * 100);
+
+          tooltip.innerHTML = `
+            <div style="font-weight:600; color:#fff; margin-bottom:3px;">${pt.time}</div>
+            <div style="color:var(--text-muted)">权益: <strong style="color:#fff">¥${pt.equity.toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></div>
+            <div style="color:var(--text-muted)">收益: <strong style="${ptUp?'color:var(--red-up)':'color:var(--green-down)'}">${ptUp?'+':''}¥${pnl.toFixed(2)} (${ptUp?'+':''}${pnlPct.toFixed(2)}%)</strong></div>
+            ${pt.reason ? `<div style="color:#94a3b8; font-size:10.5px; margin-top:2px;">${pt.reason}</div>` : ''}
+          `;
+          tooltip.style.display = 'block';
+
+          let tipLeft = mouseX + 12;
+          if (tipLeft + 180 > rect.width) tipLeft = mouseX - 190;
+          let tipTop = e.clientY - rect.top - 20;
+          if (tipTop < 5) tipTop = 5;
+          tooltip.style.left = `${tipLeft}px`;
+          tooltip.style.top = `${tipTop}px`;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+          tooltip.style.display = 'none';
+        });
+      }
+      canvas._cachedCurve = curve;
+      canvas._cachedInit = initialCash;
+    }
+
+    function redrawAllAccountCharts(data) {
+      if (!data) return;
+      const pri = data.primary;
+      const sec = data.secondary;
+
+      if (pri) {
+        const priCurve = pri.performance?.equity_curve || [];
+        const priInit = pri.summary?.initial_cash || pri.initial_cash || 100000;
+        drawAccountEquityChart('equityCanvas_split_bal', 'chartTooltip_split_bal', priCurve, priInit, '#38bdf8');
+        drawAccountEquityChart('equityCanvas_single_bal', 'chartTooltip_single_bal', priCurve, priInit, '#38bdf8');
+      }
+      if (sec) {
+        const secCurve = sec.performance?.equity_curve || [];
+        const secInit = sec.summary?.initial_cash || sec.initial_cash || 100000;
+        drawAccountEquityChart('equityCanvas_split_agg', 'chartTooltip_split_agg', secCurve, secInit, '#fbbf24');
+        drawAccountEquityChart('equityCanvas_single_agg', 'chartTooltip_single_agg', secCurve, secInit, '#fbbf24');
+      }
+    }
+
+    function renderAccountCard(acc, isAggressive, prefix = 'split') {
       if (!acc) {
         return `<div style="color:var(--text-muted); font-size:12px; padding:20px; text-align:center;">暂无此账户数据或未启用</div>`;
       }
+      const accKey = isAggressive ? 'agg' : 'bal';
+      const cardId = `${prefix}_${accKey}`;
       const themeColor = isAggressive ? '#fbbf24' : '#38bdf8';
-      const themeBg = isAggressive ? 'rgba(245, 158, 11, 0.12)' : 'rgba(56, 189, 248, 0.12)';
-      const themeBorder = isAggressive ? 'rgba(245, 158, 11, 0.4)' : 'rgba(56, 189, 248, 0.4)';
       const pnlPct = Number(acc.total_pnl_pct || 0);
       const pnlUp = pnlPct >= 0;
 
@@ -4232,6 +4198,7 @@
       const ruleDesc = isAggressive ? '-6%硬止损 · 连续2日跌破MA20退出 · 4.5×ATR宽幅跟踪(无底线)' : '-6%硬止损 · 盘中跌破MA20趋势退出 · 3.5×ATR跟踪 · +3%浮盈保护底线';
       const ddLineDesc = isAggressive ? '回撤15%预警 / 20%复核冻结' : '回撤8%预警 / 12%复核冻结';
 
+      // 1. 持仓列表
       const positions = Array.isArray(acc.positions) ? acc.positions : [];
       let posRows = '';
       if (positions.length === 0) {
@@ -4256,6 +4223,7 @@
         }).join('');
       }
 
+      // 2. 挂起订单
       const pendEntries = Object.entries(acc.pending_entries || {});
       const pendExits = Object.entries(acc.pending_exits || {});
       let ordersHtml = '';
@@ -4268,6 +4236,7 @@
         ].join(' ');
       }
 
+      // 3. 统计指标
       const todayStats = acc.today_stats || {};
       const tradesCount = todayStats.today_trades_count || 0;
       const turnover = Number(todayStats.today_turnover || 0).toLocaleString();
@@ -4284,6 +4253,105 @@
       const topSingleStockWeight = Number(acc.top_single_stock_weight || 0);
       const topSingleSectorWeight = Number(acc.top_single_sector_weight || 0);
       const currentDrawdownPct = Number(acc.current_drawdown_pct || 0);
+
+      // 4. 最近成交流水 (本账户专属)
+      const accountTrades = Array.isArray(acc.trades) ? acc.trades : [];
+      let tradesListHtml = '';
+      if (accountTrades.length === 0) {
+        tradesListHtml = `<div style="text-align:center; color:var(--text-muted); font-size:12px; padding:16px;">当前暂无成交记录 (全额现金等待开仓信号)</div>`;
+      } else {
+        tradesListHtml = accountTrades.slice(0, 30).map(t => {
+          const isBuy = t.side === 'BUY';
+          const tag = isBuy ? '<span style="color:var(--red-up); font-weight:700">买入</span>' : '<span style="color:var(--green-down); font-weight:700">卖出</span>';
+          let pnlText = '';
+          let reviewBtn = '';
+          if (!isBuy) {
+            if (t.realized_pnl !== undefined && t.realized_pnl !== null) {
+              const pnlVal = Number(t.realized_pnl);
+              const pnlColor = pnlVal >= 0 ? 'var(--red-up)' : 'var(--green-down)';
+              pnlText = `<span style="color:${pnlColor}; font-weight:700; font-size:11px; margin-left:6px;">(${pnlVal >= 0 ? '+' : ''}¥${pnlVal.toFixed(2)})</span>`;
+            }
+            if (t.trade_id) {
+              reviewBtn = `<button class="btn btn-secondary btn-xs" style="padding:1px 6px; font-size:11px; margin-left:6px; cursor:pointer;" onclick="openTradeReviewModal('${t.trade_id}')" title="点击查看买入至卖出期间完整K线走势与潜在盈利机会">📊 复盘K线</button>`;
+            }
+          }
+          return `
+            <div class="history-item" style="padding:8px 10px; font-size:11.5px; margin-bottom:6px;">
+              <div>
+                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                  <span>${tag} <strong>${t.name || t.symbol}</strong> (${t.symbol})</span>
+                  ${pnlText}
+                  ${reviewBtn}
+                </div>
+                <div style="color:var(--text-muted); font-size:10.5px; margin-top:2px;">${t.time} | 规费: ¥${Number(t.fees || 0).toFixed(2)}</div>
+              </div>
+              <div class="text-right">
+                <div style="font-weight:600">¥${Number(t.price || 0).toFixed(2)} × ${t.shares}股</div>
+                <div style="color:var(--text-muted); font-size:10.5px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${t.reason || ''}">${t.reason || '自动策略轮动'}</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // 5. 绩效分析与统计 (本账户专属)
+      const perf = acc.performance || {};
+      const perfSum = perf.summary || {};
+      const peakEq = perfSum.peak_equity || acc.peak_equity || totalEquity;
+      const maxDdPct = perfSum.max_drawdown_pct !== undefined ? perfSum.max_drawdown_pct : currentDrawdownPct;
+      const plRatio = perfSum.profit_loss_ratio !== undefined ? perfSum.profit_loss_ratio : 0;
+      const totalFees = perfSum.total_fees !== undefined ? perfSum.total_fees : 0;
+
+      // 标的盈亏行
+      const symbolStats = Array.isArray(perf.symbol_stats) ? perf.symbol_stats : [];
+      let symbolRowsHtml = '';
+      if (symbolStats.length === 0) {
+        symbolRowsHtml = '<tr><td colspan="10" class="text-center" style="color:var(--text-muted); padding:16px;">暂无标的交易归集数据</td></tr>';
+      } else {
+        symbolRowsHtml = symbolStats.map(item => {
+          const isUp = item.total_pnl >= 0;
+          const colorClass = isUp ? 'up' : 'down';
+          const isHolding = item.status === '持仓中';
+          const statusTag = isHolding ? '<span class="tag-status tag-holding">持仓中</span>' : '<span class="tag-status tag-closed">已清仓</span>';
+          return `
+            <tr>
+              <td><strong style="color:var(--accent-blue)">${item.symbol}</strong> <span style="margin-left:4px; font-weight:600">${item.name}</span></td>
+              <td class="text-center">${statusTag}</td>
+              <td class="text-right">¥${Number(item.buy_amount||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+              <td class="text-right">¥${Number(item.sell_amount||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+              <td class="text-right ${item.realized_pnl>=0?'up':'down'}">${item.realized_pnl>=0?'+':''}¥${Number(item.realized_pnl||0).toFixed(2)}</td>
+              <td class="text-right ${item.unrealized_pnl>=0?'up':'down'}">${item.unrealized_pnl>=0?'+':''}¥${Number(item.unrealized_pnl||0).toFixed(2)}</td>
+              <td class="text-right ${colorClass}" style="font-weight:700">${isUp?'+':''}¥${Number(item.total_pnl||0).toFixed(2)}</td>
+              <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}${Number(item.pnl_pct||0).toFixed(2)}%</td>
+              <td class="text-right" style="color:var(--text-muted)">¥${Number(item.total_fees||0).toFixed(2)}</td>
+              <td class="text-center">${item.trade_count||0} 笔</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      // 每日盈亏行
+      const dailyStats = Array.isArray(perf.daily_stats) ? perf.daily_stats : [];
+      let dailyRowsHtml = '';
+      if (dailyStats.length === 0) {
+        dailyRowsHtml = '<tr><td colspan="7" class="text-center" style="color:var(--text-muted); padding:16px;">暂无历史日结算数据</td></tr>';
+      } else {
+        dailyRowsHtml = dailyStats.map(item => {
+          const isUp = item.daily_pnl >= 0;
+          const colorClass = isUp ? 'up' : 'down';
+          return `
+            <tr>
+              <td><strong style="color:#f8fafc">${item.date}</strong></td>
+              <td class="text-right">¥${Number(item.start_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+              <td class="text-right" style="font-weight:600">¥${Number(item.end_equity||0).toLocaleString('zh-CN', {minimumFractionDigits:2})}</td>
+              <td class="text-right ${colorClass}" style="font-weight:700">${isUp?'+':''}¥${Number(item.daily_pnl||0).toFixed(2)}</td>
+              <td class="text-right ${colorClass}" style="font-weight:600">${isUp?'+':''}${Number(item.daily_pnl_pct||0).toFixed(2)}%</td>
+              <td class="text-center">${item.trade_count||0} 笔</td>
+              <td class="text-right" style="color:var(--text-muted)">¥${Number(item.fees||0).toFixed(2)}</td>
+            </tr>
+          `;
+        }).join('');
+      }
 
       return `
         <div>
@@ -4346,31 +4414,131 @@
             <div style="margin-top:4px; display:flex; align-items:center; gap:6px;">📋 <strong>挂起待执行订单</strong>: ${ordersHtml}</div>
           </div>
 
-          <!-- 持仓明细表格 -->
-          <div class="table-responsive" style="max-height:180px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px;">
-            <table class="table dual-pos-table" style="margin:0; width:100%;">
-              <thead>
-                <tr style="background:#0f172a; position:sticky; top:0; z-index:2;">
-                  <th>标的 / 行业</th>
-                  <th class="text-right">持仓股数</th>
-                  <th class="text-right">成本价</th>
-                  <th class="text-right">现价</th>
-                  <th class="text-right">浮盈</th>
-                  <th class="text-right">仓位</th>
-                  <th class="text-right">止盈线</th>
-                  <th class="text-center">保护底线</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${posRows}
-              </tbody>
-            </table>
+          <!-- 持仓明细表格 (T+1持仓管理) -->
+          <div style="margin-bottom:12px;">
+            <div style="font-weight:600; font-size:12.5px; color:#fff; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+              <span>📦 当前持仓 (T+1锁仓管理)</span>
+              <span style="font-size:11px; color:var(--text-muted);">真实交易规费已计入成本</span>
+            </div>
+            <div class="table-responsive" style="max-height:160px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px;">
+              <table class="table dual-pos-table" style="margin:0; width:100%; font-size:11.5px;">
+                <thead>
+                  <tr style="background:#0f172a; position:sticky; top:0; z-index:2;">
+                    <th>标的 / 行业</th>
+                    <th class="text-right">持仓股数</th>
+                    <th class="text-right">成本价</th>
+                    <th class="text-right">现价</th>
+                    <th class="text-right">浮盈</th>
+                    <th class="text-right">仓位</th>
+                    <th class="text-right">止盈线</th>
+                    <th class="text-center">保护底线</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${posRows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 最近成交记录 (专属成交流水) -->
+          <div style="margin-bottom:12px; border-top:1px solid rgba(51,65,85,0.7); padding-top:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <div style="font-weight:600; font-size:12.5px; color:#fff; display:flex; align-items:center; gap:6px;">
+                <span>📜 最近成交记录</span>
+                <span class="badge" style="background:rgba(100,116,139,0.25); color:var(--text-muted); font-size:10.5px; padding:1px 6px;">${accountTrades.length} 笔</span>
+              </div>
+              <span style="font-size:11px; color:var(--text-muted);">本账户独立成交流水</span>
+            </div>
+            <div class="history-list" style="max-height:160px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px; padding:6px; background:rgba(15,23,42,0.5);">
+              ${tradesListHtml}
+            </div>
+          </div>
+
+          <!-- 📊 账户收益统计与绩效分析 (本账户独立图表与明细) -->
+          <div style="border-top:1px solid rgba(51,65,85,0.7); padding-top:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <div style="font-weight:600; font-size:12.5px; color:#fff;">📊 收益统计与绩效分析</div>
+                <div class="tab-group">
+                  <button id="tabBtnChart_${cardId}" class="tab-btn active" onclick="switchAccountPerfTab('${prefix}', '${accKey}', 'chart')">📈 走势图</button>
+                  <button id="tabBtnSymbols_${cardId}" class="tab-btn" onclick="switchAccountPerfTab('${prefix}', '${accKey}', 'symbols')">🏆 标的排行</button>
+                  <button id="tabBtnDaily_${cardId}" class="tab-btn" onclick="switchAccountPerfTab('${prefix}', '${accKey}', 'daily')">📅 每日明细</button>
+                </div>
+              </div>
+              <div style="font-size:11px; color:var(--text-muted); display:flex; gap:10px; flex-wrap:wrap;">
+                <span>峰值: <strong style="color:#fff">¥${Number(peakEq).toLocaleString('zh-CN', {minimumFractionDigits:2})}</strong></span>
+                <span>最大回撤: <strong style="color:var(--green-down)">-${Number(maxDdPct).toFixed(2)}%</strong></span>
+                <span>盈亏比: <strong style="color:#38bdf8">${Number(plRatio).toFixed(2)}:1</strong></span>
+                <span>累计规费: <strong style="color:var(--text-muted)">¥${Number(totalFees).toFixed(2)}</strong></span>
+              </div>
+            </div>
+
+            <!-- Tab 1: 走势图 -->
+            <div id="perfTabChart_${cardId}" class="perf-tab-content">
+              <div style="position: relative; width: 100%; height: 210px; background: rgba(15,23,42,0.5); border: 1px solid var(--border-color); border-radius: 6px; padding: 4px;">
+                <canvas id="equityCanvas_${cardId}" style="width: 100%; height: 100%; display: block;"></canvas>
+                <div id="chartTooltip_${cardId}" style="display:none; position:absolute; pointer-events:none; background:rgba(15,23,42,0.95); border:1px solid ${themeColor}; padding:8px 12px; border-radius:6px; font-size:11px; z-index:10; box-shadow:0 4px 12px rgba(0,0,0,0.5); line-height: 1.5;"></div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:10.5px; color:var(--text-muted); flex-wrap:wrap; gap:6px;">
+                <div>💡 提示：鼠标悬停曲线可查看各时点精确资产与盈亏明细</div>
+                <div style="display:flex; gap:10px;">
+                  <span><span style="display:inline-block; width:8px; height:8px; background:${themeColor}; border-radius:2px; margin-right:4px;"></span>总资产曲线</span>
+                  <span><span style="display:inline-block; width:10px; height:2px; background:#64748b; margin-right:4px; vertical-align:middle;"></span>初始本金基准线</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: 标的盈亏排行 -->
+            <div id="perfTabSymbols_${cardId}" class="perf-tab-content" style="display: none;">
+              <div class="table-responsive" style="max-height: 210px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px;">
+                <table class="table" style="margin:0; width:100%; font-size:11.5px;">
+                  <thead>
+                    <tr style="background:#0f172a; position:sticky; top:0; z-index:2;">
+                      <th>股票标的</th>
+                      <th class="text-center">状态</th>
+                      <th class="text-right">买入额</th>
+                      <th class="text-right">卖出额</th>
+                      <th class="text-right">已实现盈亏</th>
+                      <th class="text-right">浮动盈亏</th>
+                      <th class="text-right">净收益</th>
+                      <th class="text-right">收益率</th>
+                      <th class="text-right">规费</th>
+                      <th class="text-center">笔数</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${symbolRowsHtml}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Tab 3: 每日盈亏明细 -->
+            <div id="perfTabDaily_${cardId}" class="perf-tab-content" style="display: none;">
+              <div class="table-responsive" style="max-height: 210px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px;">
+                <table class="table" style="margin:0; width:100%; font-size:11.5px;">
+                  <thead>
+                    <tr style="background:#0f172a; position:sticky; top:0; z-index:2;">
+                      <th>交易日期</th>
+                      <th class="text-right">期初资产</th>
+                      <th class="text-right">期末资产</th>
+                      <th class="text-right">当日净盈亏</th>
+                      <th class="text-right">日收益率</th>
+                      <th class="text-center">成交笔数</th>
+                      <th class="text-right">规费</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${dailyRowsHtml}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       `;
     }
-
-
 
     function updateTopMetricsWithDual(data) {
       if (!data || !data.primary) return;
@@ -4417,8 +4585,7 @@
       }
     }
 
-
-function renderDualAccounts(data) {
+    function renderDualAccounts(data) {
       if (!data || !data.success) return;
       const primary = data.primary;
       const secondary = data.secondary;
@@ -4431,16 +4598,31 @@ function renderDualAccounts(data) {
       // 渲染 Split 视图
       const balSplit = document.getElementById('balancedCardSplit');
       const aggSplit = document.getElementById('aggressiveCardSplit');
-      if (balSplit) balSplit.innerHTML = renderAccountCard(primary, false);
-      if (aggSplit) aggSplit.innerHTML = renderAccountCard(secondary, true);
+      if (balSplit) balSplit.innerHTML = renderAccountCard(primary, false, 'split');
+      if (aggSplit) aggSplit.innerHTML = renderAccountCard(secondary, true, 'split');
 
       // 渲染 Single 视图
       const balSingle = document.getElementById('balancedCardSingle');
       const aggSingle = document.getElementById('aggressiveCardSingle');
-      if (balSingle) balSingle.innerHTML = renderAccountCard(primary, false);
-      if (aggSingle) aggSingle.innerHTML = renderAccountCard(secondary, true);
+      if (balSingle) balSingle.innerHTML = renderAccountCard(primary, false, 'single');
+      if (aggSingle) aggSingle.innerHTML = renderAccountCard(secondary, true, 'single');
+
+      // 恢复各卡片激活的 tab 状态
+      ['split_bal', 'split_agg', 'single_bal', 'single_agg'].forEach(cardId => {
+        const activeTab = accountPerfTabs[cardId] || 'chart';
+        const parts = cardId.split('_');
+        switchAccountPerfTab(parts[0], parts[1], activeTab);
+      });
+
+      // 绘制曲线
+      redrawAllAccountCharts(data);
     }
 
+    window.addEventListener('resize', () => {
+      if (cachedDualData) {
+        redrawAllAccountCharts(cachedDualData);
+      }
+    });
   </script>
 
   <!-- 自动交易策略管理与切换弹窗 -->

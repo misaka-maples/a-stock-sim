@@ -1326,6 +1326,10 @@ def extract_account_v2_status(strat, acc, risk_level, default_regime_caps):
     today_turnover = sum(float(t.get("amount", 0.0)) for t in today_trades)
     today_fees = sum(float(t.get("fees", 0.0)) for t in today_trades)
 
+    perf = acc.get_performance_metrics() if hasattr(acc, "get_performance_metrics") else {}
+    all_trades = getattr(acc, "trades", [])
+    recent_trades = list(reversed(all_trades))[:30]
+
     return {
         "strategy_id": strat.name,
         "strategy_display_name": getattr(strat, "display_name", strat.name),
@@ -1360,6 +1364,8 @@ def extract_account_v2_status(strat, acc, risk_level, default_regime_caps):
             "today_turnover": round(today_turnover, 2),
             "today_fees": round(today_fees, 2)
         },
+        "trades": recent_trades,
+        "performance": perf,
         "summary": summary
     }
 
