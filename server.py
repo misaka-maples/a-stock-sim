@@ -92,6 +92,7 @@ logger = logging.getLogger("sim_server")
 class ServerContext:
     def __init__(self):
         self.account: Optional[SimAccount] = None
+        self.trading_runtime: Optional[Any] = None
         self.strategy: Optional[Any] = None
         self.engine: Optional[PaperTradingEngine] = None
         self.symbols: List[str] = []
@@ -439,12 +440,27 @@ def worker_step(now=None):
             sync_execution_settings()
         storage_healthy = ctx.account is None or getattr(ctx.account, "_persistence_error", None) is None
         if storage_healthy and ctx.strategy_active and ctx.strategy and (MarketFeed.is_trading_time(checked_at) or ctx.ignore_market_hours):
-            if hasattr(ctx.strategy, "config"):
-                ctx.strategy.on_tick(ctx.last_quotes, now=checked_at)
+            if getattr(ctx, "trading_runtime", None):
+                try:
+                    csi300_bars = getattr(ctx.strategy, "_benchmark", [])
+                    cands = getattr(ctx.strategy, "latest_candidates", [])
+                    m_data = {
+                        "csi300_bars": csi300_bars,
+                        "candidates": cands,
+                        "top_sectors": getattr(ctx.strategy, "top_industries", [])
+                    }
+                    as_of_str = checked_at.date().isoformat()
+                    v3_res = ctx.trading_runtime.step(as_of_str, ctx.last_quotes, m_data, now=checked_at)
+                    ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
+                except Exception as _e:
+                    logger.exception("V3 TradingRuntime step execution error: %s", _e)
             else:
-                ctx.strategy.on_tick(ctx.last_quotes)
-            ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
-            ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
+                if hasattr(ctx.strategy, "config"):
+                    ctx.strategy.on_tick(ctx.last_quotes, now=checked_at)
+                else:
+                    ctx.strategy.on_tick(ctx.last_quotes)
+                ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
+                ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
         if ctx.account:
             ctx.account.save_if_due()
         current_held = list(ctx.account.positions) if ctx.account else []
@@ -1477,8 +1493,10 @@ def extract_account_v2_status(strat, acc, risk_level, default_regime_caps):
 
 @app.get("/api/strategy/dual_accounts")
 def get_strategy_dual_accounts():
-    """获取 Product AB v2.0 稳健账户 (Balanced) 与 进攻账户 (Aggressive) 18维全景对账数据"""
+    """获取 Product AB v2.0/v3.0 稳健账户 (Balanced) 与 进攻账户 (Aggressive) 18维全景对账数据"""
     with ctx.lock:
+        if getattr(ctx, "trading_runtime", None):
+            return ctx.trading_runtime.get_dual_accounts_summary()
         if not ctx.strategy:
             return {"success": False, "message": "当前未载入策略"}
 
@@ -2289,11 +2307,37 @@ def main():
         symbols = StockUniverse.load_universe(only_main_board=True)
         logger.info(f"已全量加载全A股监控池（严格仅限沪深主板），共监控 {len(symbols)} 只标的。")
 
-    ctx.account = SimAccount(
-        initial_cash=args.cash,
-        strict_t1=(not args.no_t1),
-        save_path=str(account_file_path)
-    )
+    v3_enabled = os.getenv("ASTOCK_V3_TRADING_ENABLED", "1") in ("1", "true", "True")
+    v3_mode = os.getenv("ASTOCK_V3_MODE", "ACTIVE")
+    if v3_enabled:
+        try:
+            from src.astock.trade.runtime import TradingRuntime
+            from src.astock.trade.adapter import TradingRuntimeAdapter
+            from src.astock.trade.migration import migrate_json_accounts_to_sqlite
+
+            v3_db_path = BASE_DIR / "data" / "trading_v3.sqlite"
+            if not v3_db_path.exists():
+                migrate_json_accounts_to_sqlite(
+                    sim_account_json_path=str(account_file_path),
+                    sandbox_account_json_path=str(BASE_DIR / "sandbox_ab_account.json"),
+                    sqlite_db_path=str(v3_db_path)
+                )
+            ctx.trading_runtime = TradingRuntime(db_path=str(v3_db_path), mode=v3_mode, initial_capital=args.cash)
+            ctx.account = TradingRuntimeAdapter(ctx.trading_runtime, primary_account_id="balanced")
+            logger.info("★ V3 统一交易架构已正式接管！运行模式: %s, 数据库: %s", v3_mode, v3_db_path)
+        except Exception as _e:
+            logger.exception("初始化 V3 TradingRuntime 失败，回退到旧版 SimAccount: %s", _e)
+            ctx.account = SimAccount(
+                initial_cash=args.cash,
+                strict_t1=(not args.no_t1),
+                save_path=str(account_file_path)
+            )
+    else:
+        ctx.account = SimAccount(
+            initial_cash=args.cash,
+            strict_t1=(not args.no_t1),
+            save_path=str(account_file_path)
+        )
     if args.purge_non_main:
         purge_res = ctx.account.purge_non_main_board()
         logger.info(f"已剥离历史非沪深主板资产与收益: {purge_res}")

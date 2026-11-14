@@ -84,6 +84,9 @@ class TargetPosition:
     target_shares: Optional[int] = None
     reason: str = ""
 
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class TargetPortfolio:
@@ -96,6 +99,19 @@ class TargetPortfolio:
     cash_weight: float
     constraints: Dict[str, Any] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "account_id": self.account_id,
+            "target_date": self.target_date,
+            "target_positions": {sym: tp.to_dict() for sym, tp in self.target_positions.items()},
+            "regime": self.regime.value if hasattr(self.regime, "value") else str(self.regime),
+            "regime_cap": self.regime_cap,
+            "total_weight": self.total_weight,
+            "cash_weight": self.cash_weight,
+            "constraints": self.constraints,
+            "reasons": self.reasons
+        }
 
 
 @dataclass
@@ -212,6 +228,19 @@ class Position:
     holding_days: int = 0
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
+    sector: str = "其他"
+
+    @property
+    def total_shares(self) -> int:
+        return self.shares
+
+    @property
+    def tradable_shares(self) -> int:
+        return self.available_shares
+
+    @property
+    def avg_cost(self) -> float:
+        return self.cost_price
 
     def update_price(self, price: float):
         if price <= 0:
@@ -240,6 +269,18 @@ class AccountBalance:
     current_drawdown_pct: float = 0.0
     is_frozen: bool = False
     updated_at: str = ""
+
+    @property
+    def stock_value(self) -> float:
+        return self.stock_market_value
+
+    @property
+    def total_cash(self) -> float:
+        return self.cash
+
+    @property
+    def available_cash(self) -> float:
+        return round(self.cash - self.frozen_cash, 2)
 
     def update_metrics(self, market_value: float):
         self.stock_market_value = round(market_value, 2)
