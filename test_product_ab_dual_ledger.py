@@ -322,6 +322,7 @@ def test_wechat_notification_explains_no_open_reason():
     }
 
     notifier = NotificationManager()
+    notifier.config['enabled'] = True
     captured_messages = []
     notifier.dispatch_message = lambda title, content, summary: captured_messages.append({"title": title, "content": content, "summary": summary})
 
@@ -335,6 +336,7 @@ def test_wechat_notification_explains_no_open_reason():
         strategy_status=strat_status
     )
 
+    notifier.executor.shutdown(wait=True)
     assert len(captured_messages) == 1
     content = captured_messages[0]["content"]
 

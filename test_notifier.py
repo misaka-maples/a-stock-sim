@@ -32,6 +32,9 @@ class TestNotifier(unittest.TestCase):
     def tearDown(self):
         if self.test_cfg_path.exists():
             self.test_cfg_path.unlink()
+        from notifier import NOTIFICATION_CONFIG_PATH
+        self.mgr.config_path = NOTIFICATION_CONFIG_PATH
+        self.mgr.load_config()
 
     def test_default_config_and_masking(self):
         """测试默认配置与敏感凭证脱敏"""

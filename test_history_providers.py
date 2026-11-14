@@ -264,7 +264,7 @@ class ProviderTests(unittest.TestCase):
         sdk=Mock();sdk.login.return_value.error_code='10001011'
         sdk.login.return_value.error_msg='private response must not escape'
         out=io.StringIO()
-        with patch('history_providers._install_bao_budget'),patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',out),patch('sys.stdin',io.StringIO('')):
+        with patch('history_providers._install_bao_budget'),patch('history_providers._acquire_worker_lease'),patch.dict('sys.modules',{'baostock':sdk}),patch('sys.stdout',out),patch('sys.stdin',io.StringIO('')):
             self.assertEqual(_baostock_stream(),1)
         message=json.loads(out.getvalue())
         self.assertEqual(message,{'id':None,'phase':'login','error':'sdk_error_10001011','asset_error':False})
