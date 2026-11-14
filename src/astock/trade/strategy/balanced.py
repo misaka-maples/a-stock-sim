@@ -1,0 +1,170 @@
+# -*- coding: utf-8 -*-
+"""
+A-Stock Balanced V3 Strategy
+Combines Product A (Core Blue Chips) and Product B (Dynamic Sector Momentum).
+Risk Profile: Medium, steady growth.
+Caps: RISK_OFF=30%, NEUTRAL=45%, RISK_ON=65%, STRONG_RISK_ON=80%.
+"""
+
+from typing import Dict, List, Optional, Any
+import uuid
+from .base import BaseStrategy
+from ..models import (
+    Signal, TargetPosition, TargetPortfolio, MarketRegime, Position, AccountBalance
+)
+from ..risk.portfolio import PortfolioRiskRule, BALANCED_REGIME_CAPS
+
+
+PRODUCT_A_CORE = [
+    "sh600519", "sh601318", "sz300750", "sz002594", "sh600036",
+    "sh601899", "sh600900", "sh601138", "sz002475", "sz000001",
+    "sh600237", "sh600105", "sz003035", "sh603578", "sh601127",
+    "sz002230", "sz002460"
+]
+
+BALANCED_AB_BUDGETS = {
+    MarketRegime.RISK_OFF: (0.70, 0.30),
+    MarketRegime.NEUTRAL: (0.60, 0.40),
+    MarketRegime.RISK_ON: (0.20, 0.80),
+    MarketRegime.STRONG_RISK_ON: (0.50, 0.50),
+}
+
+
+class BalancedStrategy(BaseStrategy):
+    """Balanced dual-pool quantitative momentum strategy."""
+
+    def __init__(self, account_id: str = "balanced"):
+        super().__init__(name="Product_AB_Balanced_V3", account_id=account_id)
+        self.risk_rule = PortfolioRiskRule(account_type="balanced")
+        self.max_positions = 3
+        self.max_stock_weight = 0.15
+        self.max_sector_weight = 0.30
+
+    def generate_signals(
+        self,
+        as_of: str,
+        market_data: Dict[str, Any],
+        regime: MarketRegime
+    ) -> List[Signal]:
+        """
+        Extracts candidate signals from precomputed momentum metrics.
+        """
+        run_id = f"SIG_{uuid.uuid4().hex[:8]}"
+        candidates = market_data.get("candidates", [])
+        signals = []
+        for rank, c in enumerate(candidates, 1):
+            sig = Signal(
+                run_id=run_id,
+                signal_asof=as_of,
+                symbol=c.get("symbol", ""),
+                name=c.get("name", ""),
+                rank=rank,
+                score=float(c.get("score", 0.0)),
+                sector=c.get("sector", "其他"),
+                price=float(c.get("price", c.get("close", 0.0))),
+                ma20=float(c.get("ma20", 0.0)),
+                ma60=float(c.get("ma60", 0.0)),
+                ma120=float(c.get("ma120", 0.0)),
+                atr=float(c.get("atr", 0.0)),
+                ret20=float(c.get("ret20", 0.0)),
+                ret60=float(c.get("ret60", 0.0)),
+                reasons=[f"momentum_score_{c.get('score', 0):.2f}"]
+            )
+            signals.append(sig)
+        return signals
+
+    def plan_targets(
+        self,
+        as_of: str,
+        regime: MarketRegime,
+        signals: List[Signal],
+        balance: AccountBalance,
+        positions: Dict[str, Position],
+        is_frozen: bool = False
+    ) -> TargetPortfolio:
+        """
+        Builds TargetPortfolio observing:
+        - Drawdown freeze (if active -> 0% new buys)
+        - Regime total position cap (30%/45%/65%/80%)
+        - A/B budget distribution
+        - Single stock 15% and sector 30% concentration limits
+        """
+        max_regime_cap = self.risk_rule.get_effective_regime_cap(regime, is_frozen)
+        total_equity = balance.total_equity
+
+        curr_stock_val = sum(p.market_value for p in positions.values())
+        curr_stock_wt = curr_stock_val / total_equity if total_equity > 0 else 0.0
+        remaining_allowed_wt = max(0.0, max_regime_cap - curr_stock_wt)
+
+        target_positions: Dict[str, TargetPosition] = {}
+        allocated_weight = 0.0
+
+        if remaining_allowed_wt >= 0.02 and not is_frozen:
+            w_a, w_b = BALANCED_AB_BUDGETS.get(regime, (0.70, 0.30))
+
+            # Split signals into A (core) and B (dynamic)
+            sigs_a = [s for s in signals if s.symbol in PRODUCT_A_CORE]
+            sigs_b = [s for s in signals if s.symbol not in PRODUCT_A_CORE]
+
+            available_slots = max(0, self.max_positions - len(positions))
+            target_weights: Dict[str, float] = {}
+
+            if w_a > 0 and sigs_a:
+                for s in sigs_a[:available_slots]:
+                    target_weights[s.symbol] = target_weights.get(s.symbol, 0.0) + (w_a * self.max_stock_weight)
+
+            if w_b > 0 and sigs_b:
+                for s in sigs_b[:available_slots]:
+                    target_weights[s.symbol] = target_weights.get(s.symbol, 0.0) + (w_b * self.max_stock_weight)
+
+            # Enforce concentration
+            sector_wts: Dict[str, float] = {}
+            for p in positions.values():
+                sec = getattr(p, "sector", "其他")
+                p_wt = p.market_value / total_equity if total_equity > 0 else 0.0
+                sector_wts[sec] = sector_wts.get(sec, 0.0) + p_wt
+
+            for sym, raw_wt in sorted(target_weights.items(), key=lambda x: -x[1]):
+                if sym in positions:
+                    continue
+                if len(positions) + len(target_positions) >= self.max_positions:
+                    break
+                if allocated_weight >= remaining_allowed_wt - 1e-4:
+                    break
+
+                sig = next((s for s in signals if s.symbol == sym), None)
+                sec = sig.sector if sig else "其他"
+                curr_sec = sector_wts.get(sec, 0.0)
+                sec_headroom = max(0.0, self.max_sector_weight - curr_sec)
+
+                final_wt = min(raw_wt, self.max_stock_weight, remaining_allowed_wt - allocated_weight, sec_headroom)
+                final_wt = round(final_wt, 4)
+
+                if final_wt >= 0.02:
+                    target_positions[sym] = TargetPosition(
+                        symbol=sym,
+                        target_weight=final_wt,
+                        reason=f"Product_AB_Balanced_{regime.value}(wA:{w_a*100:.0f}%/wB:{w_b*100:.0f}%)"
+                    )
+                    allocated_weight += final_wt
+                    sector_wts[sec] = curr_sec + final_wt
+
+        total_target_wt = round(curr_stock_wt + allocated_weight, 4)
+        cash_wt = round(max(0.0, 1.0 - total_target_wt), 4)
+
+        return TargetPortfolio(
+            account_id=self.account_id,
+            target_date=as_of,
+            target_positions=target_positions,
+            regime=regime,
+            regime_cap=max_regime_cap,
+            total_weight=total_target_wt,
+            cash_weight=cash_wt,
+            constraints={
+                "max_positions": self.max_positions,
+                "max_stock_weight": self.max_stock_weight,
+                "max_sector_weight": self.max_sector_weight,
+                "is_frozen": is_frozen
+            },
+            reasons=[f"Balanced V3 plan for regime {regime.value}"]
+        )
