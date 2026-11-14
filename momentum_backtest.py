@@ -63,7 +63,8 @@ class MomentumBacktestEngine:
         self.work_dir, self.progress = work_dir, progress
         self._progress_at = 0
         self._stream_store = None
-        self.feed = feed if feed is not None else HistoricalDataFeed()
+        self.feed = feed if feed is not None else HistoricalDataFeed(offline_only=True)
+        self.feed.offline_only = True
         if end_date is None:
             from history_data import last_completed_trading_day
             end_date = last_completed_trading_day()

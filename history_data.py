@@ -175,7 +175,8 @@ class HistoricalDataFeed:
     INDUSTRY_CACHE_TTL = datetime.timedelta(days=7)
     MAX_WORKERS = 6
 
-    def __init__(self, cache_dir: Optional[Path] = None, request_timeout: float = 6):
+    def __init__(self, cache_dir: Optional[Path] = None, request_timeout: float = 6, offline_only: bool = False):
+        self.offline_only = offline_only or (os.environ.get("ASTOCK_OFFLINE_MODE") in ("1", "true", "True"))
         self.compact_limit = None
         self.cache_dir = Path(cache_dir) if cache_dir is not None else CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -310,6 +311,38 @@ class HistoricalDataFeed:
         }
 
     def _read_cache(self, symbol, start, end, adjustment):
+        # 优先读取 Parquet 高性能列式存储
+        try:
+            if not hasattr(self, "_local_storage") or self._local_storage is None:
+                from src.astock.data.storage import LocalStorageManager
+                self._local_storage = LocalStorageManager(self.cache_dir.parent / "storage")
+            norm_sym = ("sh" + symbol[4:]) if symbol.startswith("idx_") else normalize_symbol_for_tencent(symbol)
+            p_bars = self._local_storage.read_daily_bars(norm_sym, start_date=start, end_date=end, adjust_type=adjustment)
+            if p_bars:
+                legacy_bars = [b.to_legacy_dict() for b in p_bars]
+                last_b = p_bars[-1]
+                now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                fetched_at = (last_b.updated_at if getattr(last_b, "updated_at", None) else None) or now_iso
+                valid_until = (datetime.datetime.now(BEIJING) + datetime.timedelta(hours=24)).isoformat()
+                meta = {
+                    "schema_version": self.CACHE_SCHEMA, "symbol": symbol, "adjustment": adjustment,
+                    "source": last_b.source, "latest_available": last_b.trade_date,
+                    "latest_required": end, "latest_status": "current",
+                    "fetched_at": fetched_at, "freshness_valid_until": valid_until,
+                    "requested_start": start, "requested_end": end,
+                    "coverage": {"start": p_bars[0].trade_date, "end": last_b.trade_date,
+                                 "count": len(p_bars), "missing_trading_dates": []},
+                    "coverage_complete": True, "raw_prices_available": True,
+                    "fresh": True, "warning": [], "error": None
+                }
+                return {
+                    "schema_version": self.CACHE_SCHEMA, "symbol": symbol,
+                    "name": self._security_name(norm_sym, norm_sym[2:]),
+                    "bars": legacy_bars, "metadata": meta
+                }
+        except Exception:
+            pass
+
         try:
             data = json.loads(self._get_cache_path(symbol, adjustment=adjustment).read_text(encoding="utf-8"))
             if data.get("schema_version") != self.CACHE_SCHEMA or data.get("symbol") != symbol:
@@ -430,6 +463,8 @@ class HistoricalDataFeed:
         return name, bars, errors
 
     def _download(self, symbol, start, end, adjustment):
+        if getattr(self, "offline_only", False) or (os.environ.get("ASTOCK_OFFLINE_MODE") in ("1", "true", "True")):
+            return symbol[2:], [], "offline", ["offline_mode_active"]
         return self._sources.download(symbol, start, end, adjustment,
                                       legacy_download=self._download_legacy)
 
@@ -583,6 +618,14 @@ class HistoricalDataFeed:
                             <= datetime.date.fromisoformat(old["requested_end"]))
             except (ValueError, TypeError):
                 evidence = False
+        if (getattr(self, "offline_only", False) or (os.environ.get("ASTOCK_OFFLINE_MODE") in ("1", "true", "True"))) and cached:
+            metadata = self._describe(subset, start, end, old.get("source", "cache"),
+                                      old.get("fetched_at"), old.get("warning", []), old.get("error"))
+            metadata.update(adjustment=adjustment, cache_available=True, update_mode="offline_cache", fresh=True)
+            with self._lock:
+                self.metadata[key] = metadata
+            return symbol, self._security_name(symbol, cached.get("name", symbol[2:])), subset
+
         if cached:
             metadata = self._describe(subset, start, end, old.get("source", "cache"),
                                       old.get("fetched_at"), old.get("warning", []), old.get("error"))

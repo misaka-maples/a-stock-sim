@@ -54,6 +54,16 @@ from api_auth import install_auth
 from execution import _risk_and_limits
 from runtime_resources import memory_snapshot, release_unused_memory, configure_logging
 from backtest_jobs import JobStore
+from src.astock.data.storage import LocalStorageManager
+from src.astock.data.providers.manager import ProviderManager
+from src.astock.data.service import AStockDataService
+from src.astock.data.scheduler import DataScheduler
+
+# 现代量化数据系统核心单例
+data_storage = LocalStorageManager()
+data_providers = ProviderManager()
+data_service = AStockDataService(storage=data_storage, providers=data_providers)
+data_scheduler = DataScheduler(data_service=data_service)
 
 BACKTEST_ASYNC = True
 _job_store = None
@@ -565,6 +575,11 @@ async def lifespan(app: FastAPI):
         setup_account_trade_notification(ctx.account)
     ctx.worker_thread = threading.Thread(target=background_worker, daemon=True)
     ctx.worker_thread.start()
+    try:
+        data_scheduler.start()
+        logger.info("数据层增量行情调度器已启动")
+    except Exception as _e:
+        logger.error(f"启动数据调度器失败: {_e}")
     logger.info("HTTP API 服务启动完成。")
     try:
         yield
@@ -574,6 +589,11 @@ async def lifespan(app: FastAPI):
         ctx.worker_stop.set()
         if ctx.worker_thread:
             ctx.worker_thread.join(timeout=10.)
+        try:
+            data_scheduler.stop()
+            logger.info("数据层增量行情调度器已安全停止")
+        except Exception:
+            pass
         with ctx.lock:
             if ctx.account:
                 ctx.account.save()
@@ -1016,6 +1036,91 @@ def refresh_history():
 
     strategy.prepare(now, synchronous=False)
     return {"success": True, "message": "已触发历史数据后台检测与更新", "refreshing": True}
+
+
+@app.get("/api/data/status")
+def get_data_system_status():
+    """获取数据层统一状态、存储覆盖率、基准K线及调度器状态"""
+    now = datetime.datetime.now(BEIJING)
+    sync_prog = data_storage.get_all_sync_progress()
+    total_tracked = len(sync_prog)
+    last_mkt_day = last_completed_trading_day(now)
+
+    up_to_date = sum(1 for p in sync_prog.values() if p.last_trade_date == last_mkt_day)
+    coverage = round(up_to_date / total_tracked * 100, 1) if total_tracked > 0 else 0.0
+
+    parquet_dir = BASE_DIR / "data" / "storage" / "parquet"
+    parquet_files = list(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+    parquet_count = len(parquet_files)
+    parquet_size_mb = round(sum(f.stat().st_size for f in parquet_files) / (1024 * 1024), 2) if parquet_files else 0.0
+
+    db_path = BASE_DIR / "data" / "storage" / "sqlite" / "metadata.db"
+    db_size_mb = round(db_path.stat().st_size / (1024 * 1024), 2) if db_path.exists() else 0.0
+
+    bm_bars = data_service.get_benchmark_bars("sh000300")
+    bm_info = {
+        "symbol": "sh000300",
+        "name": "沪深300指数",
+        "last_date": bm_bars[-1].trade_date if bm_bars else None,
+        "total_bars": len(bm_bars)
+    }
+
+    cache_stats = data_storage.memory_cache.get_stats() if hasattr(data_storage, "memory_cache") else {}
+
+    return {
+        "status": "ready",
+        "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_completed_trading_day": last_mkt_day,
+        "total_symbols_tracked": total_tracked,
+        "up_to_date_symbols": up_to_date,
+        "coverage_pct": coverage,
+        "storage": {
+            "parquet_files": parquet_count,
+            "parquet_size_mb": parquet_size_mb,
+            "sqlite_size_mb": db_size_mb,
+            "cache_hit_ratio": cache_stats.get("hit_ratio", 0.0),
+            "cache_size": cache_stats.get("current_size", 0)
+        },
+        "benchmark": bm_info,
+        "scheduler": data_scheduler.get_status()
+    }
+
+
+@app.get("/api/data/providers")
+def get_data_providers_status():
+    """获取所有数据源 (BaoStock, Sina, Tencent, AKShare) 的频控与熔断监控指标"""
+    return {
+        "timestamp": datetime.datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M:%S"),
+        "providers": data_providers.get_provider_status()
+    }
+
+
+@app.get("/api/data/tasks")
+def get_data_sync_tasks(limit: int = 20):
+    """获取近期数据同步/补采任务记录列表"""
+    tasks = data_storage.get_latest_tasks(limit=limit)
+    return {
+        "tasks": [t.to_dict() for t in tasks]
+    }
+
+
+@app.post("/api/data/sync")
+def trigger_data_sync(payload: Optional[Dict[str, Any]] = None):
+    """手动触发指定或最新交易日的增量行情数据采集任务"""
+    trade_date = None
+    if payload and "trade_date" in payload:
+        trade_date = payload["trade_date"]
+    if not trade_date:
+        trade_date = last_completed_trading_day(datetime.datetime.now(BEIJING))
+
+    res = data_scheduler.trigger_manual_sync(trade_date=trade_date)
+    return {
+        "success": True,
+        "message": f"手动增量行情采集任务已提交，目标交易日: {trade_date}",
+        "result": res,
+        "target_date": trade_date
+    }
+
 
 
 @app.get("/api/universe")

@@ -119,7 +119,8 @@ class BacktestEngine:
         self.max_holding_days = max_holding_days
 
         supplied_feed = self._momentum_kwargs.pop("feed", None)
-        self.feed = supplied_feed if supplied_feed is not None else HistoricalDataFeed()
+        self.feed = supplied_feed if supplied_feed is not None else HistoricalDataFeed(offline_only=True)
+        self.feed.offline_only = True
 
     def _calculate_buy_fees(self, gross_amount: float) -> float:
         comm = max(self.min_commission, gross_amount * self.commission_rate)
