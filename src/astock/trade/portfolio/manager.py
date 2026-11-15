@@ -1,3 +1,4 @@
+# src/astock/trade/portfolio/manager.py
 # -*- coding: utf-8 -*-
 """
 A-Stock Portfolio Manager
@@ -22,11 +23,13 @@ class PortfolioManager:
         self,
         risk_manager: RiskManager,
         order_manager: OrderManager,
-        broker: BaseBrokerAdapter
+        broker: BaseBrokerAdapter,
+        ledger: Optional[Any] = None
     ):
         self.risk_manager = risk_manager
         self.order_manager = order_manager
         self.broker = broker
+        self.ledger = ledger
         self.rebalancer = PortfolioRebalancer()
 
     def execute_rebalance(
@@ -37,21 +40,25 @@ class PortfolioManager:
     ) -> List[Order]:
         """
         Translates TargetPortfolio into orders, validates through pre-trade risk,
-        and submits to broker.
+        and marks orders as SUBMITTED in OrderManager.
+        Backed by unified SQLiteAccountLedger when present.
         """
         account_id = target_portfolio.account_id
-        positions = self.broker.get_positions(account_id)
-        cash = self.broker.get_cash(account_id)
-
-        # Temporary balance view
-        mv = sum(p.market_value for p in positions.values())
-        balance = AccountBalance(
-            account_id=account_id,
-            cash=cash,
-            frozen_cash=0.0,
-            stock_market_value=mv,
-            total_equity=cash + mv
-        )
+        if self.ledger:
+            positions = self.ledger.get_positions(account_id)
+            balance = self.ledger.get_balance(account_id)
+            cash = balance.available_cash
+        else:
+            positions = self.broker.get_positions(account_id)
+            cash = self.broker.get_cash(account_id)
+            mv = sum(p.market_value for p in positions.values())
+            balance = AccountBalance(
+                account_id=account_id,
+                cash=cash,
+                frozen_cash=0.0,
+                stock_market_value=mv,
+                total_equity=cash + mv
+            )
 
         orders = self.rebalancer.generate_orders_from_target(
             target_portfolio=target_portfolio,

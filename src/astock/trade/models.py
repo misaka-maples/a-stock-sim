@@ -284,7 +284,7 @@ class AccountBalance:
 
     def update_metrics(self, market_value: float):
         self.stock_market_value = round(market_value, 2)
-        self.total_equity = round(self.cash + self.frozen_cash + self.stock_market_value, 2)
+        self.total_equity = round(self.total_cash + self.stock_market_value, 2)
         self.peak_equity = max(self.peak_equity, self.total_equity)
         if self.peak_equity > 0:
             dd = (self.peak_equity - self.total_equity) / self.peak_equity * 100.0

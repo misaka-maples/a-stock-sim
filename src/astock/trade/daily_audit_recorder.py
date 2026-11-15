@@ -12,20 +12,29 @@ Automatically tracks consecutive trading day metrics without manual intervention
 - Systemd restart count
 - Peak resident memory (MB)
 - Error / warning log summary
-- Overall 5-day continuous acceptance progress calculation
+- Strict 5-day continuous A-share trading day acceptance calculation
 """
 
 import os
+import sys
 import json
 import logging
 import datetime
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple, Union
+
+try:
+    import trade_calendar
+except ImportError:
+    root_dir = Path(__file__).resolve().parent.parent.parent.parent
+    if str(root_dir) not in sys.path:
+        sys.path.insert(0, str(root_dir))
+    import trade_calendar
+
+from .config import get_audit_path
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_LOG_PATH = Path("data/audit/daily_acceptance_records.json")
 
 
 def get_peak_memory_mb() -> float:
@@ -56,11 +65,95 @@ def get_systemd_restarts(service_name: str = "openarmx-quant.service") -> int:
     return 0
 
 
+def is_valid_acceptance_record(r: Dict[str, Any]) -> bool:
+    """
+    Validates that a daily acceptance record passes all health checks:
+    - trade_date is a valid A-share trading day
+    - sqlite_reconciliation has MATCH (0 discrepancy)
+    - balanced and aggressive accounts exist and have positive equity
+    - no fatal error in error_summary
+    """
+    trade_date = r.get("trade_date")
+    if not trade_date:
+        return False
+    try:
+        if not trade_calendar.is_trading_day(trade_date):
+            return False
+    except Exception:
+        pass
+
+    recon = str(r.get("sqlite_reconciliation", ""))
+    if "MATCH" not in recon or "DISCREPANCY" in recon or "ERROR" in recon:
+        return False
+
+    err = str(r.get("error_summary", ""))
+    if err and err != "None" and "error" in err.lower():
+        return False
+
+    b_acc = r.get("balanced_account", {})
+    a_acc = r.get("aggressive_account", {})
+    if not b_acc or not a_acc:
+        return False
+    if b_acc.get("equity", 0) <= 0 or a_acc.get("equity", 0) <= 0:
+        return False
+
+    return True
+
+
+def compute_consecutive_valid_trading_days(records: List[Dict[str, Any]]) -> Tuple[int, List[str]]:
+    """
+    Finds consecutive sequence of valid A-share trading days.
+    Returns (consecutive_count, sequence_of_dates).
+    If multiple sequences exist, checks if any sequence has reached 5 days;
+    otherwise returns the length of the latest continuous streak ending at the latest valid date.
+    """
+    if not records:
+        return 0, []
+
+    by_date: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        td = r.get("trade_date")
+        if td:
+            by_date[td] = r
+
+    sorted_dates = sorted(by_date.keys())
+    valid_dates = [d for d in sorted_dates if is_valid_acceptance_record(by_date[d])]
+    if not valid_dates:
+        return 0, []
+
+    chains: List[List[str]] = []
+    current_chain = [valid_dates[0]]
+
+    for i in range(1, len(valid_dates)):
+        prev_d = valid_dates[i - 1]
+        curr_d = valid_dates[i]
+        try:
+            expected_next = trade_calendar.get_next_trading_day(prev_d).isoformat()
+            if curr_d == expected_next:
+                current_chain.append(curr_d)
+            else:
+                chains.append(current_chain)
+                current_chain = [curr_d]
+        except Exception:
+            chains.append(current_chain)
+            current_chain = [curr_d]
+
+    chains.append(current_chain)
+
+    completed_chains = [c for c in chains if len(c) >= 5]
+    if completed_chains:
+        best_chain = max(completed_chains, key=len)
+        return len(best_chain), best_chain
+
+    latest_chain = chains[-1]
+    return len(latest_chain), latest_chain
+
+
 class DailyAuditRecorder:
     """Manages lightweight persistence and summary of daily acceptance logs."""
 
-    def __init__(self, log_path: Path = DEFAULT_LOG_PATH):
-        self.log_path = Path(log_path)
+    def __init__(self, log_path: Optional[Union[str, Path]] = None):
+        self.log_path = Path(log_path) if log_path is not None else get_audit_path()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def load_records(self) -> List[Dict[str, Any]]:
@@ -77,15 +170,22 @@ class DailyAuditRecorder:
 
     def save_records(self, records: List[Dict[str, Any]]) -> None:
         """Saves audit records to disk."""
+        target_days = 5
+        consecutive_count, streak_dates = compute_consecutive_valid_trading_days(records)
+        is_completed = consecutive_count >= target_days
+        status_text = (
+            "COMPLETED" if is_completed
+            else f"IN_PROGRESS ({consecutive_count}/{target_days} trading days verified)"
+        )
+
         data = {
             "version": "v3.0",
-            "target_consecutive_days": 5,
+            "target_consecutive_days": target_days,
             "recorded_trading_days": len(records),
-            "is_completed": len(records) >= 5,
-            "acceptance_status": (
-                "COMPLETED" if len(records) >= 5
-                else f"IN_PROGRESS ({len(records)}/5 trading days verified)"
-            ),
+            "consecutive_valid_days": consecutive_count,
+            "streak_dates": streak_dates,
+            "is_completed": is_completed,
+            "acceptance_status": status_text,
             "last_updated": datetime.datetime.now().isoformat(),
             "records": records
         }
@@ -115,18 +215,20 @@ class DailyAuditRecorder:
     def get_status(self) -> Dict[str, Any]:
         """Returns the current verification status summary."""
         records = self.load_records()
-        total_days = len(records)
         target_days = 5
-        is_completed = total_days >= target_days
+        consecutive_count, streak_dates = compute_consecutive_valid_trading_days(records)
+        is_completed = consecutive_count >= target_days
 
         status_text = (
             "COMPLETED" if is_completed
-            else f"IN_PROGRESS ({total_days}/{target_days} trading days verified)"
+            else f"IN_PROGRESS ({consecutive_count}/{target_days} trading days verified)"
         )
 
         return {
             "target_consecutive_days": target_days,
-            "recorded_trading_days": total_days,
+            "recorded_trading_days": len(records),
+            "consecutive_valid_days": consecutive_count,
+            "streak_dates": streak_dates,
             "is_completed": is_completed,
             "acceptance_status": status_text,
             "dates": [r.get("trade_date") for r in records],

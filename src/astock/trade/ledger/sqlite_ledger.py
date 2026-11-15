@@ -1,3 +1,4 @@
+# src/astock/trade/ledger/sqlite_ledger.py
 # -*- coding: utf-8 -*-
 """
 A-Stock SQLite Transactional Ledger
@@ -13,8 +14,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Tuple, Any
 
 from ..models import (
-    Order, TradeFill, Position, AccountBalance, OrderStatus, OrderSide,
-    RiskAuditResult
+    Order, TradeFill, Position, AccountBalance, OrderStatus, OrderSide, OrderType,
+    RiskAuditResult, RiskLayer, RiskSeverity
 )
 from ..errors import InsufficientCashError, InsufficientSharesError, DuplicateOrderError
 
@@ -121,10 +122,10 @@ class SQLiteAccountLedger:
                     fill_id TEXT,
                     FOREIGN KEY (account_id) REFERENCES accounts(account_id)
                 );
-                CREATE INDEX IF NOT EXISTS idx_lots_acc_sym ON position_lots(account_id, symbol, is_tradable_t1);
+                CREATE INDEX IF NOT EXISTS idx_lots_acc_sym ON position_lots(account_id, symbol);
 
                 CREATE TABLE IF NOT EXISTS cash_journal (
-                    entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     account_id TEXT NOT NULL,
                     date TEXT NOT NULL,
                     delta_cents INTEGER NOT NULL,
@@ -138,16 +139,18 @@ class SQLiteAccountLedger:
 
                 CREATE TABLE IF NOT EXISTS risk_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    audit_id TEXT UNIQUE,
-                    account_id TEXT NOT NULL,
+                    audit_id TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
                     layer TEXT NOT NULL,
                     rule_name TEXT NOT NULL,
+                    passed INTEGER NOT NULL,
                     severity TEXT NOT NULL,
                     action_taken TEXT NOT NULL,
                     message TEXT NOT NULL,
                     details_json TEXT
                 );
+                CREATE INDEX IF NOT EXISTS idx_risk_acc_time ON risk_events(account_id, timestamp);
 
                 CREATE TABLE IF NOT EXISTS strategy_runs (
                     run_id TEXT PRIMARY KEY,
@@ -155,7 +158,7 @@ class SQLiteAccountLedger:
                     strategy_name TEXT NOT NULL,
                     as_of_date TEXT NOT NULL,
                     regime TEXT NOT NULL,
-                    target_portfolio_json TEXT,
+                    target_portfolio_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -172,24 +175,26 @@ class SQLiteAccountLedger:
         cash_cents = to_cents(initial_cash)
         with self.connect() as conn:
             row = conn.execute("SELECT account_id FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
-            if not row:
-                conn.execute(
-                    """INSERT INTO accounts
-                       (account_id, account_type, currency, total_cash_cents, available_cash_cents, frozen_cash_cents, peak_equity_cents, updated_at)
-                       VALUES (?, ?, 'CNY', ?, ?, 0, ?, ?)""",
-                    (account_id, account_type, cash_cents, cash_cents, cash_cents, now_iso)
-                )
-                conn.execute(
-                    """INSERT INTO cash_journal
-                       (account_id, date, delta_cents, balance_cents, reason, ref_id, created_at)
-                       VALUES (?, ?, ?, ?, 'INITIAL_CAPITAL', 'INIT', ?)""",
-                    (account_id, now_iso[:10], cash_cents, cash_cents, now_iso)
-                )
-                return True
-        return False
+            if row:
+                return False  # Already exists
+
+            conn.execute(
+                """INSERT INTO accounts
+                   (account_id, account_type, currency, total_cash_cents, available_cash_cents, frozen_cash_cents, peak_equity_cents, updated_at)
+                   VALUES (?, ?, 'CNY', ?, ?, 0, ?, ?)""",
+                (account_id, account_type, cash_cents, cash_cents, cash_cents, now_iso)
+            )
+
+            conn.execute(
+                """INSERT INTO cash_journal
+                   (account_id, date, delta_cents, balance_cents, reason, ref_id, created_at)
+                   VALUES (?, ?, ?, ?, 'INITIAL_CAPITAL', 'INIT', ?)""",
+                (account_id, now_iso[:10], cash_cents, cash_cents, now_iso)
+            )
+            return True
 
     def get_balance(self, account_id: str) -> AccountBalance:
-        """Loads live account balance and computes equity."""
+        """Loads live account balance and computes equity without double counting frozen cash."""
         with self.connect() as conn:
             acc = conn.execute("SELECT * FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
             if not acc:
@@ -204,7 +209,8 @@ class SQLiteAccountLedger:
             avail = from_cents(acc["available_cash_cents"])
             frozen = from_cents(acc["frozen_cash_cents"])
 
-            tot_equity = cash + frozen + stock_val
+            # Accounting equation: total_equity = total_cash + stock_market_value
+            tot_equity = round(cash + stock_val, 2)
             peak_equity = max(from_cents(acc["peak_equity_cents"]), tot_equity)
             dd_pct = (peak_equity - tot_equity) / peak_equity * 100.0 if peak_equity > 0 else 0.0
 
@@ -229,39 +235,78 @@ class SQLiteAccountLedger:
                 updated_at=acc["updated_at"]
             )
 
+    def freeze_cash(self, account_id: str, amount: float, order_id: str = "") -> bool:
+        """Freezes available cash for an active buy order."""
+        if amount <= 0:
+            return True
+        amount_cents = to_cents(amount)
+        with self.connect() as conn:
+            acc = conn.execute("SELECT available_cash_cents, frozen_cash_cents FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
+            if not acc or acc["available_cash_cents"] < amount_cents:
+                raise InsufficientCashError(
+                    f"Cannot freeze {amount:.2f}: available cash {from_cents(acc['available_cash_cents'] if acc else 0):.2f}"
+                )
+            conn.execute(
+                """UPDATE accounts
+                   SET available_cash_cents = available_cash_cents - ?,
+                       frozen_cash_cents = frozen_cash_cents + ?,
+                       updated_at = ?
+                   WHERE account_id = ?""",
+                (amount_cents, amount_cents, datetime.datetime.now().isoformat(), account_id)
+            )
+            return True
+
+    def unfreeze_cash(self, account_id: str, amount: float, order_id: str = "") -> bool:
+        """Unfreezes cash when an order is cancelled or expires."""
+        if amount <= 0:
+            return True
+        amount_cents = to_cents(amount)
+        with self.connect() as conn:
+            acc = conn.execute("SELECT frozen_cash_cents FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
+            actual_unfreeze = min(amount_cents, acc["frozen_cash_cents"] if acc else 0)
+            conn.execute(
+                """UPDATE accounts
+                   SET available_cash_cents = available_cash_cents + ?,
+                       frozen_cash_cents = frozen_cash_cents - ?,
+                       updated_at = ?
+                   WHERE account_id = ?""",
+                (actual_unfreeze, actual_unfreeze, datetime.datetime.now().isoformat(), account_id)
+            )
+            return True
+
     def get_positions(self, account_id: str) -> Dict[str, Position]:
         """Loads all open positions for account."""
         positions = {}
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM positions WHERE account_id = ?", (account_id,)).fetchall()
             for r in rows:
-                pos = Position(
-                    symbol=r["symbol"],
-                    shares=r["total_shares"],
-                    available_shares=r["tradable_shares"],
-                    cost_price=r["avg_cost"],
-                    name=r["name"] or r["symbol"],
-                    current_price=r["last_price"],
-                    market_value=from_cents(r["market_value_cents"]),
-                    sector=r["sector"] or "其他"
-                )
-                positions[r["symbol"]] = pos
+                if r["total_shares"] > 0:
+                    positions[r["symbol"]] = Position(
+                        symbol=r["symbol"],
+                        name=r["name"] or r["symbol"],
+                        shares=r["total_shares"],
+                        available_shares=r["tradable_shares"],
+                        cost_price=r["avg_cost"],
+                        current_price=r["last_price"],
+                        market_value=from_cents(r["market_value_cents"]),
+                        sector=r["sector"] or "其他"
+                    )
         return positions
 
     def update_market_prices(self, quotes: Dict[str, Dict[str, Any]]):
-        """Updates last_price and market_value for all open positions across all accounts."""
+        """Updates last_price and market_value across all held positions."""
         now_iso = datetime.datetime.now().isoformat()
         with self.connect() as conn:
-            rows = conn.execute("SELECT account_id, symbol, total_shares FROM positions").fetchall()
+            rows = conn.execute("SELECT account_id, symbol, total_shares FROM positions WHERE total_shares > 0").fetchall()
             for r in rows:
                 sym = r["symbol"]
-                q = quotes.get(sym)
-                if q:
-                    price = float(q.get("price") or q.get("current") or q.get("close") or 0.0)
+                if sym in quotes:
+                    price = float(quotes[sym].get("price") or quotes[sym].get("current") or quotes[sym].get("close") or 0.0)
                     if price > 0:
                         mv_cents = to_cents(price * r["total_shares"])
                         conn.execute(
-                            """UPDATE positions SET last_price = ?, market_value_cents = ?, updated_at = ?
+                            """UPDATE positions
+                               SET last_price = ?, market_value_cents = ?, updated_at = ?
                                WHERE account_id = ? AND symbol = ?""",
                             (price, mv_cents, now_iso, r["account_id"], sym)
                         )
@@ -281,11 +326,107 @@ class SQLiteAccountLedger:
                    updated_at = excluded.updated_at""",
                 (
                     order.order_id, order.client_order_id, order.account_id, order.symbol,
-                    order.side.value, order.order_type.value, order.price, order.shares,
-                    order.filled_shares, order.status.value, order.reason,
+                    order.side.value if isinstance(order.side, OrderSide) else order.side,
+                    order.order_type.value if isinstance(order.order_type, OrderType) else order.order_type,
+                    order.price, order.shares,
+                    order.filled_shares,
+                    order.status.value if isinstance(order.status, OrderStatus) else order.status,
+                    order.reason,
                     order.created_at or now_iso, now_iso
                 )
             )
+
+    def get_order(self, order_id: str) -> Optional[Order]:
+        """Loads single order by order_id."""
+        with self.connect() as conn:
+            r = conn.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,)).fetchone()
+            if not r:
+                return None
+            return Order(
+                order_id=r["order_id"],
+                client_order_id=r["client_order_id"],
+                account_id=r["account_id"],
+                symbol=r["symbol"],
+                side=OrderSide(r["side"]),
+                order_type=OrderType(r["order_type"]),
+                price=float(r["price"]),
+                shares=int(r["shares"]),
+                filled_shares=int(r["filled_shares"] or 0),
+                status=OrderStatus(r["status"]),
+                reason=r["reason"] or "",
+                created_at=r["created_at"] or "",
+                updated_at=r["updated_at"] or ""
+            )
+
+    def get_orders(self, account_id: Optional[str] = None, status: Optional[str] = None) -> List[Order]:
+        """Loads orders with optional filtering."""
+        query = "SELECT * FROM orders WHERE 1=1"
+        params = []
+        if account_id:
+            query += " AND account_id = ?"
+            params.append(account_id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at ASC"
+
+        orders = []
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            for r in rows:
+                orders.append(Order(
+                    order_id=r["order_id"],
+                    client_order_id=r["client_order_id"],
+                    account_id=r["account_id"],
+                    symbol=r["symbol"],
+                    side=OrderSide(r["side"]),
+                    order_type=OrderType(r["order_type"]),
+                    price=float(r["price"]),
+                    shares=int(r["shares"]),
+                    filled_shares=int(r["filled_shares"] or 0),
+                    status=OrderStatus(r["status"]),
+                    reason=r["reason"] or "",
+                    created_at=r["created_at"] or "",
+                    updated_at=r["updated_at"] or ""
+                ))
+        return orders
+
+    def get_active_orders(self, account_id: Optional[str] = None) -> List[Order]:
+        """Loads all active open orders (SUBMITTED, PARTIALLY_FILLED, PROPOSED)."""
+        active_statuses = (
+            OrderStatus.SUBMITTED.value,
+            OrderStatus.PARTIALLY_FILLED.value,
+            OrderStatus.PROPOSED.value,
+            OrderStatus.PENDING_SUBMIT.value
+        )
+        placeholders = ",".join("?" for _ in active_statuses)
+        query = f"SELECT * FROM orders WHERE status IN ({placeholders})"
+        params = list(active_statuses)
+        if account_id:
+            query += " AND account_id = ?"
+            params.append(account_id)
+        query += " ORDER BY created_at ASC"
+
+        orders = []
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            for r in rows:
+                orders.append(Order(
+                    order_id=r["order_id"],
+                    client_order_id=r["client_order_id"],
+                    account_id=r["account_id"],
+                    symbol=r["symbol"],
+                    side=OrderSide(r["side"]),
+                    order_type=OrderType(r["order_type"]),
+                    price=float(r["price"]),
+                    shares=int(r["shares"]),
+                    filled_shares=int(r["filled_shares"] or 0),
+                    status=OrderStatus(r["status"]),
+                    reason=r["reason"] or "",
+                    created_at=r["created_at"] or "",
+                    updated_at=r["updated_at"] or ""
+                ))
+        return orders
 
     def apply_fill(self, fill: TradeFill, name: str = "", sector: str = "其他") -> bool:
         """
@@ -319,9 +460,11 @@ class SQLiteAccountLedger:
                 raise ValueError(f"Account {fill.account_id} not found")
 
             if fill.side == OrderSide.BUY:
-                if acc["available_cash_cents"] < total_debit_cents:
+                # If cash was frozen, available_cash + frozen_cash covers it
+                effective_avail = acc["total_cash_cents"]
+                if effective_avail < total_debit_cents:
                     raise InsufficientCashError(
-                        f"Insufficient cash for account {fill.account_id}: need {from_cents(total_debit_cents):.2f}, available {from_cents(acc['available_cash_cents']):.2f}"
+                        f"Insufficient cash for account {fill.account_id}: need {from_cents(total_debit_cents):.2f}, available {from_cents(effective_avail):.2f}"
                     )
             elif fill.side == OrderSide.SELL:
                 pos = conn.execute(
@@ -340,7 +483,7 @@ class SQLiteAccountLedger:
                     """INSERT INTO orders
                        (order_id, client_order_id, account_id, symbol, side, order_type, price, shares, filled_shares, status, reason, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, 'LIMIT', ?, ?, 0, 'SUBMITTED', 'AutoCreatedForFill', ?, ?)""",
-                    (fill.order_id, getattr(fill, "client_order_id", fill.order_id) or fill.order_id, fill.account_id, fill.symbol, fill.side.value, fill_price, fill_shares, now_iso, now_iso)
+                    (fill.order_id, getattr(fill, "client_order_id", fill.order_id) or fill.order_id, fill.account_id, fill.symbol, fill.side.value if isinstance(fill.side, OrderSide) else fill.side, fill_price, fill_shares, now_iso, now_iso)
                 )
 
             conn.execute(
@@ -349,20 +492,29 @@ class SQLiteAccountLedger:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     fill.fill_id, fill.order_id, fill.account_id, fill.symbol,
-                    fill.side.value, fill_price, fill_shares,
+                    fill.side.value if isinstance(fill.side, OrderSide) else fill.side, fill_price, fill_shares,
                     amount_cents, fees_cents, to_cents(slippage),
                     trade_date, now_iso
                 )
             )
 
             # 4. Update Cash & Cash Journal
-            new_cash_cents = acc["total_cash_cents"] - total_debit_cents
-            new_avail_cents = acc["available_cash_cents"] - total_debit_cents
+            if fill.side == OrderSide.BUY:
+                frozen_avail = acc["frozen_cash_cents"]
+                frozen_deduct = min(total_debit_cents, frozen_avail)
+                new_frozen_cents = frozen_avail - frozen_deduct
+                new_cash_cents = acc["total_cash_cents"] - total_debit_cents
+                new_avail_cents = new_cash_cents - new_frozen_cents
+            else: # SELL
+                new_cash_cents = acc["total_cash_cents"] - total_debit_cents
+                new_frozen_cents = acc["frozen_cash_cents"]
+                new_avail_cents = new_cash_cents - new_frozen_cents
+
             conn.execute(
                 """UPDATE accounts
-                   SET total_cash_cents = ?, available_cash_cents = ?, updated_at = ?
+                   SET total_cash_cents = ?, available_cash_cents = ?, frozen_cash_cents = ?, updated_at = ?
                    WHERE account_id = ?""",
-                (new_cash_cents, new_avail_cents, now_iso, fill.account_id)
+                (new_cash_cents, new_avail_cents, new_frozen_cents, now_iso, fill.account_id)
             )
             conn.execute(
                 """INSERT INTO cash_journal
@@ -370,7 +522,7 @@ class SQLiteAccountLedger:
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     fill.account_id, trade_date, -total_debit_cents, new_cash_cents,
-                    f"TRADE_{fill.side.value}_{fill.symbol}", fill.fill_id, now_iso
+                    f"TRADE_{fill.side.value if isinstance(fill.side, OrderSide) else fill.side}_{fill.symbol}", fill.fill_id, now_iso
                 )
             )
 
@@ -392,66 +544,70 @@ class SQLiteAccountLedger:
 
                 if pos:
                     new_shares = pos["total_shares"] + fill_shares
-                    new_avg = ((pos["avg_cost"] * pos["total_shares"]) + (lot_cost * fill_shares)) / new_shares
-                    new_mv = to_cents(fill_price * new_shares)
+                    # weighted average cost
+                    old_cost_total = pos["avg_cost"] * pos["total_shares"]
+                    new_cost = round((old_cost_total + (fill_price * fill_shares) + fees) / new_shares, 3)
+                    mv_cents = to_cents(new_shares * fill_price)
                     conn.execute(
                         """UPDATE positions
                            SET total_shares = ?, avg_cost = ?, last_price = ?, market_value_cents = ?, updated_at = ?
                            WHERE account_id = ? AND symbol = ?""",
-                        (new_shares, new_avg, fill_price, new_mv, now_iso, fill.account_id, fill.symbol)
+                        (new_shares, new_cost, fill_price, mv_cents, now_iso, fill.account_id, fill.symbol)
                     )
                 else:
-                    new_mv = to_cents(fill_price * fill_shares)
+                    mv_cents = to_cents(fill_shares * fill_price)
                     conn.execute(
                         """INSERT INTO positions
                            (account_id, symbol, name, sector, total_shares, tradable_shares, frozen_shares, avg_cost, last_price, market_value_cents, updated_at)
                            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)""",
-                        (fill.account_id, fill.symbol, fill_name or fill.symbol, sector, fill_shares, lot_cost, fill_price, new_mv, now_iso)
+                        (fill.account_id, fill.symbol, fill_name, sector, fill_shares, lot_cost, fill_price, mv_cents, now_iso)
                     )
 
             elif fill.side == OrderSide.SELL:
-                # Deduct FIFO from position_lots
+                # FIFO lot deduction
+                remaining_to_deduct = fill_shares
                 lots = conn.execute(
-                    """SELECT lot_id, remaining_shares FROM position_lots
-                       WHERE account_id = ? AND symbol = ? AND is_tradable_t1 = 1 AND remaining_shares > 0
+                    """SELECT * FROM position_lots
+                       WHERE account_id = ? AND symbol = ? AND remaining_shares > 0
                        ORDER BY buy_date ASC, lot_id ASC""",
                     (fill.account_id, fill.symbol)
                 ).fetchall()
 
-                needed = fill_shares
                 for lot in lots:
-                    take = min(needed, lot["remaining_shares"])
-                    conn.execute(
-                        "UPDATE position_lots SET remaining_shares = remaining_shares - ? WHERE lot_id = ?",
-                        (take, lot["lot_id"])
-                    )
-                    needed -= take
-                    if needed <= 0:
+                    lot_rem = lot["remaining_shares"]
+                    if lot_rem <= remaining_to_deduct:
+                        conn.execute("UPDATE position_lots SET remaining_shares = 0 WHERE lot_id = ?", (lot["lot_id"],))
+                        remaining_to_deduct -= lot_rem
+                    else:
+                        conn.execute(
+                            "UPDATE position_lots SET remaining_shares = remaining_shares - ? WHERE lot_id = ?",
+                            (remaining_to_deduct, lot["lot_id"])
+                        )
+                        remaining_to_deduct = 0
+                    if remaining_to_deduct == 0:
                         break
 
+                # Deduct from positions
                 pos = conn.execute(
                     "SELECT * FROM positions WHERE account_id = ? AND symbol = ?",
                     (fill.account_id, fill.symbol)
                 ).fetchone()
-                rem_total = pos["total_shares"] - fill_shares
-                rem_tradable = pos["tradable_shares"] - fill_shares
-
-                if rem_total <= 0:
-                    conn.execute(
-                        "DELETE FROM positions WHERE account_id = ? AND symbol = ?",
-                        (fill.account_id, fill.symbol)
-                    )
-                else:
-                    new_mv = to_cents(fill_price * rem_total)
-                    conn.execute(
-                        """UPDATE positions
-                           SET total_shares = ?, tradable_shares = ?, last_price = ?, market_value_cents = ?, updated_at = ?
-                           WHERE account_id = ? AND symbol = ?""",
-                        (rem_total, rem_tradable, fill_price, new_mv, now_iso, fill.account_id, fill.symbol)
-                    )
+                if pos:
+                    new_tot = pos["total_shares"] - fill_shares
+                    new_tradable = pos["tradable_shares"] - fill_shares
+                    if new_tot <= 0:
+                        conn.execute("DELETE FROM positions WHERE account_id = ? AND symbol = ?", (fill.account_id, fill.symbol))
+                    else:
+                        mv_cents = to_cents(new_tot * fill_price)
+                        conn.execute(
+                            """UPDATE positions
+                               SET total_shares = ?, tradable_shares = ?, last_price = ?, market_value_cents = ?, updated_at = ?
+                               WHERE account_id = ? AND symbol = ?""",
+                            (new_tot, new_tradable, fill_price, mv_cents, now_iso, fill.account_id, fill.symbol)
+                        )
 
             # 6. Update Order Status
-            ord_row = conn.execute("SELECT * FROM orders WHERE order_id = ?", (fill.order_id,)).fetchone()
+            ord_row = conn.execute("SELECT shares, filled_shares FROM orders WHERE order_id = ?", (fill.order_id,)).fetchone()
             if ord_row:
                 new_filled = ord_row["filled_shares"] + fill_shares
                 new_status = OrderStatus.FILLED.value if new_filled >= ord_row["shares"] else OrderStatus.PARTIALLY_FILLED.value
@@ -464,78 +620,94 @@ class SQLiteAccountLedger:
 
     def roll_t1(self, trade_date: str, account_id: Optional[str] = None):
         """
-        Rolls T+1 locks: Any lots bought before trade_date become tradable.
-        Re-synchronizes tradable_shares in positions.
+        Rolls T+1 settlement forward for a new trading day:
+        All lots bought before today (buy_date < trade_date) become tradable.
+        Synchronizes tradable_shares in positions table.
         """
+        now_iso = datetime.datetime.now().isoformat()
         with self.connect() as conn:
-            # Unlock lots bought strictly before trade_date
+            # 1. Unlock lots
             if account_id:
                 conn.execute(
                     """UPDATE position_lots
                        SET is_tradable_t1 = 1
-                       WHERE account_id = ? AND buy_date < ? AND is_tradable_t1 = 0""",
+                       WHERE account_id = ? AND buy_date < ? AND remaining_shares > 0""",
                     (account_id, trade_date)
                 )
             else:
                 conn.execute(
                     """UPDATE position_lots
                        SET is_tradable_t1 = 1
-                       WHERE buy_date < ? AND is_tradable_t1 = 0""",
+                       WHERE buy_date < ? AND remaining_shares > 0""",
                     (trade_date,)
                 )
 
-            # Re-sum tradable shares per position
-            positions = conn.execute("SELECT account_id, symbol FROM positions").fetchall()
+            # 2. Sync positions tradable_shares
+            pos_query = "SELECT account_id, symbol FROM positions"
+            pos_params = ()
+            if account_id:
+                pos_query += " WHERE account_id = ?"
+                pos_params = (account_id,)
+
+            positions = conn.execute(pos_query, pos_params).fetchall()
             for p in positions:
-                tot_tradable = conn.execute(
-                    """SELECT SUM(remaining_shares) as s FROM position_lots
+                lot_sum = conn.execute(
+                    """SELECT SUM(remaining_shares) as tradable
+                       FROM position_lots
                        WHERE account_id = ? AND symbol = ? AND is_tradable_t1 = 1""",
                     (p["account_id"], p["symbol"])
-                ).fetchone()["s"] or 0
+                ).fetchone()["tradable"] or 0
+
                 conn.execute(
-                    "UPDATE positions SET tradable_shares = ? WHERE account_id = ? AND symbol = ?",
-                    (tot_tradable, p["account_id"], p["symbol"])
+                    """UPDATE positions
+                       SET tradable_shares = ?, updated_at = ?
+                       WHERE account_id = ? AND symbol = ?""",
+                    (lot_sum, now_iso, p["account_id"], p["symbol"])
                 )
 
     def accrue_cash_interest(self, account_id: str, date: str, annual_rate: float = 0.015):
-        """Credits overnight cash interest on idle cash balances."""
+        """Accrues daily cash interest into account balance."""
+        now_iso = datetime.datetime.now().isoformat()
         with self.connect() as conn:
-            acc = conn.execute("SELECT * FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
-            if not acc:
-                return
-            cash_cents = acc["total_cash_cents"]
-            if cash_cents <= 0:
-                return
+            acc = conn.execute("SELECT total_cash_cents, available_cash_cents FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
+            if not acc or acc["total_cash_cents"] <= 0:
+                return 0.0
 
-            interest_cents = int((Decimal(cash_cents) * Decimal(str(annual_rate)) / Decimal(365)).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            daily_rate = annual_rate / 365.0
+            interest_cents = int(Decimal(acc["total_cash_cents"]) * Decimal(str(daily_rate)))
             if interest_cents > 0:
-                now_iso = datetime.datetime.now().isoformat()
-                new_cash_cents = cash_cents + interest_cents
+                new_total = acc["total_cash_cents"] + interest_cents
+                new_avail = acc["available_cash_cents"] + interest_cents
                 conn.execute(
                     """UPDATE accounts
-                       SET total_cash_cents = ?, available_cash_cents = available_cash_cents + ?, updated_at = ?
+                       SET total_cash_cents = ?, available_cash_cents = ?, updated_at = ?
                        WHERE account_id = ?""",
-                    (new_cash_cents, interest_cents, now_iso, account_id)
+                    (new_total, new_avail, now_iso, account_id)
                 )
                 conn.execute(
                     """INSERT INTO cash_journal
                        (account_id, date, delta_cents, balance_cents, reason, ref_id, created_at)
-                       VALUES (?, ?, ?, ?, 'OVERNIGHT_CASH_INTEREST', 'INTEREST', ?)""",
-                    (account_id, date, interest_cents, new_cash_cents, now_iso)
+                       VALUES (?, ?, ?, ?, 'CASH_INTEREST', 'DAILY_RATE', ?)""",
+                    (account_id, date, interest_cents, new_total, now_iso)
                 )
+                return from_cents(interest_cents)
+            return 0.0
 
     def record_risk_event(self, audit: RiskAuditResult):
-        """Records explainable risk evaluation event."""
+        """Persists risk audit event to audit log."""
+        now_iso = datetime.datetime.now().isoformat()
         with self.connect() as conn:
             conn.execute(
                 """INSERT INTO risk_events
-                   (audit_id, account_id, timestamp, layer, rule_name, severity, action_taken, message, details_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(audit_id) DO NOTHING""",
+                   (audit_id, timestamp, account_id, layer, rule_name, passed, severity, action_taken, message, details_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    audit.audit_id, audit.account_id, audit.timestamp, audit.layer.value,
-                    audit.rule_name, audit.severity.value, audit.action_taken,
-                    audit.message, json.dumps(audit.details or {}, ensure_ascii=False)
+                    audit.audit_id, audit.timestamp or now_iso, audit.account_id,
+                    audit.layer.value if isinstance(audit.layer, RiskLayer) else str(audit.layer),
+                    audit.rule_name, 1 if audit.passed else 0,
+                    audit.severity.value if isinstance(audit.severity, RiskSeverity) else str(audit.severity),
+                    audit.action_taken, audit.message,
+                    json.dumps(audit.details, ensure_ascii=False)
                 )
             )
 
@@ -549,7 +721,7 @@ class SQLiteAccountLedger:
         target_portfolio: Dict[str, Any],
         status: str = "COMPLETED"
     ):
-        """Records strategy execution snapshot."""
+        """Saves strategy portfolio planning run for audit trail."""
         now_iso = datetime.datetime.now().isoformat()
         with self.connect() as conn:
             conn.execute(

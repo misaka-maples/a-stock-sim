@@ -149,39 +149,74 @@ class OrderManager:
             orders = [o for o in orders if o.account_id == account_id]
         return orders
 
-    def load_from_records(self, records: List[Dict[str, Any]]):
+    def load_from_records(self, records: List[Any]):
         """Restores orders from persisted storage on system startup."""
         for r in records:
-            oid = r.get("order_id")
-            cid = r.get("client_order_id")
-            if not oid or not cid:
+            if isinstance(r, Order):
+                order = r
+                oid = order.order_id
+                cid = order.client_order_id or oid
+            elif isinstance(r, dict):
+                oid = r.get("order_id")
+                cid = r.get("client_order_id") or oid
+                if not oid:
+                    continue
+                order = Order(
+                    order_id=oid,
+                    client_order_id=cid,
+                    account_id=r.get("account_id", "default"),
+                    symbol=r.get("symbol", ""),
+                    name=r.get("name", ""),
+                    side=OrderSide(r.get("side", "BUY")),
+                    order_type=OrderType(r.get("order_type", "LIMIT")),
+                    price=float(r.get("price", 0.0)),
+                    shares=int(r.get("shares", 0)),
+                    filled_shares=int(r.get("filled_shares", 0)),
+                    filled_amount=float(r.get("filled_amount", 0.0)),
+                    fees=float(r.get("fees", 0.0)),
+                    slippage=float(r.get("slippage", 0.0)),
+                    status=OrderStatus(r.get("status", "SUBMITTED")),
+                    created_at=r.get("created_at", ""),
+                    updated_at=r.get("updated_at", ""),
+                    reason=r.get("reason", ""),
+                    risk_audit_id=r.get("risk_audit_id"),
+                    rejection_reason=r.get("rejection_reason")
+                )
+            else:
                 continue
-            order = Order(
-                order_id=oid,
-                client_order_id=cid,
-                account_id=r.get("account_id", "default"),
-                symbol=r.get("symbol", ""),
-                name=r.get("name", ""),
-                side=OrderSide(r.get("side", "BUY")),
-                order_type=OrderType(r.get("order_type", "LIMIT")),
-                price=float(r.get("price", 0.0)),
-                shares=int(r.get("shares", 0)),
-                filled_shares=int(r.get("filled_shares", 0)),
-                filled_amount=float(r.get("filled_amount", 0.0)),
-                fees=float(r.get("fees", 0.0)),
-                slippage=float(r.get("slippage", 0.0)),
-                status=OrderStatus(r.get("status", "SUBMITTED")),
-                created_at=r.get("created_at", ""),
-                updated_at=r.get("updated_at", ""),
-                reason=r.get("reason", ""),
-                risk_audit_id=r.get("risk_audit_id"),
-                rejection_reason=r.get("rejection_reason")
-            )
+
             self._orders[oid] = order
-            self._client_orders[cid] = order
+            if cid:
+                self._client_orders[cid] = order
             # Update counter
             try:
                 num = int(oid.split("_")[-1])
                 self._order_counter = max(self._order_counter, num + 1)
-            except:
+            except Exception:
                 pass
+
+    def restore_from_ledger(self, ledger: Any) -> int:
+        """Loads all orders from SQLite ledger into in-memory indices."""
+        if not ledger:
+            return 0
+        orders = []
+        if hasattr(ledger, "get_orders"):
+            orders = ledger.get_orders()
+        elif hasattr(ledger, "get_active_orders"):
+            orders = ledger.get_active_orders()
+        self.load_from_records(orders)
+        return len(orders)
+
+    def mark_stale_orders_unknown(self, timeout_seconds: int = 86400 * 3) -> List[Order]:
+        """Flags old unconfirmed open orders as UNKNOWN to prevent ghost states."""
+        now = datetime.datetime.now()
+        flagged = []
+        for o in self.get_active_orders():
+            try:
+                created_dt = datetime.datetime.fromisoformat(o.created_at)
+                if (now - created_dt).total_seconds() > timeout_seconds:
+                    OrderStateMachine.transition(o, OrderStatus.UNKNOWN, "Timeout on recovery")
+                    flagged.append(o)
+            except Exception:
+                pass
+        return flagged

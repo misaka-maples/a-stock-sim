@@ -30,6 +30,7 @@ from .risk.order import OrderRiskRule
 from .portfolio.manager import PortfolioManager
 from .strategy.balanced import BalancedStrategy
 from .strategy.aggressive import AggressiveStrategy
+from .config import get_db_path, get_audit_path
 
 logger = logging.getLogger("TradingRuntime")
 
@@ -39,34 +40,35 @@ class TradingRuntime:
 
     def __init__(
         self,
-        db_path: str = "data/trading_v3.sqlite",
+        db_path: Optional[str] = None,
         mode: str = "SHADOW",  # "SHADOW" or "ACTIVE"
         initial_capital: float = 100000.0
     ):
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path is not None else get_db_path()
         self.mode = mode.upper()
         self.lock = threading.Lock()
         self.last_step_time: Optional[datetime.datetime] = None
         self.last_trade_date: Optional[str] = None
 
-        # 1. Transactional SQLite Ledger
+        # 1. Transactional SQLite Ledger (authoritative state of record)
         self.ledger = SQLiteAccountLedger(str(self.db_path))
         self.ledger.init_account("balanced", "balanced", initial_capital)
         self.ledger.init_account("aggressive", "aggressive", initial_capital)
 
         # 2. Broker & Order Management
-        self.broker = SimulatedBrokerAdapter(initial_cash=initial_capital, slippage=0.001)
-        self.broker.init_account("balanced", initial_capital)
-        self.broker.init_account("aggressive", initial_capital)
+        # Connect Broker directly to SQLite ledger so there is NEVER a dual memory state
+        self.broker = SimulatedBrokerAdapter(ledger=self.ledger, slippage=0.001)
         self.order_manager = OrderManager()
+        # Restore active and past orders from SQLite ledger
+        self.order_manager.restore_from_ledger(self.ledger)
 
         # 3. Four-layer Risk Managers (one for each account context)
         self.risk_manager_bal = RiskManager(account_type="balanced")
         self.risk_manager_agg = RiskManager(account_type="aggressive")
 
-        # 4. Portfolio Managers
-        self.pm_bal = PortfolioManager(self.risk_manager_bal, self.order_manager, self.broker)
-        self.pm_agg = PortfolioManager(self.risk_manager_agg, self.order_manager, self.broker)
+        # 4. Portfolio Managers (reads unified cash & positions from SQLite ledger)
+        self.pm_bal = PortfolioManager(self.risk_manager_bal, self.order_manager, self.broker, ledger=self.ledger)
+        self.pm_agg = PortfolioManager(self.risk_manager_agg, self.order_manager, self.broker, ledger=self.ledger)
 
         # 5. Strategies
         self.strategy_bal = BalancedStrategy(account_id="balanced")
@@ -134,11 +136,13 @@ class TradingRuntime:
                 "as_of": as_of,
                 "mode": self.mode,
                 "regime": regime.value,
+                "breadth": breadth,
+                "market_risk_audit": mkt_audit.to_dict(),
                 "balanced": {},
                 "aggressive": {}
             }
 
-            # 4. Process Balanced Account
+            # 4. Execute Step for Balanced Strategy
             res_bal = self._process_account_step(
                 account_id="balanced",
                 strategy=self.strategy_bal,
@@ -151,7 +155,7 @@ class TradingRuntime:
             )
             step_summary["balanced"] = res_bal
 
-            # 5. Process Aggressive Account
+            # 5. Execute Step for Aggressive Strategy
             res_agg = self._process_account_step(
                 account_id="aggressive",
                 strategy=self.strategy_agg,
@@ -168,9 +172,7 @@ class TradingRuntime:
             if self.mode == "ACTIVE":
                 try:
                     from .daily_audit_recorder import DailyAuditRecorder
-                    from pathlib import Path
-                    is_test = "tmp" in str(self.db_path).lower()
-                    rec_path = Path("data/audit/test_daily_records.json") if is_test else Path("data/audit/daily_acceptance_records.json")
+                    rec_path = get_audit_path()
                     b_exec = res_bal.get("executed_orders", 0)
                     a_exec = res_agg.get("executed_orders", 0)
                     b_rej = res_bal.get("rejected_orders", [])
@@ -261,7 +263,8 @@ class TradingRuntime:
                     self.ledger.save_order(exit_order)
                     fill = self.broker.execute_order(exit_order, execution_price=price, trade_date=as_of)
                     if fill:
-                        self.ledger.apply_fill(fill, name=pos.name, sector=pos.sector)
+                        if not getattr(self.broker, "ledger", None):
+                            self.ledger.apply_fill(fill, name=pos.name, sector=pos.sector)
 
             # Refresh positions and balances after exits
             positions = self.ledger.get_positions(account_id)
@@ -325,7 +328,8 @@ class TradingRuntime:
             sector = quotes.get(o.symbol, {}).get("sector", "其他")
             fill = self.broker.execute_order(o, execution_price=price, trade_date=as_of)
             if fill:
-                self.ledger.apply_fill(fill, name=name, sector=sector)
+                if not getattr(self.broker, "ledger", None):
+                    self.ledger.apply_fill(fill, name=name, sector=sector)
                 executed_fills.append(fill)
 
         return {
@@ -357,8 +361,8 @@ class TradingRuntime:
         """Provides 18-dimension dual account summary for /api/strategy/dual_accounts."""
         bal_sum = self.ledger.get_summary("balanced")
         agg_sum = self.ledger.get_summary("aggressive")
-        bal_pos = self.get_positions("balanced")
-        agg_pos = self.get_positions("aggressive")
+        bal_pos = self.ledger.get_positions("balanced")
+        agg_pos = self.ledger.get_positions("aggressive")
 
         bal_b = self.ledger.get_balance("balanced")
         agg_b = self.ledger.get_balance("aggressive")
@@ -376,12 +380,18 @@ class TradingRuntime:
                 "description": "中等风险、稳健增长。Regime动态仓位 (30%~80%)，单股15%，单行业30%，四级风控与SQLite原子记账",
                 "total_equity": bal_sum["total_equity"],
                 "cash": bal_sum["cash"],
+                "total_cash": bal_b.cash,
+                "available_cash": bal_b.available_cash,
+                "frozen_cash": bal_b.frozen_cash,
                 "stock_value": bal_sum["stock_value"],
+                "stock_market_value": bal_b.stock_market_value,
                 "drawdown_pct": bal_sum["drawdown_pct"],
                 "positions_count": len(bal_pos),
                 "max_positions": self.strategy_bal.max_positions,
                 "is_frozen": bal_b.is_frozen,
-                "regime_caps": {k.value: v for k, v in reg_bal.items()}
+                "regime_caps": {k.value: v for k, v in reg_bal.items()},
+                "positions": {s: p.to_dict() for s, p in bal_pos.items()},
+                "open_orders": [o.to_dict() for o in self.broker.get_open_orders("balanced")]
             },
             "secondary": {
                 "account_id": "aggressive",
@@ -389,11 +399,17 @@ class TradingRuntime:
                 "description": "高风险、积极进攻。纯全市场行业动量，Regime仓位 (50%~100%)，单股25%，单行业40%，四级风控与SQLite原子记账",
                 "total_equity": agg_sum["total_equity"],
                 "cash": agg_sum["cash"],
+                "total_cash": agg_b.cash,
+                "available_cash": agg_b.available_cash,
+                "frozen_cash": agg_b.frozen_cash,
                 "stock_value": agg_sum["stock_value"],
+                "stock_market_value": agg_b.stock_market_value,
                 "drawdown_pct": agg_sum["drawdown_pct"],
                 "positions_count": len(agg_pos),
                 "max_positions": self.strategy_agg.max_positions,
                 "is_frozen": agg_b.is_frozen,
-                "regime_caps": {k.value: v for k, v in reg_agg.items()}
+                "regime_caps": {k.value: v for k, v in reg_agg.items()},
+                "positions": {s: p.to_dict() for s, p in agg_pos.items()},
+                "open_orders": [o.to_dict() for o in self.broker.get_open_orders("aggressive")]
             }
         }
