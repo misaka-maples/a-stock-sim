@@ -1521,6 +1521,14 @@ def get_strategy_dual_accounts():
         }
 
 
+@app.get("/api/audit/daily_acceptance")
+def get_daily_acceptance():
+    """获取 A-Stock-Sim V3.0 连续交易日验收追踪状态 (目标 5 真实交易日)"""
+    from src.astock.trade.daily_audit_recorder import DailyAuditRecorder
+    recorder = DailyAuditRecorder()
+    return {"success": True, "data": recorder.get_status()}
+
+
 @app.get("/api/strategy/diagnostic_report")
 def get_strategy_diagnostic_report(date: Optional[str] = None):
     """获取每日三轨自动诊断报告 (主账户 vs Sandbox测试账本 vs 理论影子基准)"""

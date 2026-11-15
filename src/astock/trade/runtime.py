@@ -163,6 +163,26 @@ class TradingRuntime:
                 market_data=market_data
             )
             step_summary["aggressive"] = res_agg
+            self.last_step_summary = step_summary
+
+            if self.mode == "ACTIVE":
+                try:
+                    from .daily_audit_recorder import DailyAuditRecorder
+                    b_exec = res_bal.get("executed_orders", 0)
+                    a_exec = res_agg.get("executed_orders", 0)
+                    b_rej = res_bal.get("rejected_orders", [])
+                    a_rej = res_agg.get("rejected_orders", [])
+                    DailyAuditRecorder().capture_from_runtime(
+                        runtime=self,
+                        trade_date=as_of,
+                        market_regime=regime.value,
+                        orders_generated=b_exec + len(b_rej) + a_exec + len(a_rej),
+                        orders_executed=b_exec + a_exec,
+                        orders_rejected=b_rej + a_rej,
+                        error_summary="None"
+                    )
+                except Exception as _e:
+                    logger.warning(f"DailyAuditRecorder step capture error: {_e}")
 
             return step_summary
 
