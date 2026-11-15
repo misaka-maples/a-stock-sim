@@ -121,6 +121,8 @@ class TradingRuntime:
             # 2. Daily T+1 Rollover
             if self.last_trade_date != as_of:
                 self.ledger.roll_t1(as_of)
+                if hasattr(self.broker, "roll_trading_day"):
+                    self.broker.roll_trading_day()
                 self.last_trade_date = as_of
 
             # 3. Market Regime Classification
@@ -210,7 +212,39 @@ class TradingRuntime:
         is_alert, is_freeze, dd_audit = risk_mgr.portfolio_rule.check_drawdown_circuit_breaker(bal)
         self.ledger.record_risk_event(dd_audit)
 
-        # 4. Plan Target Portfolio
+        # 4. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown) executed FIRST
+        if self.mode == "ACTIVE":
+            for sym, pos in list(positions.items()):
+                q = quotes.get(sym, {})
+                price = float(q.get("price") or q.get("current") or q.get("close") or pos.last_price or 0.0)
+                atr = float(q.get("atr") or 1.0)
+                ma20 = float(q.get("ma20") or price)
+                should_exit, exit_reason, audit = risk_mgr.position_rule.check_position_exit(pos, price, atr=atr, ma20=ma20)
+                self.ledger.record_risk_event(audit)
+                if should_exit and pos.tradable_shares > 0:
+                    exit_order = Order(
+                        order_id=f"ORD_EXIT_{sym}_{as_of}_{account_id[:3]}",
+                        client_order_id=f"C_EXIT_{sym}_{as_of}_{account_id}",
+                        account_id=account_id,
+                        symbol=sym,
+                        side=OrderSide.SELL,
+                        order_type=OrderType.MARKET,
+                        price=price,
+                        shares=pos.tradable_shares,
+                        status=OrderStatus.PROPOSED,
+                        reason=f"RiskExit_{exit_reason}"
+                    )
+                    self.order_manager.submit_order(exit_order)
+                    self.ledger.save_order(exit_order)
+                    fill = self.broker.execute_order(exit_order, execution_price=price, trade_date=as_of)
+                    if fill:
+                        self.ledger.apply_fill(fill, name=pos.name, sector=pos.sector)
+
+            # Refresh positions and balances after exits
+            positions = self.ledger.get_positions(account_id)
+            bal = self.ledger.get_balance(account_id)
+
+        # 5. Plan Target Portfolio (with updated post-exit positions and released cash)
         target_pf = strategy.plan_targets(
             as_of=as_of,
             regime=regime,
@@ -249,38 +283,6 @@ class TradingRuntime:
                 "cash_weight": target_pf.cash_weight,
                 "executed_orders": 0
             }
-
-        # 5. ACTIVE Mode: Execute Rebalance
-        # A. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown)
-        for sym, pos in list(positions.items()):
-            q = quotes.get(sym, {})
-            price = float(q.get("price") or q.get("current") or q.get("close") or pos.last_price or 0.0)
-            atr = float(q.get("atr") or 1.0)
-            ma20 = float(q.get("ma20") or price)
-            should_exit, exit_reason, audit = risk_mgr.position_rule.check_position_exit(pos, price, atr=atr, ma20=ma20)
-            self.ledger.record_risk_event(audit)
-            if should_exit and pos.tradable_shares > 0:
-                exit_order = Order(
-                    order_id=f"ORD_EXIT_{sym}_{as_of}_{account_id[:3]}",
-                    client_order_id=f"C_EXIT_{sym}_{as_of}",
-                    account_id=account_id,
-                    symbol=sym,
-                    side=OrderSide.SELL,
-                    order_type=OrderType.MARKET,
-                    price=price,
-                    shares=pos.tradable_shares,
-                    status=OrderStatus.PROPOSED,
-                    reason=f"RiskExit_{exit_reason}"
-                )
-                self.order_manager.submit_order(exit_order)
-                self.ledger.save_order(exit_order)
-                fill = self.broker.execute_order(exit_order, execution_price=price, trade_date=as_of)
-                if fill:
-                    self.ledger.apply_fill(fill, name=pos.name, sector=pos.sector)
-
-        # Refresh positions after exits
-        positions = self.ledger.get_positions(account_id)
-        bal = self.ledger.get_balance(account_id)
 
         # B. Portfolio Rebalancing Buys
         price_map = {sym: float(q.get("price") or q.get("current") or q.get("close") or 0.0) for sym, q in quotes.items()}

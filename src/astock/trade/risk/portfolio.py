@@ -53,7 +53,7 @@ class PortfolioRiskRule:
         else:
             self.max_stock_weight = 0.15
             self.max_sector_weight = 0.30
-            self.max_positions = 3
+            self.max_positions = 6
             self.regime_caps = BALANCED_REGIME_CAPS
 
     def check_drawdown_circuit_breaker(

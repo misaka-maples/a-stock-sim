@@ -73,6 +73,9 @@ class AggressiveStrategy(BaseStrategy):
         remaining_allowed_wt = max(0.0, max_regime_cap - curr_stock_wt)
 
         target_positions: Dict[str, TargetPosition] = {}
+        for sym, pos in positions.items():
+            p_wt = pos.market_value / total_equity if total_equity > 0 else 0.0
+            target_positions[sym] = TargetPosition(symbol=sym, target_weight=round(p_wt, 4), reason="HOLD_EXISTING")
         allocated_weight = 0.0
 
         if remaining_allowed_wt >= 0.02 and not is_frozen:

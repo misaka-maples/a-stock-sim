@@ -165,7 +165,7 @@ class ProductABBalancedV2Strategy(DailyMomentumStrategy):
         self.name = name
 
         config_kwargs = {
-            "max_positions": 3,
+            "max_positions": 6,
             "max_stock_weight": 0.15,
             "max_sector_weight": 0.30,
             "stop_loss_pct": -6.0,

@@ -61,7 +61,7 @@ def test_balanced_v2_regime_caps_and_unknown_fallback():
     assert strat.get_max_regime_total_wt("") == 0.0
 
     # 仓位与标的限制
-    assert strat.config.max_positions == 3
+    assert strat.config.max_positions == 6
     assert strat.config.max_stock_weight == 0.15
     assert strat.config.max_sector_weight == 0.30
 

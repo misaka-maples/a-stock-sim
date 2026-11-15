@@ -36,7 +36,7 @@ class BalancedStrategy(BaseStrategy):
     def __init__(self, account_id: str = "balanced"):
         super().__init__(name="Product_AB_Balanced_V3", account_id=account_id)
         self.risk_rule = PortfolioRiskRule(account_type="balanced")
-        self.max_positions = 3
+        self.max_positions = 6
         self.max_stock_weight = 0.15
         self.max_sector_weight = 0.30
 
@@ -97,6 +97,9 @@ class BalancedStrategy(BaseStrategy):
         remaining_allowed_wt = max(0.0, max_regime_cap - curr_stock_wt)
 
         target_positions: Dict[str, TargetPosition] = {}
+        for sym, pos in positions.items():
+            p_wt = pos.market_value / total_equity if total_equity > 0 else 0.0
+            target_positions[sym] = TargetPosition(symbol=sym, target_weight=round(p_wt, 4), reason="HOLD_EXISTING")
         allocated_weight = 0.0
 
         if remaining_allowed_wt >= 0.02 and not is_frozen:
@@ -108,14 +111,26 @@ class BalancedStrategy(BaseStrategy):
 
             available_slots = max(0, self.max_positions - len(positions))
             target_weights: Dict[str, float] = {}
+            budget_a = remaining_allowed_wt * w_a
+            budget_b = remaining_allowed_wt * w_b
 
+            alloc_a = 0.0
             if w_a > 0 and sigs_a:
                 for s in sigs_a[:available_slots]:
-                    target_weights[s.symbol] = target_weights.get(s.symbol, 0.0) + (w_a * self.max_stock_weight)
+                    wt = min(self.max_stock_weight, max(0.0, budget_a - alloc_a))
+                    if wt >= 0.02:
+                        target_weights[s.symbol] = round(wt, 4)
+                        alloc_a += wt
 
+            avail_b_budget = budget_b + max(0.0, budget_a - alloc_a)
+            alloc_b = 0.0
             if w_b > 0 and sigs_b:
-                for s in sigs_b[:available_slots]:
-                    target_weights[s.symbol] = target_weights.get(s.symbol, 0.0) + (w_b * self.max_stock_weight)
+                rem_slots = max(0, available_slots - len(target_weights))
+                for s in sigs_b[:rem_slots]:
+                    wt = min(self.max_stock_weight, max(0.0, avail_b_budget - alloc_b))
+                    if wt >= 0.02:
+                        target_weights[s.symbol] = round(wt, 4)
+                        alloc_b += wt
 
             # Enforce concentration
             sector_wts: Dict[str, float] = {}

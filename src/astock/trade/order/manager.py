@@ -75,6 +75,15 @@ class OrderManager:
         self._client_orders[cid] = order
         return order
 
+    def submit_order(self, order: Order) -> Order:
+        if order.order_id not in self._orders:
+            self._orders[order.order_id] = order
+            if order.client_order_id:
+                self._client_orders[order.client_order_id] = order
+        OrderStateMachine.transition(order, OrderStatus.SUBMITTED)
+        order.updated_at = datetime.datetime.now().isoformat()
+        return order
+
     def update_status(self, order_id: str, new_status: OrderStatus, reason: str = "") -> Order:
         order = self.get_order(order_id)
         if not order:

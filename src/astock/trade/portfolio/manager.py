@@ -79,7 +79,7 @@ class PortfolioManager:
             )
 
             if passed:
-                self.broker.submit_order(order)
+                self.order_manager.submit_order(order)
                 executed_orders.append(order)
             else:
                 self.order_manager.mark_rejected(order.order_id, audit.message)
