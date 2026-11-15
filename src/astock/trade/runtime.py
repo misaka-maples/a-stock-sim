@@ -168,11 +168,14 @@ class TradingRuntime:
             if self.mode == "ACTIVE":
                 try:
                     from .daily_audit_recorder import DailyAuditRecorder
+                    from pathlib import Path
+                    is_test = "tmp" in str(self.db_path).lower()
+                    rec_path = Path("data/audit/test_daily_records.json") if is_test else Path("data/audit/daily_acceptance_records.json")
                     b_exec = res_bal.get("executed_orders", 0)
                     a_exec = res_agg.get("executed_orders", 0)
                     b_rej = res_bal.get("rejected_orders", [])
                     a_rej = res_agg.get("rejected_orders", [])
-                    DailyAuditRecorder().capture_from_runtime(
+                    DailyAuditRecorder(log_path=rec_path).capture_from_runtime(
                         runtime=self,
                         trade_date=as_of,
                         market_regime=regime.value,
