@@ -456,12 +456,28 @@ def worker_step(now=None):
                     # 2. Build unified market data referencing authoritative MarketSnapshot
                     csi300_bars = getattr(ctx.strategy, "_benchmark", [])
                     cands = getattr(ctx.strategy, "latest_candidates", [])
+                    from src.astock.trade.strategy.signal_inputs import leading_industries
+                    signal_day = (getattr(snapshot, "signal_asof_date", None)
+                                  or last_completed_trading_day(checked_at))
+                    industry_map = (getattr(snapshot, "sector_map", None)
+                                    or getattr(ctx.strategy, "industry_map", {}))
+                    sector_key = (signal_day, getattr(ctx.strategy, "_history_revision", 0),
+                                  id(industry_map))
+                    if getattr(ctx.strategy, "_v3_sector_screen_key", None) != sector_key:
+                        ctx.strategy._v3_sector_screen = leading_industries(
+                            signal_day, getattr(ctx.strategy, "history_cache", {}),
+                            industry_map, symbols=getattr(ctx.strategy, "watchlist", []),
+                            names=getattr(ctx.strategy, "_stock_names", {}))
+                        ctx.strategy._v3_sector_screen_key = sector_key
+                    sector_screen = ctx.strategy._v3_sector_screen
                     m_data = {
                         "snapshot": snapshot,
                         "data_scheduler_result": data_scheduler.get_status().get("last_sync_result"),
                         "csi300_bars": csi300_bars,
                         "candidates": cands,
-                        "top_sectors": getattr(ctx.strategy, "top_industries", []),
+                        "industry_map": industry_map,
+                        "top_sectors": sector_screen["top_sectors"],
+                        "sector_scores": sector_screen["sector_scores"],
                         "candidate_bars": getattr(ctx.strategy, "history_cache", {})
                     }
                     if snapshot:
@@ -479,6 +495,9 @@ def worker_step(now=None):
                     ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
                 except Exception as _e:
                     logger.exception("V3 TradingRuntime step execution error: %s", _e)
+                    # Let background_worker record the failed trading step.
+                    # A live polling thread alone does not mean trading is healthy.
+                    raise
             else:
                 if hasattr(ctx.strategy, "config"):
                     ctx.strategy.on_tick(ctx.last_quotes, now=checked_at)

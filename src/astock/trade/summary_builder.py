@@ -11,6 +11,8 @@ import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from .risk.portfolio import BALANCED_REGIME_CAPS, AGGRESSIVE_REGIME_CAPS, PortfolioRiskRule
+
 
 def from_cents(cents: int) -> float:
     return round(float(cents) / 100.0, 2)
@@ -195,7 +197,7 @@ def build_dual_accounts_summary(
             "max_sector_weight": 0.30,
             "weight_a": 0.70,
             "weight_b": 0.30,
-            "regime_caps": {"RISK_OFF": 0.30, "NEUTRAL": 0.45, "RISK_ON": 0.65, "STRONG_RISK_ON": 0.80}
+            "regime_caps": {regime.value: cap for regime, cap in BALANCED_REGIME_CAPS.items()}
         },
         "aggressive": {
             "strategy_id": "Product_B_Aggressive_v3",
@@ -206,7 +208,7 @@ def build_dual_accounts_summary(
             "max_sector_weight": 0.40,
             "weight_a": 0.0,
             "weight_b": 1.0,
-            "regime_caps": {"RISK_OFF": 0.50, "NEUTRAL": 0.70, "RISK_ON": 0.90, "STRONG_RISK_ON": 1.00}
+            "regime_caps": {regime.value: cap for regime, cap in AGGRESSIVE_REGIME_CAPS.items()}
         }
     }
 
@@ -248,12 +250,36 @@ def build_dual_accounts_summary(
         peak_eq = max(from_cents(acc_db.get("peak_equity_cents", 10000000)), equity)
         dd_pct = round((peak_eq - equity) / peak_eq * 100.0, 2) if peak_eq > 0 else 0.0
 
-        max_cap = cfg["regime_caps"].get(market_regime, 0.30 if acc_id == "balanced" else 0.50)
-        is_frozen = bool(acc_db.get("is_frozen", 0))
-        is_alert = (dd_pct >= 8.0 if acc_id == "balanced" else dd_pct >= 15.0)
+        max_cap = cfg["regime_caps"].get(market_regime, 0.0)
+        manager = getattr(runtime, "risk_manager_bal" if acc_id == "balanced" else "risk_manager_agg", None)
+        rule = getattr(manager, "portfolio_rule", None) or PortfolioRiskRule(acc_id)
+        freeze_dd = rule.freeze_drawdown_pct
+        is_frozen = bool(acc_db.get("is_frozen", 0)) or dd_pct >= freeze_dd
+        is_alert = dd_pct >= rule.alert_drawdown_pct
         risk_status = "冻结新增开仓" if is_frozen else ("回撤预警" if is_alert else "正常")
-        allow_entries = (not is_frozen and stock_wt < max_cap and market_regime != "RISK_OFF")
-        no_entry_reason = "当前市场状态为 RISK_OFF (弱市防御模式，限制新增开仓)" if market_regime == "RISK_OFF" else ("仓位已达上限" if stock_wt >= max_cap else "")
+        # A bearish benchmark reduces the budget; it does not prohibit buying.
+        # Match the trading layer's 2% minimum allocation and data-risk freeze.
+        step = getattr(runtime, "last_step_summary", {}) or {}
+        market_audit = step.get("market_risk_audit", {})
+        if is_frozen:
+            no_entry_reason = "组合回撤冻结，暂停新增开仓"
+        elif max_cap <= 0:
+            no_entry_reason = "市场状态未知，暂停新增开仓"
+        elif not market_audit:
+            no_entry_reason = "等待交易引擎完成市场数据校验"
+        elif not market_audit.get("passed", False):
+            no_entry_reason = "市场数据校验未通过，暂停新增开仓"
+        elif step.get(acc_id, {}).get("entry_risk_freeze", False):
+            no_entry_reason = "账户风控或必要数据校验未通过，暂停新增开仓"
+        elif max_cap - (mv / equity if equity > 0 else 0.0) < 0.02 - 1e-8:
+            no_entry_reason = "仓位已达上限或剩余额度不足2%"
+        elif len(pos_list) >= cfg["max_positions"]:
+            no_entry_reason = "持仓数量已达上限"
+        elif avail_cash <= 0:
+            no_entry_reason = "暂无可用现金"
+        else:
+            no_entry_reason = ""
+        allow_entries = not no_entry_reason
 
         # Performance curves
         all_trades = trades_by_acc.get(acc_id, [])
@@ -371,6 +397,7 @@ def build_dual_accounts_summary(
             "risk_level": cfg["risk_level"],
             "regime": market_regime,
             "max_regime_total_wt": max_cap,
+            "regime_caps": cfg["regime_caps"],
             "current_stock_weight": stock_wt,
             "max_positions": cfg["max_positions"],
             "max_stock_weight": cfg["max_stock_weight"],
@@ -397,6 +424,8 @@ def build_dual_accounts_summary(
             "risk_status": risk_status,
             "allow_new_entries": allow_entries,
             "no_entry_reason": no_entry_reason,
+            "entry_filter_note": ("弱市允许额度内开仓，仍须通过个股MA60/MA120、正动量、强势行业和流动性检查"
+                                  if market_regime == "RISK_OFF" else "仍须通过选股及交易风控检查"),
             "positions_count": len(pos_list),
             "positions": {p["symbol"]: p for p in pos_list},
             "positions_list": pos_list,

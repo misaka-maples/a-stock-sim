@@ -166,6 +166,16 @@ class SQLiteAccountLedger:
                     created_at TEXT NOT NULL
                 );
             """)
+            # Early V3 databases predate the explicit audit outcome column.
+            # CREATE TABLE IF NOT EXISTS does not upgrade those databases.
+            # Keep historical outcomes unknown (NULL), rather than inventing
+            # a pass/fail result, while all new events persist their real value.
+            conn.execute("BEGIN IMMEDIATE")
+            risk_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(risk_events)")
+            }
+            if "passed" not in risk_columns:
+                conn.execute("ALTER TABLE risk_events ADD COLUMN passed INTEGER")
 
     def init_account(
         self,

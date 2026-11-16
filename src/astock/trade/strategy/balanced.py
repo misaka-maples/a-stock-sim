@@ -9,6 +9,7 @@ Caps: RISK_OFF=30%, NEUTRAL=45%, RISK_ON=65%, STRONG_RISK_ON=80%.
 from typing import Dict, List, Optional, Any
 import uuid
 from .base import BaseStrategy
+from .signal_inputs import candidate_signals
 from ..models import (
     Signal, TargetPosition, TargetPortfolio, MarketRegime, Position, AccountBalance
 )
@@ -50,29 +51,7 @@ class BalancedStrategy(BaseStrategy):
         Extracts candidate signals from precomputed momentum metrics.
         """
         run_id = f"SIG_{uuid.uuid4().hex[:8]}"
-        candidates = market_data.get("candidates", [])
-        signals = []
-        for rank, c in enumerate(candidates, 1):
-            sig = Signal(
-                run_id=run_id,
-                signal_asof=as_of,
-                symbol=c.get("symbol", ""),
-                name=c.get("name", ""),
-                rank=rank,
-                score=float(c.get("score", 0.0)),
-                sector=c.get("sector", "其他"),
-                price=float(c.get("price", c.get("close", 0.0))),
-                amount=float(c.get("amount", c.get("turnover", 0.0))),
-                ma20=float(c.get("ma20", 0.0)),
-                ma60=float(c.get("ma60", 0.0)),
-                ma120=float(c.get("ma120", 0.0)),
-                atr=float(c.get("atr", 0.0)),
-                ret20=float(c.get("ret20", 0.0)),
-                ret60=float(c.get("ret60", 0.0)),
-                reasons=[f"momentum_score_{c.get('score', 0):.2f}"]
-            )
-            signals.append(sig)
-        return signals
+        return candidate_signals(as_of, market_data, run_id, "momentum_score")
 
     def plan_targets(
         self,

@@ -124,7 +124,7 @@ class TradingRuntime:
         try:
             now = now or datetime.datetime.now()
             self.last_step_time = now
-            market_data = market_data or {}
+            market_data = dict(market_data or {})
             quotes = quotes or {}
             if snapshot is None:
                 snapshot = market_data.get("snapshot")
@@ -166,6 +166,9 @@ class TradingRuntime:
                         {"date": getattr(b, "date", getattr(b, "trade_date", "")), "close": b.close}
                         for b in snap_bench
                     ]
+                    # Both accounts must validate the same authoritative bars
+                    # used for the shared market-risk audit.
+                    market_data["csi300_bars"] = csi300_bars
                 _, _, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
                     bench_bars=csi300_bars,
                     as_of=signal_asof,
@@ -320,7 +323,8 @@ class TradingRuntime:
         top_sectors = market_data.get("top_sectors", [])
         for s in signals:
             if regime == MarketRegime.RISK_OFF:
-                bars = market_data.get("stock_bars", {}).get(s.symbol, [])
+                history = market_data.get("stock_bars") or market_data.get("candidate_bars") or {}
+                bars = history.get(s.symbol, [])
                 real_amt = getattr(s, "amount", 0.0)
                 if real_amt <= 0:
                     q = quotes.get(s.symbol, {})
@@ -328,10 +332,11 @@ class TradingRuntime:
 
                 audit = risk_mgr.market_rule.check_risk_off_entry_gate(
                     symbol=s.symbol,
-                    price=s.price,
+                    price=s.features.get("signal_price_adjusted", s.price),
                     bars=bars,
                     sector=s.sector,
                     top_sectors=top_sectors,
+                    sector_scores=market_data.get("sector_scores"),
                     ret20=s.ret20,
                     ret60=s.ret60,
                     amount=real_amt,
@@ -417,6 +422,9 @@ class TradingRuntime:
             }
             return {
                 "mode": "SHADOW",
+                "entry_risk_freeze": is_freeze,
+                "missing_market_data": missing_market_data,
+                "allowed_signal_count": len(allowed_signals),
                 "target_positions": len(target_pf.target_positions),
                 "total_target_weight": target_pf.total_weight,
                 "cash_weight": target_pf.cash_weight,
@@ -447,6 +455,9 @@ class TradingRuntime:
 
         return {
             "mode": "ACTIVE",
+            "entry_risk_freeze": is_freeze,
+            "missing_market_data": missing_market_data,
+            "allowed_signal_count": len(allowed_signals),
             "target_positions": len(target_pf.target_positions),
             "total_target_weight": target_pf.total_weight,
             "executed_orders": len(orders),
