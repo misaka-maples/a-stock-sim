@@ -22,7 +22,8 @@ from ..models import (
     Order, OrderStatus, OrderSide, OrderType, Position, TradeFill, AccountBalance
 )
 from ..errors import (
-    InsufficientCashError, InsufficientSharesError, BrokerError
+    InsufficientCashError, InsufficientSharesError, BrokerError,
+    OrderStateError, OrderValidationError
 )
 from ..order.state_machine import OrderStateMachine
 
@@ -223,22 +224,32 @@ class SimulatedBrokerAdapter(BaseBrokerAdapter):
         now_iso = datetime.datetime.now().isoformat()
         trade_time = trade_date or now_iso
 
+        # 1. Check Terminal Status
+        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
+            raise OrderStateError(f"Cannot execute order {order.order_id} in terminal status {order.status.value}")
+
+        # 2. Check Remaining Shares and Cap Fill Shares
+        remaining_shares = order.remaining_shares
+        if remaining_shares <= 0:
+            raise OrderStateError(f"Order {order.order_id} has 0 remaining shares (shares: {order.shares}, filled: {order.filled_shares})")
+
         price = execution_price if execution_price is not None else order.price
         if price <= 0:
             raise BrokerError(f"Invalid execution price: {price}")
+
+        target_shares = int(round(order.shares * partial_ratio))
+        fill_shares = min(target_shares, remaining_shares)
+        if fill_shares <= 0:
+            raise BrokerError(f"Fill shares resulted in 0 (order shares: {order.shares}, remaining: {remaining_shares})")
 
         # Apply slippage: BUY gets price*(1+slip), SELL gets price*(1-slip)
         raw_price = price
         if order.side == OrderSide.BUY:
             fill_price = round(raw_price * (1.0 + self._slippage), 2)
-            slippage_cost = round((fill_price - raw_price) * order.shares * partial_ratio, 2)
+            slippage_cost = round((fill_price - raw_price) * fill_shares, 2)
         else:
             fill_price = round(raw_price * (1.0 - self._slippage), 2)
-            slippage_cost = round((raw_price - fill_price) * order.shares * partial_ratio, 2)
-
-        fill_shares = int(order.shares * partial_ratio)
-        if fill_shares <= 0:
-            raise BrokerError(f"Fill shares resulted in 0 (order shares: {order.shares})")
+            slippage_cost = round((raw_price - fill_price) * fill_shares, 2)
 
         amount = round(fill_price * fill_shares, 2)
         fees = self.calculate_fees(order.side, amount)

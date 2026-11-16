@@ -17,7 +17,10 @@ from ..models import (
     Order, TradeFill, Position, AccountBalance, OrderStatus, OrderSide, OrderType,
     RiskAuditResult, RiskLayer, RiskSeverity
 )
-from ..errors import InsufficientCashError, InsufficientSharesError, DuplicateOrderError
+from ..errors import (
+    InsufficientCashError, InsufficientSharesError, DuplicateOrderError,
+    OrderStateError, OrderValidationError
+)
 
 
 def to_cents(amount: float) -> int:
@@ -476,9 +479,20 @@ class SQLiteAccountLedger:
                         f"Insufficient tradable shares for {fill.symbol}: need {fill_shares}, tradable {pos['tradable_shares'] if pos else 0}"
                     )
 
-            # 3. Ensure Order exists for FK and Insert Fill
-            ord_exists = conn.execute("SELECT order_id FROM orders WHERE order_id = ?", (fill.order_id,)).fetchone()
-            if not ord_exists:
+            # 3. Ensure Order exists for FK and validate status & cumulative fill shares
+            ord_exists = conn.execute("SELECT order_id, shares, filled_shares, status FROM orders WHERE order_id = ?", (fill.order_id,)).fetchone()
+            if ord_exists:
+                cur_status = ord_exists["status"]
+                if cur_status in (OrderStatus.FILLED.value, OrderStatus.CANCELLED.value, OrderStatus.REJECTED.value, OrderStatus.EXPIRED.value):
+                    raise OrderStateError(f"Cannot apply fill to order {fill.order_id} with terminal status {cur_status}")
+
+                tot_row = conn.execute("SELECT SUM(fill_shares) as tot_shares FROM fills WHERE order_id = ?", (fill.order_id,)).fetchone()
+                existing_filled = tot_row["tot_shares"] if (tot_row and tot_row["tot_shares"] is not None) else (ord_exists["filled_shares"] or 0)
+                if existing_filled + fill_shares > ord_exists["shares"]:
+                    raise OrderValidationError(
+                        f"Fill shares {fill_shares} exceeds order remaining {ord_exists['shares'] - existing_filled} for order {fill.order_id} (order shares: {ord_exists['shares']})"
+                    )
+            else:
                 conn.execute(
                     """INSERT INTO orders
                        (order_id, client_order_id, account_id, symbol, side, order_type, price, shares, filled_shares, status, reason, created_at, updated_at)
@@ -609,7 +623,8 @@ class SQLiteAccountLedger:
             # 6. Update Order Status
             ord_row = conn.execute("SELECT shares, filled_shares FROM orders WHERE order_id = ?", (fill.order_id,)).fetchone()
             if ord_row:
-                new_filled = ord_row["filled_shares"] + fill_shares
+                tot_row = conn.execute("SELECT SUM(fill_shares) as tot_shares FROM fills WHERE order_id = ?", (fill.order_id,)).fetchone()
+                new_filled = tot_row["tot_shares"] if (tot_row and tot_row["tot_shares"] is not None) else (ord_row["filled_shares"] + fill_shares)
                 new_status = OrderStatus.FILLED.value if new_filled >= ord_row["shares"] else OrderStatus.PARTIALLY_FILLED.value
                 conn.execute(
                     "UPDATE orders SET filled_shares = ?, status = ?, updated_at = ? WHERE order_id = ?",

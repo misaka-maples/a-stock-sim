@@ -144,6 +144,7 @@ def test_p1_1_daily_acceptance_calendar_continuity_and_rejection():
         records = [
             {
                 "trade_date": "2026-11-16",
+                "market_sync_completed_at": "16:35:10",
                 "sqlite_reconciliation": "MATCH",
                 "balanced_account": {"equity": 100000.0, "cash": 80000.0},
                 "aggressive_account": {"equity": 100000.0, "cash": 60000.0},
@@ -151,6 +152,7 @@ def test_p1_1_daily_acceptance_calendar_continuity_and_rejection():
             },
             {
                 "trade_date": "2026-11-18", # skipped 2026-11-17
+                "market_sync_completed_at": "16:35:10",
                 "sqlite_reconciliation": "MATCH",
                 "balanced_account": {"equity": 100000.0, "cash": 80000.0},
                 "aggressive_account": {"equity": 100000.0, "cash": 60000.0},
@@ -168,6 +170,7 @@ def test_p1_1_daily_acceptance_calendar_continuity_and_rejection():
             d = f"2026-11-{15+i:02d}"
             good_5_days.append({
                 "trade_date": d,
+                "market_sync_completed_at": "16:35:10",
                 "sqlite_reconciliation": "MATCH (Discrepancy: 0.00)",
                 "balanced_account": {"equity": 100000.0, "cash": 80000.0},
                 "aggressive_account": {"equity": 100000.0, "cash": 60000.0},

@@ -3,12 +3,12 @@
 """
 Daily Acceptance Audit Recorder for A-Stock-Sim V3.0
 Automatically tracks consecutive trading day metrics without manual intervention:
-- Market sync completion timestamp
-- Market regime
+- Real verified market sync completion (no forged system time)
+- Market regime & breadth confirmation
 - Balanced & Aggressive equity, cash, positions
-- Strategy status
+- Strategy status & execution success
 - Orders generated, executed, rejected (with reasons)
-- SQLite ledger reconciliation audit
+- SQLite ledger reconciliation audit (0.00 discrepancy required)
 - Systemd restart count
 - Peak resident memory (MB)
 - Error / warning log summary
@@ -65,39 +65,58 @@ def get_systemd_restarts(service_name: str = "openarmx-quant.service") -> int:
     return 0
 
 
-def is_valid_acceptance_record(r: Dict[str, Any]) -> bool:
+def validate_acceptance_record(r: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
-    Validates that a daily acceptance record passes all health checks:
-    - trade_date is a valid A-share trading day
+    Validates that a daily acceptance record passes all strict health checks:
+    - trade_date is a valid A-share trading day (skips weekends/holidays)
+    - market_sync_completed_at is verified by real data task (cannot be unverified or forged)
     - sqlite_reconciliation has MATCH (0 discrepancy)
-    - balanced and aggressive accounts exist and have positive equity
-    - no fatal error in error_summary
+    - balanced and aggressive accounts exist, ran successfully, and have positive equity
+    - strategy_status is not ERROR or FAILED
+    - no fatal unhandled error in error_summary
     """
+    reasons = []
     trade_date = r.get("trade_date")
     if not trade_date:
-        return False
-    try:
-        if not trade_calendar.is_trading_day(trade_date):
-            return False
-    except Exception:
-        pass
+        reasons.append("Missing trade_date")
+    else:
+        try:
+            if not trade_calendar.is_trading_day(trade_date):
+                reasons.append(f"{trade_date} is not a valid A-share trading day (weekend or public holiday)")
+        except Exception as e:
+            reasons.append(f"Trade calendar error for {trade_date}: {e}")
+
+    # Real data sync verification
+    sync_time = r.get("market_sync_completed_at")
+    if not sync_time or sync_time in ("UNVERIFIED", "None", ""):
+        reasons.append("Market sync completion is unverified or missing (no real data task confirmation)")
+
+    strat_status = r.get("strategy_status")
+    if strat_status in ("ERROR", "FAILED"):
+        reasons.append(f"Strategy execution failed with status: {strat_status}")
 
     recon = str(r.get("sqlite_reconciliation", ""))
     if "MATCH" not in recon or "DISCREPANCY" in recon or "ERROR" in recon:
-        return False
-
-    err = str(r.get("error_summary", ""))
-    if err and err != "None" and "error" in err.lower():
-        return False
+        reasons.append(f"SQLite reconciliation failed: {recon}")
 
     b_acc = r.get("balanced_account", {})
     a_acc = r.get("aggressive_account", {})
-    if not b_acc or not a_acc:
-        return False
-    if b_acc.get("equity", 0) <= 0 or a_acc.get("equity", 0) <= 0:
-        return False
+    if not b_acc or b_acc.get("equity", 0) <= 0:
+        reasons.append("Balanced account strategy did not execute successfully or equity <= 0")
+    if not a_acc or a_acc.get("equity", 0) <= 0:
+        reasons.append("Aggressive account strategy did not execute successfully or equity <= 0")
 
-    return True
+    err = str(r.get("error_summary", ""))
+    if err and err != "None" and "error" in err.lower():
+        reasons.append(f"Unhandled critical execution error: {err}")
+
+    return len(reasons) == 0, reasons
+
+
+def is_valid_acceptance_record(r: Dict[str, Any]) -> bool:
+    """Convenience boolean check for acceptance record validity."""
+    valid, _ = validate_acceptance_record(r)
+    return valid
 
 
 def compute_consecutive_valid_trading_days(records: List[Dict[str, Any]]) -> Tuple[int, List[str]]:
@@ -110,6 +129,7 @@ def compute_consecutive_valid_trading_days(records: List[Dict[str, Any]]) -> Tup
     if not records:
         return 0, []
 
+    # Filter and deduplicate records by trade_date (keep latest record per date)
     by_date: Dict[str, Dict[str, Any]] = {}
     for r in records:
         td = r.get("trade_date")
@@ -200,6 +220,10 @@ class DailyAuditRecorder:
         if not trade_date:
             raise ValueError("Record missing required 'trade_date'")
 
+        valid, failure_reasons = validate_acceptance_record(record)
+        record["is_valid"] = valid
+        record["failure_reasons"] = failure_reasons
+
         records = self.load_records()
         existing_idx = next((i for i, r in enumerate(records) if r.get("trade_date") == trade_date), None)
         if existing_idx is not None:
@@ -250,6 +274,7 @@ class DailyAuditRecorder:
     ) -> Dict[str, Any]:
         """
         Extracts metrics directly from TradingRuntime and host environment.
+        Strictly requires verified market sync completion status (no forged system time).
         """
         ledger = getattr(runtime, "ledger", None)
         bal_acc: Dict[str, Any] = {}
@@ -290,7 +315,19 @@ class DailyAuditRecorder:
                 logger.error(f"Failed to query ledger for daily record: {e}")
                 recon_status = f"ERROR: {e}"
 
-        sync_time = sync_completed_time or datetime.datetime.now().strftime("%H:%M:%S")
+        # Verified sync completion lookup: never forge with datetime.now()
+        sync_time = sync_completed_time or getattr(runtime, "last_sync_completed_time", "")
+        if not sync_time and hasattr(runtime, "data_scheduler") and runtime.data_scheduler:
+            try:
+                sched_status = runtime.data_scheduler.get_status()
+                if sched_status.get("last_sync_date") == trade_date and sched_status.get("last_sync_result", {}).get("status") == "SUCCESS":
+                    sync_time = sched_status["last_sync_result"].get("sync_res", {}).get("completed_at", "VERIFIED")
+            except Exception:
+                pass
+
+        if not sync_time:
+            sync_time = "UNVERIFIED"
+
         restarts = get_systemd_restarts()
         peak_mb = get_peak_memory_mb()
 

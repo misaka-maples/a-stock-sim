@@ -447,7 +447,8 @@ def worker_step(now=None):
                     m_data = {
                         "csi300_bars": csi300_bars,
                         "candidates": cands,
-                        "top_sectors": getattr(ctx.strategy, "top_industries", [])
+                        "top_sectors": getattr(ctx.strategy, "top_industries", []),
+                        "candidate_bars": getattr(ctx.strategy, "history_cache", {})
                     }
                     as_of_str = checked_at.date().isoformat()
                     v3_res = ctx.trading_runtime.step(as_of_str, ctx.last_quotes, m_data, now=checked_at)

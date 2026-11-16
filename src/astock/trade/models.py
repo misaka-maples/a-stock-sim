@@ -67,6 +67,7 @@ class Signal:
     score: float = 0.0
     sector: str = "其他"
     price: float = 0.0
+    amount: float = 0.0
     ma20: float = 0.0
     ma60: float = 0.0
     ma120: float = 0.0

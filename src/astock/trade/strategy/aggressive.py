@@ -45,6 +45,7 @@ class AggressiveStrategy(BaseStrategy):
                 score=float(c.get("score", 0.0)),
                 sector=c.get("sector", "其他"),
                 price=float(c.get("price", c.get("close", 0.0))),
+                amount=float(c.get("amount", c.get("turnover", 0.0))),
                 ma20=float(c.get("ma20", 0.0)),
                 ma60=float(c.get("ma60", 0.0)),
                 ma120=float(c.get("ma120", 0.0)),

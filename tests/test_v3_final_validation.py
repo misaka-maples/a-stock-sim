@@ -465,7 +465,8 @@ def test_five_day_continuous_trading_simulation():
         m_day1 = {
             "csi300_bars": make_benchmark_bars("2026-11-16", "STRONG_RISK_ON", count=150),
             "candidates": cands_base[:3],
-            "top_sectors": ["金融", "电子", "公用"]
+            "top_sectors": ["金融", "电子", "公用"],
+            "breadth": 0.85
         }
         res1 = runtime.step("2026-11-16", q_day1, m_day1)
         assert res1["mode"] == "ACTIVE"
@@ -482,7 +483,8 @@ def test_five_day_continuous_trading_simulation():
         m_day2 = {
             "csi300_bars": make_benchmark_bars("2026-11-17", "STRONG_RISK_ON", count=150),
             "candidates": cands_base,
-            "top_sectors": ["金融", "电子", "公用", "汽车"]
+            "top_sectors": ["金融", "电子", "公用", "汽车"],
+            "breadth": 0.85
         }
         res2 = runtime.step("2026-11-17", q_day1, m_day2)
         bal_pos2 = runtime.ledger.get_positions("balanced")
@@ -500,7 +502,8 @@ def test_five_day_continuous_trading_simulation():
         m_day3 = {
             "csi300_bars": make_benchmark_bars("2026-11-18", "STRONG_RISK_ON", count=150),
             "candidates": cands_day3,
-            "top_sectors": ["金融", "电子", "公用", "汽车"]
+            "top_sectors": ["金融", "电子", "公用", "汽车"],
+            "breadth": 0.85
         }
 
         res3 = runtime.step("2026-11-18", q_day3, m_day3)

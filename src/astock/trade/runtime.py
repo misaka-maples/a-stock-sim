@@ -11,12 +11,14 @@ import threading
 import logging
 import datetime
 import json
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 from .models import (
     MarketRegime, Order, TradeFill, Position, AccountBalance, OrderSide,
-    OrderType, OrderStatus, TargetPortfolio, Signal, RiskAuditResult
+    OrderType, OrderStatus, TargetPortfolio, Signal, RiskAuditResult,
+    RiskLayer, RiskSeverity
 )
 from .security import SecurityIdentifier, AssetType
 from .ledger.sqlite_ledger import SQLiteAccountLedger
@@ -42,13 +44,16 @@ class TradingRuntime:
         self,
         db_path: Optional[str] = None,
         mode: str = "SHADOW",  # "SHADOW" or "ACTIVE"
-        initial_capital: float = 100000.0
+        initial_capital: float = 100000.0,
+        data_scheduler: Optional[Any] = None
     ):
         self.db_path = Path(db_path) if db_path is not None else get_db_path()
         self.mode = mode.upper()
         self.lock = threading.Lock()
         self.last_step_time: Optional[datetime.datetime] = None
         self.last_trade_date: Optional[str] = None
+        self.data_scheduler = data_scheduler
+        self.last_sync_completed_time: Optional[str] = None
 
         # 1. Transactional SQLite Ledger (authoritative state of record)
         self.ledger = SQLiteAccountLedger(str(self.db_path))
@@ -101,7 +106,7 @@ class TradingRuntime:
         1. Lock check (prevents concurrent duplicate runs)
         2. Mark-to-market prices in ledger
         3. T+1 rollover if trade date changed
-        4. Detect Market Regime
+        4. Detect Market Regime with real market breadth & zero lookahead bias
         5. Run Balanced Strategy -> Plan -> Risk -> Order -> Execute
         6. Run Aggressive Strategy -> Plan -> Risk -> Order -> Execute
         7. Audit Trail and Record Strategy Runs
@@ -127,9 +132,16 @@ class TradingRuntime:
                     self.broker.roll_trading_day()
                 self.last_trade_date = as_of
 
-            # 3. Market Regime Classification
+            # 3. Market Regime Classification (passing real breadth & candidate bars)
             csi300_bars = market_data.get("csi300_bars", [])
-            regime, breadth, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(csi300_bars, as_of)
+            cand_bars = market_data.get("stock_bars") or market_data.get("candidate_bars")
+            m_breadth = market_data.get("breadth", market_data.get("market_breadth"))
+            regime, breadth, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
+                bench_bars=csi300_bars,
+                as_of=as_of,
+                candidate_bars=cand_bars,
+                market_breadth=m_breadth
+            )
             self.ledger.record_risk_event(mkt_audit)
 
             step_summary = {
@@ -149,6 +161,7 @@ class TradingRuntime:
                 pm=self.pm_bal,
                 risk_mgr=self.risk_manager_bal,
                 regime=regime,
+                breadth=breadth,
                 as_of=as_of,
                 quotes=quotes,
                 market_data=market_data
@@ -162,6 +175,7 @@ class TradingRuntime:
                 pm=self.pm_agg,
                 risk_mgr=self.risk_manager_agg,
                 regime=regime,
+                breadth=breadth,
                 as_of=as_of,
                 quotes=quotes,
                 market_data=market_data
@@ -177,10 +191,15 @@ class TradingRuntime:
                     a_exec = res_agg.get("executed_orders", 0)
                     b_rej = res_bal.get("rejected_orders", [])
                     a_rej = res_agg.get("rejected_orders", [])
+
+                    # Verified sync completed time
+                    verified_sync = market_data.get("sync_completed_at") or self.last_sync_completed_time or ""
+
                     DailyAuditRecorder(log_path=rec_path).capture_from_runtime(
                         runtime=self,
                         trade_date=as_of,
                         market_regime=regime.value,
+                        sync_completed_time=verified_sync,
                         orders_generated=b_exec + len(b_rej) + a_exec + len(a_rej),
                         orders_executed=b_exec + a_exec,
                         orders_rejected=b_rej + a_rej,
@@ -203,7 +222,8 @@ class TradingRuntime:
         regime: MarketRegime,
         as_of: str,
         quotes: Dict[str, Dict[str, Any]],
-        market_data: Dict[str, Any]
+        market_data: Dict[str, Any],
+        breadth: Optional[float] = None
     ) -> Dict[str, Any]:
         """Processes target planning, risk screening, and execution for one account."""
         bal = self.ledger.get_balance(account_id)
@@ -212,12 +232,37 @@ class TradingRuntime:
         # 1. Generate Signals
         signals = strategy.generate_signals(as_of, market_data, regime)
 
-        # 2. Risk Off Entry Gate Check (Market Level)
+        # 2. Check essential market data availability
+        # If essential benchmark data is missing (<120 bars), prevent new buy allocations
+        csi_bars = market_data.get("csi300_bars", [])
+        filtered_bench_bars = [b for b in csi_bars if str(b.get("date", ""))[:10] <= as_of] if csi_bars else []
+        missing_market_data = (not filtered_bench_bars or len(filtered_bench_bars) < 120)
+        if missing_market_data:
+            mkt_audit_res = RiskAuditResult(
+                audit_id=f"RA_MD_{uuid.uuid4().hex[:10]}",
+                timestamp=datetime.datetime.now().isoformat(),
+                account_id=account_id,
+                layer=RiskLayer.MARKET,
+                rule_name="ESSENTIAL_MARKET_DATA_INTEGRITY",
+                passed=False,
+                severity=RiskSeverity.WARNING,
+                action_taken="BLOCK_NEW_BUYS",
+                message=f"Essential benchmark market data is missing/insufficient for {as_of} (<120 bars); blocking new buys to ensure capital preservation.",
+                details={"as_of": as_of, "bench_bars_count": len(filtered_bench_bars)}
+            )
+            self.ledger.record_risk_event(mkt_audit_res)
+
+        # 3. Risk Off Entry Gate Check (Market Level)
         allowed_signals = []
         top_sectors = market_data.get("top_sectors", [])
         for s in signals:
             if regime == MarketRegime.RISK_OFF:
                 bars = market_data.get("stock_bars", {}).get(s.symbol, [])
+                real_amt = getattr(s, "amount", 0.0)
+                if real_amt <= 0:
+                    q = quotes.get(s.symbol, {})
+                    real_amt = float(q.get("amount", q.get("turnover", 0.0)))
+
                 audit = risk_mgr.market_rule.check_risk_off_entry_gate(
                     symbol=s.symbol,
                     price=s.price,
@@ -226,18 +271,23 @@ class TradingRuntime:
                     top_sectors=top_sectors,
                     ret20=s.ret20,
                     ret60=s.ret60,
-                    amount=getattr(s, "amount", 50000000.0)
+                    amount=real_amt,
+                    signal_asof=s.signal_asof,
+                    current_asof=as_of
                 )
                 self.ledger.record_risk_event(audit)
                 if not audit.passed:
                     continue
             allowed_signals.append(s)
 
-        # 3. Check Drawdown Circuit Breaker
+        # 4. Check Drawdown Circuit Breaker
         is_alert, is_freeze, dd_audit = risk_mgr.portfolio_rule.check_drawdown_circuit_breaker(bal)
         self.ledger.record_risk_event(dd_audit)
 
-        # 4. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown) executed FIRST
+        # If essential data missing, freeze new buy allocations
+        is_freeze = is_freeze or missing_market_data
+
+        # 5. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown) executed FIRST
         if self.mode == "ACTIVE":
             for sym, pos in list(positions.items()):
                 q = quotes.get(sym, {})
@@ -270,7 +320,7 @@ class TradingRuntime:
             positions = self.ledger.get_positions(account_id)
             bal = self.ledger.get_balance(account_id)
 
-        # 5. Plan Target Portfolio (with updated post-exit positions and released cash)
+        # 6. Plan Target Portfolio (with updated post-exit positions and released cash)
         target_pf = strategy.plan_targets(
             as_of=as_of,
             regime=regime,
