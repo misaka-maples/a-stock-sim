@@ -85,6 +85,7 @@ class TradingRuntime:
             "aggressive": {},
             "timestamp": None
         }
+        self.last_regime: Optional[MarketRegime] = None
 
         logger.info(f"TradingRuntime initialized in {self.mode} mode. SQLite DB: {self.db_path}")
 
@@ -181,6 +182,8 @@ class TradingRuntime:
                     coverage_ratio=cov_ratio
                 )
             self.ledger.record_risk_event(mkt_audit)
+            self.last_regime = regime
+            self.last_trade_date = as_of
 
             step_summary = {
                 "as_of": as_of,
@@ -469,57 +472,5 @@ class TradingRuntime:
 
     def get_dual_accounts_summary(self) -> Dict[str, Any]:
         """Provides 18-dimension dual account summary for /api/strategy/dual_accounts."""
-        bal_sum = self.ledger.get_summary("balanced")
-        agg_sum = self.ledger.get_summary("aggressive")
-        bal_pos = self.ledger.get_positions("balanced")
-        agg_pos = self.ledger.get_positions("aggressive")
-
-        bal_b = self.ledger.get_balance("balanced")
-        agg_b = self.ledger.get_balance("aggressive")
-
-        reg_bal = self.risk_manager_bal.portfolio_rule.regime_caps
-        reg_agg = self.risk_manager_agg.portfolio_rule.regime_caps
-
-        return {
-            "success": True,
-            "version": "v3.0",
-            "runtime_mode": self.mode,
-            "primary": {
-                "account_id": "balanced",
-                "strategy_name": "Product AB Balanced v3.0",
-                "description": "中等风险、稳健增长。Regime动态仓位 (30%~80%)，单股15%，单行业30%，四级风控与SQLite原子记账",
-                "total_equity": bal_sum["total_equity"],
-                "cash": bal_sum["cash"],
-                "total_cash": bal_b.cash,
-                "available_cash": bal_b.available_cash,
-                "frozen_cash": bal_b.frozen_cash,
-                "stock_value": bal_sum["stock_value"],
-                "stock_market_value": bal_b.stock_market_value,
-                "drawdown_pct": bal_sum["drawdown_pct"],
-                "positions_count": len(bal_pos),
-                "max_positions": self.strategy_bal.max_positions,
-                "is_frozen": bal_b.is_frozen,
-                "regime_caps": {k.value: v for k, v in reg_bal.items()},
-                "positions": {s: p.to_dict() for s, p in bal_pos.items()},
-                "open_orders": [o.to_dict() for o in self.broker.get_open_orders("balanced")]
-            },
-            "secondary": {
-                "account_id": "aggressive",
-                "strategy_name": "Product B Aggressive v3.0",
-                "description": "高风险、积极进攻。纯全市场行业动量，Regime仓位 (50%~100%)，单股25%，单行业40%，四级风控与SQLite原子记账",
-                "total_equity": agg_sum["total_equity"],
-                "cash": agg_sum["cash"],
-                "total_cash": agg_b.cash,
-                "available_cash": agg_b.available_cash,
-                "frozen_cash": agg_b.frozen_cash,
-                "stock_value": agg_sum["stock_value"],
-                "stock_market_value": agg_b.stock_market_value,
-                "drawdown_pct": agg_sum["drawdown_pct"],
-                "positions_count": len(agg_pos),
-                "max_positions": self.strategy_agg.max_positions,
-                "is_frozen": agg_b.is_frozen,
-                "regime_caps": {k.value: v for k, v in reg_agg.items()},
-                "positions": {s: p.to_dict() for s, p in agg_pos.items()},
-                "open_orders": [o.to_dict() for o in self.broker.get_open_orders("aggressive")]
-            }
-        }
+        from src.astock.trade.summary_builder import build_dual_accounts_summary
+        return build_dual_accounts_summary(self)

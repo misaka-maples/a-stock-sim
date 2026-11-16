@@ -679,7 +679,7 @@
     <div class="panel-header" style="flex-wrap: wrap; gap: 12px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
       <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
         <div class="panel-title" style="font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-          <span>⚖️ Product AB v2.0 双账户量化控制台</span>
+          <span>⚖️ Product AB v3.0 双账户量化控制台</span>
           <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid #6366f1;">双账户独立策略 · 物理隔离运行</span>
         </div>
         <div class="tab-group" id="dualAccountTabGroup">
@@ -690,7 +690,7 @@
       </div>
       <div id="dualAccountGlobalStatus" style="font-size: 12px; color: var(--text-muted); display: flex; gap: 12px; align-items: center;">
         <span id="dualRegimeBadge" class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #38bdf8;">市场状态: 载入中...</span>
-        <span id="dualSwitchTime" style="font-size: 11px;">v2.0 运行中</span>
+        <span id="dualSwitchTime" style="font-size: 11px;">v3.0 运行中 (SQLite 权威账本)</span>
       </div>
     </div>
 
@@ -1158,7 +1158,7 @@
   </div>
 
 
-  <!-- 🛡️ Product AB v2.0 双账户量化对账控制台 (Balanced 稳健账户 vs Aggressive 进攻账户) -->
+  <!-- 🛡️ Product AB v3.0 双账户量化对账控制台 (Balanced 稳健账户 vs Aggressive 进攻账户) -->
   
 
     <!-- ⚡ 沪深主板起爆共振雷达池 (严控10%主板) -->
@@ -4206,7 +4206,7 @@
       } else {
         posRows = positions.map(p => {
           const up = Number(p.pnl_pct || 0) >= 0;
-          const floorText = isAggressive ? '<span style="color:var(--text-muted)">宽幅无底线</span>' : (p.profit_floor_locked ? '<span style="color:#10b981; font-weight:600;">🔒 +3%锁定</span>' : '<span style="color:var(--text-muted)">待冲高20%</span>');
+          const floorText = isAggressive ? '<span style="color:var(--text-muted)">宽幅无底线</span>' : (p.profit_floor_locked ? '<span style="color:#10b981; font-weight:600;">🔒 +3%锁定</span>' : '<span style="color:var(--text-muted)">未锁定(+3%锁底)</span>');
           const stopLine = p.trailing_stop_line > 0 ? `¥${Number(p.trailing_stop_line).toFixed(2)}` : `--`;
           return `
             <tr>
@@ -4540,10 +4540,85 @@
       `;
     }
 
+    function normalizeDualAccountResponse(data) {
+      if (!data || !data.success) return data;
+      data.version = data.version || "v3.0";
+      ['primary', 'secondary'].forEach(key => {
+        const acc = data[key];
+        if (!acc) return;
+
+        // Ensure positions is an Array
+        if (acc.positions && !Array.isArray(acc.positions)) {
+          if (typeof acc.positions === 'object') {
+            acc.positions = Object.values(acc.positions);
+          } else {
+            acc.positions = [];
+          }
+        } else if (!acc.positions) {
+          acc.positions = [];
+        }
+
+        // Ensure trades is an Array
+        if (acc.trades && !Array.isArray(acc.trades)) {
+          if (typeof acc.trades === 'object') {
+            acc.trades = Object.values(acc.trades);
+          } else {
+            acc.trades = [];
+          }
+        } else if (!acc.trades) {
+          acc.trades = [];
+        }
+
+        // Numeric defaults and finite checks
+        const numFields = [
+          'total_equity', 'cash', 'total_cash', 'available_cash', 'frozen_cash',
+          'market_value', 'stock_market_value', 'stock_value',
+          'current_stock_weight', 'max_regime_total_wt', 'max_positions',
+          'max_stock_weight', 'max_sector_weight', 'top_single_stock_weight',
+          'top_single_sector_weight', 'weight_a', 'weight_b', 'total_pnl',
+          'total_pnl_pct', 'peak_equity', 'current_drawdown_pct', 'positions_count'
+        ];
+        numFields.forEach(f => {
+          acc[f] = Number.isFinite(Number(acc[f])) ? Number(acc[f]) : 0;
+        });
+
+        // Positions sanity check
+        acc.positions.forEach(p => {
+          ['shares', 'available_shares', 'cost_price', 'last_price', 'current_price',
+           'market_value', 'weight', 'pnl_pct', 'unrealized_pnl', 'unrealized_pnl_pct',
+           'hard_stop_line', 'stop_loss_price', 'trailing_stop_line'].forEach(f => {
+            p[f] = Number.isFinite(Number(p[f])) ? Number(p[f]) : 0;
+          });
+          p.take_profit_price = (p.take_profit_price !== undefined && p.take_profit_price !== null && Number.isFinite(Number(p.take_profit_price))) ? Number(p.take_profit_price) : null;
+          p.profit_floor_locked = Boolean(p.profit_floor_locked);
+        });
+
+        // Trades sanity check
+        acc.trades.forEach(t => {
+          ['price', 'shares', 'amount', 'fees'].forEach(f => {
+            t[f] = Number.isFinite(Number(t[f])) ? Number(t[f]) : 0;
+          });
+          if (t.realized_pnl !== undefined && t.realized_pnl !== null) {
+            t.realized_pnl = Number.isFinite(Number(t.realized_pnl)) ? Number(t.realized_pnl) : null;
+          }
+        });
+
+        // Balance reconciliation check: |total_equity - (cash + market_value)| <= 0.05
+        const diff = Math.abs(acc.total_equity - (acc.cash + acc.market_value));
+        if (diff > 0.05) {
+          console.warn(`[Ledger Reconciliation] Account ${acc.account_id} diff: ${diff.toFixed(2)}, adjusting equity to match cash + market_value`);
+          acc.total_equity = Number((acc.cash + acc.market_value).toFixed(2));
+        }
+      });
+      return data;
+    }
+
     function updateTopMetricsWithDual(data) {
-      if (!data || !data.primary) return;
+      if (!data) return;
+      data = normalizeDualAccountResponse(data);
+      if (!data.primary) return;
       const p = data.primary;
-      const s = data.secondary || { total_equity: 100000, cash: 100000, market_value: 0 };
+      const s = data.secondary || { total_equity: 100000, cash: 100000, market_value: 0, summary: { initial_cash: 100000 } };
       const totalCombEquity = (p.total_equity || 0) + (s.total_equity || 0);
       const totalCombCash = (p.cash || 0) + (s.cash || 0);
       const totalCombMv = (p.market_value || 0) + (s.market_value || 0);
@@ -4587,12 +4662,21 @@
 
     function renderDualAccounts(data) {
       if (!data || !data.success) return;
+      data = normalizeDualAccountResponse(data);
       const primary = data.primary;
       const secondary = data.secondary;
 
       const regimeBadge = document.getElementById('dualRegimeBadge');
       if (regimeBadge && primary) {
-        regimeBadge.innerText = `市场状态: ${primary.regime} (稳健上限 ${(primary.max_regime_total_wt*100).toFixed(0)}% / 进攻上限 ${(secondary?(secondary.max_regime_total_wt*100).toFixed(0):50)}%)`;
+        const reg = primary.regime || data.market_regime || 'RISK_OFF';
+        const balCap = ((primary.max_regime_total_wt !== undefined ? primary.max_regime_total_wt : 0.30) * 100).toFixed(0);
+        const aggCap = ((secondary && secondary.max_regime_total_wt !== undefined ? secondary.max_regime_total_wt : 0.50) * 100).toFixed(0);
+        regimeBadge.innerText = `市场状态: ${reg} (稳健上限 ${balCap}% / 进攻上限 ${aggCap}%)`;
+      }
+
+      const timeBadge = document.getElementById('dualSwitchTime');
+      if (timeBadge) {
+        timeBadge.innerText = `v3.0 运行中 (${data.runtime_mode || 'ACTIVE'} · SQLite 权威账本)`;
       }
 
       // 渲染 Split 视图
