@@ -424,15 +424,24 @@ class TestDualAccountMarketSnapshotSharing(unittest.TestCase):
             storage.save_daily_bars("sh000300", bm_bars, adjust_type="none")
 
             last_date = bm_bars[-1].trade_date
+            stock_infos = [
+                StockInfo(symbol=f"sh60{s_idx:04d}", name=f"Stock{s_idx}", status="L", list_date="2020-01-01")
+                for s_idx in range(20)
+            ]
+            storage.save_stocks(stock_infos)
+
             for s_idx in range(20):
                 sym = f"sh60{s_idx:04d}"
-                s_bar = DailyBar(
-                    symbol=sym, trade_date=last_date,
-                    open=10.0, high=10.5, low=9.8, close=10.2 if s_idx % 2 == 0 else 9.7,
-                    volume=1000.0, amount=1020000.0, source="test", adjust_type="qfq",
-                    updated_at="2026-11-13T15:00:00", is_final=True
-                )
-                storage.save_daily_bars(sym, [s_bar], adjust_type="qfq")
+                s_bars = []
+                for i in range(130):
+                    d_str = (start_dt + timedelta(days=20 + i)).strftime("%Y-%m-%d")
+                    s_bars.append(DailyBar(
+                        symbol=sym, trade_date=d_str,
+                        open=10.0, high=10.5, low=9.5, close=10.2 if s_idx % 2 == 0 else 9.7,
+                        volume=1000.0, amount=1020000.0, source="test", adjust_type="qfq",
+                        updated_at="2026-11-13T15:00:00", is_final=True
+                    ))
+                storage.save_daily_bars(sym, s_bars, adjust_type="qfq")
 
             service = AStockDataService(storage=storage, offline_mode=True)
             snapshot = service.compute_market_snapshot(last_date)

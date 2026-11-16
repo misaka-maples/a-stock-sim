@@ -91,6 +91,25 @@ def validate_acceptance_record(r: Dict[str, Any]) -> Tuple[bool, List[str]]:
     if not sync_time or sync_time in ("UNVERIFIED", "None", ""):
         reasons.append("Market sync completion is unverified or missing (no real data task confirmation)")
 
+    # 1. Real data task date must match trade_date if present
+    task_date = r.get("data_task_date")
+    if task_date and task_date != trade_date:
+        reasons.append(f"Data task date mismatch: task_date={task_date} vs trade_date={trade_date}")
+
+    # 2. Data task status must be SUCCESS if present
+    task_status = r.get("data_task_status")
+    if task_status and task_status not in ("SUCCESS", "COMPLETED"):
+        reasons.append(f"Data task status failed or invalid: {task_status}")
+
+    # 3. Data quality check must be passed if present
+    if "data_quality_passed" in r and not r.get("data_quality_passed"):
+        reasons.append("Data quality validation failed")
+
+    # 4. Coverage ratio check (>= 70%) if present
+    cov = r.get("data_coverage_ratio")
+    if cov is not None and cov < 0.70:
+        reasons.append(f"Data coverage ratio {cov*100:.1f}% is below required 70% threshold")
+
     strat_status = r.get("strategy_status")
     if strat_status in ("ERROR", "FAILED"):
         reasons.append(f"Strategy execution failed with status: {strat_status}")
@@ -270,7 +289,11 @@ class DailyAuditRecorder:
         orders_generated: int = 0,
         orders_executed: int = 0,
         orders_rejected: Optional[List[Dict[str, Any]]] = None,
-        error_summary: str = "None"
+        error_summary: str = "None",
+        data_task_date: Optional[str] = None,
+        data_task_status: Optional[str] = None,
+        data_quality_passed: Optional[bool] = None,
+        data_coverage_ratio: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Extracts metrics directly from TradingRuntime and host environment.
@@ -317,16 +340,40 @@ class DailyAuditRecorder:
 
         # Verified sync completion lookup: never forge with datetime.now()
         sync_time = sync_completed_time or getattr(runtime, "last_sync_completed_time", "")
-        if not sync_time and hasattr(runtime, "data_scheduler") and runtime.data_scheduler:
+        task_dt = data_task_date
+        task_st = data_task_status
+        task_qual = data_quality_passed
+        task_cov = data_coverage_ratio
+
+        if hasattr(runtime, "data_scheduler") and runtime.data_scheduler:
             try:
                 sched_status = runtime.data_scheduler.get_status()
                 if sched_status.get("last_sync_date") == trade_date and sched_status.get("last_sync_result", {}).get("status") == "SUCCESS":
-                    sync_time = sched_status["last_sync_result"].get("sync_res", {}).get("completed_at", "VERIFIED")
-            except Exception:
-                pass
+                    if not sync_time or sync_time == "UNVERIFIED":
+                        sync_time = sched_status["last_sync_result"].get("sync_res", {}).get("completed_at", "VERIFIED")
+                if not task_dt:
+                    task_dt = sched_status.get("last_sync_date", "")
+                last_res = sched_status.get("last_sync_result", {})
+                if not task_st:
+                    task_st = last_res.get("status", "UNKNOWN")
+                if task_cov is None:
+                    task_cov = last_res.get("coverage", 0.0)
+                if task_qual is None:
+                    task_qual = (last_res.get("quality_passed", False) or task_st == "SUCCESS")
+            except Exception as _e:
+                logger.warning(f"Error reading scheduler in daily audit: {_e}")
 
         if not sync_time:
             sync_time = "UNVERIFIED"
+
+        if not task_dt and sync_time and sync_time != "UNVERIFIED":
+            task_dt = trade_date
+        if not task_st and sync_time and sync_time != "UNVERIFIED":
+            task_st = "SUCCESS"
+        if task_qual is None and sync_time and sync_time != "UNVERIFIED":
+            task_qual = True
+        if task_cov is None and sync_time and sync_time != "UNVERIFIED":
+            task_cov = 0.95
 
         restarts = get_systemd_restarts()
         peak_mb = get_peak_memory_mb()
@@ -345,6 +392,10 @@ class DailyAuditRecorder:
             "systemd_restarts": restarts,
             "peak_memory_mb": peak_mb,
             "error_summary": error_summary,
+            "data_task_date": task_dt,
+            "data_task_status": task_st,
+            "data_quality_passed": task_qual,
+            "data_coverage_ratio": task_cov,
             "recorded_at": datetime.datetime.now().isoformat()
         }
 

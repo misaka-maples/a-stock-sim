@@ -13,7 +13,8 @@ from .models import DailyBar, StockInfo, SyncProgress, normalize_symbol, to_clea
 from .storage import LocalStorageManager
 from .providers.manager import ProviderManager
 from .quality import DataQualityValidator
-from ..domain.enums import MarketRegime, DataQuality
+from ..domain.enums import MarketRegime, DataQuality, REGIME_STRONG_BREADTH_MIN
+from ..trade.risk.market import MarketRiskRule
 from ..domain.models import Bar, MarketSnapshot
 
 logger = logging.getLogger(__name__)
@@ -173,40 +174,50 @@ class AStockDataService:
         # 1. Fetch benchmark bars (HS300)
         bench_bars = self.get_benchmark_bars("000300", start_date="", end_date=as_of, auto_fetch=False)
 
-        # 2. Compute Regime
-        if not bench_bars or len(bench_bars) < 120 or bench_bars[-1].trade_date != as_of:
-            regime = MarketRegime.RISK_OFF
-            breadth = 0.0
-        else:
-            hs_close = bench_bars[-1].close
-            ma120 = sum(b.close for b in bench_bars[-120:]) / 120.0
-            ma60 = sum(b.close for b in bench_bars[-60:]) / 60.0
-            ma20 = sum(b.close for b in bench_bars[-20:]) / 20.0
+        # 2. Compute Regime & Market Breadth (Unified with MarketRiskRule & zero lookahead)
+        filtered_bench = [b for b in bench_bars if b.trade_date <= as_of] if bench_bars else []
 
-            # Calculate breadth from sample of universe
-            sample_syms = symbols[:300]
+        if not filtered_bench or len(filtered_bench) < 120 or filtered_bench[-1].trade_date != as_of:
+            regime = MarketRegime.RISK_OFF
+            breadth = None
+            quality = DataQuality.INVALID
+        else:
+            hs_close = filtered_bench[-1].close
+            ma120 = sum(b.close for b in filtered_bench[-120:]) / 120.0
+            ma60 = sum(b.close for b in filtered_bench[-60:]) / 60.0
+            ma20 = sum(b.close for b in filtered_bench[-20:]) / 20.0
+
+            # Calculate breadth across universe without sampling bias
+            sorted_symbols = sorted(symbols)
+            if len(sorted_symbols) > 500:
+                step = max(1, len(sorted_symbols) // 500)
+                sample_syms = sorted_symbols[::step][:500]
+            else:
+                sample_syms = list(sorted_symbols)
+
             above_120_count = 0
             valid_sample_count = 0
             for sym in sample_syms:
                 s_bars = self.storage.read_daily_bars(sym, end_date=as_of, use_cache=True)
-                if len(s_bars) >= 120 and s_bars[-1].trade_date == as_of:
+                filtered_s = [b for b in s_bars if b.trade_date <= as_of] if s_bars else []
+                if len(filtered_s) >= 120 and filtered_s[-1].trade_date == as_of:
                     valid_sample_count += 1
-                    s_ma120 = sum(b.close for b in s_bars[-120:]) / 120.0
-                    if s_bars[-1].close > s_ma120:
+                    s_ma120 = sum(b.close for b in filtered_s[-120:]) / 120.0
+                    if filtered_s[-1].close > s_ma120:
                         above_120_count += 1
-            breadth = (above_120_count / valid_sample_count) if valid_sample_count > 0 else 0.5
 
-            if hs_close <= ma120:
+            cov = (valid_sample_count / len(sample_syms)) if sample_syms else 0.0
+            if cov < 0.60 or valid_sample_count < 10:
+                breadth = None
+                quality = DataQuality.INVALID
                 regime = MarketRegime.RISK_OFF
-            elif hs_close <= ma20:
-                regime = MarketRegime.NEUTRAL
-            elif ma20 <= ma60:
-                regime = MarketRegime.RISK_ON
             else:
-                if breadth >= 0.60:
-                    regime = MarketRegime.STRONG_RISK_ON
-                else:
-                    regime = MarketRegime.RISK_ON
+                breadth = round(above_120_count / valid_sample_count, 4)
+                quality = DataQuality.VALID
+                regime, _, _, _ = MarketRiskRule.classify_regime_from_indicators(
+                    close=hs_close, ma20=ma20, ma60=ma60, ma120=ma120,
+                    breadth=breadth, breadth_min=REGIME_STRONG_BREADTH_MIN
+                )
 
         # Convert benchmark bars to domain Bar models
         domain_bench_bars = [
@@ -242,8 +253,8 @@ class AStockDataService:
             bars_by_symbol={},  # Loaded on demand to conserve heap memory
             benchmark_bars=domain_bench_bars,
             market_regime=regime,
-            quality=DataQuality.VALID,
-            market_breadth=round(breadth, 4),
+            quality=quality,
+            market_breadth=round(breadth, 4) if breadth is not None else None,
             sector_map=industry_map,
             source_lineage={"storage": "parquet", "as_of": as_of}
         )

@@ -54,3 +54,7 @@ class ReasonCode(str, Enum):
     MANUAL = "MANUAL"
     RISK_EXPOSURE_CUT = "RISK_EXPOSURE_CUT"
     EXPIRED = "EXPIRED"
+
+
+# Single Authoritative Threshold for STRONG_RISK_ON Breadth Confirmation
+REGIME_STRONG_BREADTH_MIN: float = 0.60

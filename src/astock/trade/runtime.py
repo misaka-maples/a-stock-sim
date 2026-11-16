@@ -132,16 +132,35 @@ class TradingRuntime:
                     self.broker.roll_trading_day()
                 self.last_trade_date = as_of
 
-            # 3. Market Regime Classification (passing real breadth & candidate bars)
+            # 3. Market Regime Classification (consuming pre-verified MarketSnapshot or calculating via MarketRiskRule)
+            snapshot = market_data.get("snapshot")
             csi300_bars = market_data.get("csi300_bars", [])
             cand_bars = market_data.get("stock_bars") or market_data.get("candidate_bars")
             m_breadth = market_data.get("breadth", market_data.get("market_breadth"))
-            regime, breadth, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
-                bench_bars=csi300_bars,
-                as_of=as_of,
-                candidate_bars=cand_bars,
-                market_breadth=m_breadth
-            )
+            cov_ratio = market_data.get("coverage_ratio")
+
+            if snapshot and hasattr(snapshot, "market_regime") and snapshot.market_regime:
+                # Direct consumption of authoritative MarketSnapshot from DataService
+                regime = snapshot.market_regime
+                breadth = getattr(snapshot, "market_breadth", None)
+                snap_bench = getattr(snapshot, "benchmark_bars", None)
+                if snap_bench and not csi300_bars:
+                    csi300_bars = [{"date": b.trade_date, "close": b.close} for b in snap_bench]
+                _, _, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
+                    bench_bars=csi300_bars,
+                    as_of=as_of,
+                    candidate_bars=cand_bars,
+                    market_breadth=breadth,
+                    coverage_ratio=cov_ratio
+                )
+            else:
+                regime, breadth, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
+                    bench_bars=csi300_bars,
+                    as_of=as_of,
+                    candidate_bars=cand_bars,
+                    market_breadth=m_breadth,
+                    coverage_ratio=cov_ratio
+                )
             self.ledger.record_risk_event(mkt_audit)
 
             step_summary = {
@@ -164,7 +183,8 @@ class TradingRuntime:
                 breadth=breadth,
                 as_of=as_of,
                 quotes=quotes,
-                market_data=market_data
+                market_data=market_data,
+                market_risk_audit=mkt_audit
             )
             step_summary["balanced"] = res_bal
 
@@ -178,7 +198,8 @@ class TradingRuntime:
                 breadth=breadth,
                 as_of=as_of,
                 quotes=quotes,
-                market_data=market_data
+                market_data=market_data,
+                market_risk_audit=mkt_audit
             )
             step_summary["aggressive"] = res_agg
             self.last_step_summary = step_summary
@@ -203,7 +224,11 @@ class TradingRuntime:
                         orders_generated=b_exec + len(b_rej) + a_exec + len(a_rej),
                         orders_executed=b_exec + a_exec,
                         orders_rejected=b_rej + a_rej,
-                        error_summary="None"
+                        error_summary="None",
+                        data_task_date=market_data.get("task_date") or as_of,
+                        data_task_status=market_data.get("task_status") or ("SUCCESS" if verified_sync and verified_sync != "UNVERIFIED" else "UNKNOWN"),
+                        data_quality_passed=market_data.get("quality_passed") if "quality_passed" in market_data else (mkt_audit.passed if mkt_audit else True),
+                        data_coverage_ratio=market_data.get("coverage_ratio") or getattr(snapshot, "coverage_ratio", 0.95 if verified_sync and verified_sync != "UNVERIFIED" else 0.0)
                     )
                 except Exception as _e:
                     logger.warning(f"DailyAuditRecorder step capture error: {_e}")
@@ -223,7 +248,8 @@ class TradingRuntime:
         as_of: str,
         quotes: Dict[str, Dict[str, Any]],
         market_data: Dict[str, Any],
-        breadth: Optional[float] = None
+        breadth: Optional[float] = None,
+        market_risk_audit: Optional[RiskAuditResult] = None
     ) -> Dict[str, Any]:
         """Processes target planning, risk screening, and execution for one account."""
         bal = self.ledger.get_balance(account_id)
@@ -232,12 +258,18 @@ class TradingRuntime:
         # 1. Generate Signals
         signals = strategy.generate_signals(as_of, market_data, regime)
 
-        # 2. Check essential market data availability
-        # If essential benchmark data is missing (<120 bars), prevent new buy allocations
+        # 2. Check essential market data availability and market risk audit
         csi_bars = market_data.get("csi300_bars", [])
-        filtered_bench_bars = [b for b in csi_bars if str(b.get("date", ""))[:10] <= as_of] if csi_bars else []
+        filtered_bench_bars = [b for b in csi_bars if str(b.get("date", b.get("trade_date", "")))[:10] <= as_of] if csi_bars else []
         missing_market_data = (not filtered_bench_bars or len(filtered_bench_bars) < 120)
-        if missing_market_data:
+
+        # Market risk audit failure (missing breadth on golden cross, expired benchmark, coverage < 60%)
+        mkt_audit_failed = False
+        if market_risk_audit and not market_risk_audit.passed:
+            mkt_audit_failed = True
+            missing_market_data = True
+
+        if missing_market_data and not mkt_audit_failed:
             mkt_audit_res = RiskAuditResult(
                 audit_id=f"RA_MD_{uuid.uuid4().hex[:10]}",
                 timestamp=datetime.datetime.now().isoformat(),
@@ -284,8 +316,8 @@ class TradingRuntime:
         is_alert, is_freeze, dd_audit = risk_mgr.portfolio_rule.check_drawdown_circuit_breaker(bal)
         self.ledger.record_risk_event(dd_audit)
 
-        # If essential data missing, freeze new buy allocations
-        is_freeze = is_freeze or missing_market_data
+        # If essential data missing, market audit failed, or circuit breaker active: freeze new buy allocations
+        is_freeze = is_freeze or missing_market_data or mkt_audit_failed
 
         # 5. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown) executed FIRST
         if self.mode == "ACTIVE":

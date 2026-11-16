@@ -120,10 +120,22 @@ def test_market_risk_regime_classification():
         d_str = (datetime.date(2024, 1, 1) + datetime.timedelta(days=i)).isoformat()
         bars.append({"date": d_str, "close": base_px + i * 2.0})
 
-    regime, breadth, audit = rule.determine_regime(bars, as_of=bars[-1]["date"])
-    assert regime in (MarketRegime.RISK_ON, MarketRegime.STRONG_RISK_ON)
+    # With confirmed breadth >= 60% -> STRONG_RISK_ON
+    regime, breadth, audit = rule.determine_regime(bars, as_of=bars[-1]["date"], market_breadth=0.65)
+    assert regime == MarketRegime.STRONG_RISK_ON
     assert audit.passed is True
     assert audit.layer == RiskLayer.MARKET
+
+    # With moderate breadth 45% -> RISK_ON
+    regime_m, breadth_m, audit_m = rule.determine_regime(bars, as_of=bars[-1]["date"], market_breadth=0.45)
+    assert regime_m == MarketRegime.RISK_ON
+    assert audit_m.passed is True
+
+    # With missing breadth -> RISK_OFF (data quality error, blocks new buys)
+    regime_miss, breadth_miss, audit_miss = rule.determine_regime(bars, as_of=bars[-1]["date"], market_breadth=None)
+    assert regime_miss == MarketRegime.RISK_OFF
+    assert audit_miss.passed is False
+    assert audit_miss.action_taken == "BLOCK_NEW_BUYS"
 
 
 def test_market_risk_off_entry_gate():

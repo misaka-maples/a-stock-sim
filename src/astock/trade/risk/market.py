@@ -7,6 +7,7 @@ breadth confirmation, and the strict RISK_OFF entry gate filter.
 
 from typing import Dict, List, Optional, Tuple, Any
 from ..models import MarketRegime, RiskLayer, RiskSeverity, RiskAuditResult
+from ...domain.enums import REGIME_STRONG_BREADTH_MIN
 import uuid
 import datetime
 
@@ -14,15 +15,47 @@ import datetime
 class MarketRiskRule:
     """Manages macro market risk, regime detection, and entry gating."""
 
-    def __init__(self, breadth_min: float = 0.50):
+    def __init__(self, breadth_min: float = REGIME_STRONG_BREADTH_MIN):
         self.breadth_min = breadth_min
+
+    @staticmethod
+    def classify_regime_from_indicators(
+        close: float,
+        ma20: float,
+        ma60: float,
+        ma120: float,
+        breadth: Optional[float],
+        breadth_min: float = REGIME_STRONG_BREADTH_MIN
+    ) -> Tuple[MarketRegime, Optional[float], str, bool]:
+        """
+        Unified authoritative market regime classification.
+        Returns: (regime, breadth, reason_str, data_valid_bool)
+        """
+        if close <= ma120:
+            return MarketRegime.RISK_OFF, breadth, f"CSI300 close({close:.2f}) <= MA120({ma120:.2f})", True
+        elif close <= ma20:
+            return MarketRegime.NEUTRAL, breadth, f"CSI300 close({close:.2f}) <= MA20({ma20:.2f}) but > MA120", True
+        elif ma20 <= ma60:
+            return MarketRegime.RISK_ON, breadth, f"CSI300 MA20({ma20:.2f}) <= MA60({ma60:.2f})", True
+        else:
+            # Bullish golden cross (c > ma20 and ma20 > ma60 > ma120)
+            if breadth is None:
+                # Section 2 requirement: Missing breadth must NOT be interpreted as RISK_ON or default value.
+                # It triggers explicit data quality error and falls back to RISK_OFF, blocking new buys.
+                return MarketRegime.RISK_OFF, None, "Data quality error: Market breadth data is missing; cannot confirm market health", False
+            elif breadth < breadth_min:
+                return MarketRegime.RISK_ON, breadth, f"CSI300 golden cross but breadth({breadth*100:.1f}%) < {breadth_min*100:.1f}%", True
+            else:
+                return MarketRegime.STRONG_RISK_ON, breadth, f"CSI300 strong bullish + breadth({breadth*100:.1f}%) confirmed", True
 
     def determine_regime(
         self,
         bench_bars: List[Dict[str, Any]],
         as_of: str,
         candidate_bars: Optional[Dict[str, List[Dict[str, Any]]]] = None,
-        market_breadth: Optional[float] = None
+        market_breadth: Optional[float] = None,
+        coverage_ratio: Optional[float] = None,
+        min_coverage: float = 0.60
     ) -> Tuple[MarketRegime, Optional[float], RiskAuditResult]:
         """
         Determines market regime based on CSI 300 benchmark moving averages (MA120, MA60, MA20)
@@ -32,7 +65,7 @@ class MarketRiskRule:
         audit_id = f"RA_MKT_{uuid.uuid4().hex[:10]}"
         now_iso = datetime.datetime.now().isoformat()
 
-        # Strict lookahead protection: filter benchmark bars up to as_of
+        # 1. Strict lookahead protection: filter benchmark bars up to as_of
         filtered_bench = [b for b in bench_bars if str(b.get("date", ""))[:10] <= as_of] if bench_bars else []
 
         if not filtered_bench or len(filtered_bench) < 120:
@@ -41,12 +74,29 @@ class MarketRiskRule:
                 timestamp=now_iso,
                 account_id="global",
                 layer=RiskLayer.MARKET,
-                rule_name="BENCHMARK_SUFFICIENT_HISTORY",
+                rule_name="MARKET_BENCHMARK_INTEGRITY",
                 passed=False,
-                severity=RiskSeverity.WARNING,
-                action_taken="DEFAULT_RISK_OFF",
-                message=f"Insufficient benchmark bars up to {as_of} (<120), falling back to RISK_OFF",
+                severity=RiskSeverity.BLOCK,
+                action_taken="BLOCK_NEW_BUYS",
+                message=f"Data quality error: Insufficient benchmark bars up to {as_of} (<120 bars), falling back to RISK_OFF",
                 details={"bars_count": len(filtered_bench), "as_of": as_of}
+            )
+            return MarketRegime.RISK_OFF, None, res
+
+        # 2. Check if benchmark is expired (e.g. latest bar date < as_of)
+        latest_bench_date = str(filtered_bench[-1].get("date", ""))[:10]
+        if latest_bench_date != as_of and (as_of > latest_bench_date):
+            res = RiskAuditResult(
+                audit_id=audit_id,
+                timestamp=now_iso,
+                account_id="global",
+                layer=RiskLayer.MARKET,
+                rule_name="MARKET_BENCHMARK_EXPIRATION",
+                passed=False,
+                severity=RiskSeverity.BLOCK,
+                action_taken="BLOCK_NEW_BUYS",
+                message=f"Data quality error: Benchmark data expired (latest: {latest_bench_date} < as_of: {as_of})",
+                details={"latest_date": latest_bench_date, "as_of": as_of}
             )
             return MarketRegime.RISK_OFF, None, res
 
@@ -55,8 +105,9 @@ class MarketRiskRule:
         ma60 = sum(float(b["close"]) for b in filtered_bench[-60:]) / 60.0
         ma20 = sum(float(b["close"]) for b in filtered_bench[-20:]) / 20.0
 
-        # Calculate or extract market breadth (NEVER default to 1.0)
+        # 3. Calculate or extract market breadth (NEVER default to 1.0 or 0.5)
         breadth: Optional[float] = None
+        cand_cov: Optional[float] = None
         if market_breadth is not None:
             breadth = float(market_breadth)
         elif candidate_bars:
@@ -70,30 +121,52 @@ class MarketRiskRule:
                     b_ma120 = sum(float(b["close"]) for b in sym_sub[-120:]) / 120.0
                     if b_c > b_ma120:
                         above_120 += 1
+            cand_cov = (total_cand / len(candidate_bars)) if candidate_bars else 0.0
             if total_cand > 0:
                 breadth = round(above_120 / total_cand, 4)
 
-        # Classify regime based on Moving Averages & Breadth
-        if c <= ma120:
-            regime = MarketRegime.RISK_OFF
-            reason = f"CSI300 close({c:.2f}) <= MA120({ma120:.2f})"
-        elif c <= ma20:
-            regime = MarketRegime.NEUTRAL
-            reason = f"CSI300 close({c:.2f}) <= MA20({ma20:.2f}) but > MA120"
-        elif ma20 <= ma60:
-            regime = MarketRegime.RISK_ON
-            reason = f"CSI300 MA20({ma20:.2f}) <= MA60({ma60:.2f})"
-        else:
-            # Bullish golden cross (c > ma20 and ma20 > ma60 > ma120)
-            if breadth is None:
-                regime = MarketRegime.RISK_ON
-                reason = "CSI300 golden cross, but market breadth data is missing; cannot confirm STRONG_RISK_ON"
-            elif breadth < self.breadth_min:
-                regime = MarketRegime.RISK_ON
-                reason = f"CSI300 golden cross but breadth({breadth*100:.1f}%) < {self.breadth_min*100:.1f}%"
-            else:
-                regime = MarketRegime.STRONG_RISK_ON
-                reason = f"CSI300 strong bullish + breadth({breadth*100:.1f}%) confirmed"
+        # 4. Coverage check
+        eff_coverage = coverage_ratio if coverage_ratio is not None else cand_cov
+        if eff_coverage is not None and eff_coverage < min_coverage:
+            res = RiskAuditResult(
+                audit_id=audit_id,
+                timestamp=now_iso,
+                account_id="global",
+                layer=RiskLayer.MARKET,
+                rule_name="MARKET_COVERAGE_INTEGRITY",
+                passed=False,
+                severity=RiskSeverity.BLOCK,
+                action_taken="BLOCK_NEW_BUYS",
+                message=f"Data quality error: Market coverage ratio {eff_coverage*100:.1f}% < {min_coverage*100:.1f}% required floor",
+                details={"coverage": eff_coverage, "min_coverage": min_coverage, "as_of": as_of}
+            )
+            return MarketRegime.RISK_OFF, None, res
+
+        # 5. Classify regime using unified authoritative rules
+        regime, final_breadth, reason, is_data_valid = self.classify_regime_from_indicators(
+            close=c, ma20=ma20, ma60=ma60, ma120=ma120,
+            breadth=breadth, breadth_min=self.breadth_min
+        )
+
+        if not is_data_valid:
+            audit = RiskAuditResult(
+                audit_id=audit_id,
+                timestamp=now_iso,
+                account_id="global",
+                layer=RiskLayer.MARKET,
+                rule_name="MARKET_BREADTH_INTEGRITY",
+                passed=False,
+                severity=RiskSeverity.BLOCK,
+                action_taken="BLOCK_NEW_BUYS",
+                message=reason,
+                details={
+                    "as_of": as_of,
+                    "close": c,
+                    "breadth": None,
+                    "missing_breadth": True
+                }
+            )
+            return regime, None, audit
 
         audit = RiskAuditResult(
             audit_id=audit_id,
@@ -111,11 +184,11 @@ class MarketRiskRule:
                 "ma20": round(ma20, 2),
                 "ma60": round(ma60, 2),
                 "ma120": round(ma120, 2),
-                "breadth": breadth,
-                "missing_breadth": breadth is None
+                "breadth": final_breadth,
+                "missing_breadth": final_breadth is None
             }
         )
-        return regime, breadth, audit
+        return regime, final_breadth, audit
 
     def check_risk_off_entry_gate(
         self,

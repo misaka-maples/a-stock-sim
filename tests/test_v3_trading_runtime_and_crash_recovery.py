@@ -37,13 +37,17 @@ def test_multi_day_trading_lifecycle(temp_db):
         "sh600036": {"price": 30.0, "name": "招商银行", "sector": "银行"},
         "sz002594": {"price": 200.0, "name": "比亚迪", "sector": "汽车"},
     }
-    bars_bullish = [{"date": f"2026-01-{i:02d}", "close": 3000.0 + i * 10} for i in range(1, 150)]
+    bars_bullish_d1 = [
+        {"date": (datetime.date(2026, 5, 10) - datetime.timedelta(days=130 - 1 - i)).isoformat(), "close": 3000.0 + i * 10}
+        for i in range(130)
+    ]
     market_data_d1 = {
         "candidates": [
             {"symbol": "sh600036", "name": "招商银行", "score": 90.0, "sector": "银行", "price": 30.0, "ret20": 8.0, "atr": 1.0},
             {"symbol": "sz002594", "name": "比亚迪", "score": 88.0, "sector": "汽车", "price": 200.0, "ret20": 10.0, "atr": 6.0},
         ],
-        "csi300_bars": bars_bullish
+        "csi300_bars": bars_bullish_d1,
+        "market_breadth": 0.70
     }
 
     res_d1 = rt.step("2026-05-10", quotes_d1, market_data_d1)
@@ -63,7 +67,13 @@ def test_multi_day_trading_lifecycle(temp_db):
         "sh600036": {"price": 32.0, "name": "招商银行", "sector": "银行"},
         "sz002594": {"price": 210.0, "name": "比亚迪", "sector": "汽车"},
     }
-    res_d2 = rt.step("2026-05-11", quotes_d2, market_data_d1)
+    bars_bullish_d2 = bars_bullish_d1 + [{"date": "2026-05-11", "close": 4310.0}]
+    market_data_d2 = {
+        "candidates": market_data_d1["candidates"],
+        "csi300_bars": bars_bullish_d2,
+        "market_breadth": 0.70
+    }
+    res_d2 = rt.step("2026-05-11", quotes_d2, market_data_d2)
 
     pos_d2 = rt.ledger.get_positions("balanced")
     for sym, p in pos_d2.items():
