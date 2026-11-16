@@ -12,6 +12,7 @@ import logging
 import datetime
 import json
 import uuid
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -35,6 +36,85 @@ from .strategy.aggressive import AggressiveStrategy
 from .config import get_db_path, get_audit_path
 
 logger = logging.getLogger("TradingRuntime")
+
+
+def _bar_day(bar):
+    return str(bar.get("date", bar.get("trade_date", "")))[:10]
+
+
+def _signal_entry_rejection(signal, signal_day, market_data):
+    """Check actual per-stock evidence in every regime, before allocating cash."""
+    snapshot = market_data.get("snapshot")
+    lineage = getattr(snapshot, "source_lineage", {}) or {}
+    excluded = market_data.get("excluded_symbols", lineage.get("excluded_symbols", [])) or []
+    if isinstance(excluded, dict):
+        excluded = set(excluded)
+    else:
+        excluded = {row.get("symbol") if isinstance(row, dict) else row for row in excluded}
+    if signal.symbol in excluded:
+        return "symbol_quarantined_in_snapshot"
+    nontrading = (lineage.get("nontrading_statuses") or {}).get(signal.symbol)
+    status = nontrading.get("status") if isinstance(nontrading, dict) else nontrading
+    if str(getattr(status, "value", status) or "").upper() in ("SUSPENDED", "DELISTED"):
+        return "symbol_verified_nontrading"
+    if signal.signal_asof != signal_day:
+        return "signal_date_mismatch"
+    history = market_data.get("stock_bars") or market_data.get("candidate_bars") or {}
+    dated = [bar for bar in (history.get(signal.symbol, []) or []) if _bar_day(bar) <= signal_day]
+    if not dated:
+        return "symbol_history_missing"
+    latest = max(dated, key=_bar_day)
+    if _bar_day(latest) != signal_day:
+        return "symbol_history_stale"
+    if latest.get("is_final") is False:
+        return "symbol_daily_bar_unsettled"
+    if latest.get("is_suspended") is True:
+        return "symbol_suspended"
+    volume = latest.get("volume")
+    try:
+        if volume is not None and (not math.isfinite(float(volume)) or float(volume) <= 0):
+            return "symbol_has_no_traded_volume"
+    except (TypeError, ValueError, OverflowError):
+        return "symbol_invalid_volume"
+    st = latest.get("is_st")
+    name = str(latest.get("name") or signal.name or "").upper()
+    # Preserve the existing dated-flag/name policy; unknown is not invented False.
+    if st is True or (st is not False and "ST" in name) or "退" in name or name.startswith("PT"):
+        return "symbol_risk_warning"
+    return None
+
+
+def _live_exit_price(quote, execution_day, now=None):
+    """Never turn a missing or explicitly stale mark into a market sell."""
+    value = quote.get("price") or quote.get("current") or quote.get("close")
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, bool) or not math.isfinite(price) or price <= 0:
+        return None
+    if (quote.get("fresh") is False or quote.get("is_stale") is True
+            or quote.get("is_suspended") is True):
+        return None
+    stamp = quote.get("timestamp") or quote.get("time") or quote.get("quote_time")
+    if not stamp:
+        # Server-produced freshness is already checked against a timestamp.
+        return price if quote.get("fresh") is True else None
+    try:
+        from trade_calendar import BEIJING
+        stamp = str(stamp)
+        observed = (datetime.datetime.strptime(stamp, "%Y%m%d%H%M%S") if len(stamp) == 14 and stamp.isdigit()
+                    else datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")))
+        observed = observed.replace(tzinfo=BEIJING) if observed.tzinfo is None else observed.astimezone(BEIJING)
+        if observed.date().isoformat() != execution_day:
+            return None
+        if now is not None:
+            current = now.replace(tzinfo=BEIJING) if now.tzinfo is None else now.astimezone(BEIJING)
+            if current.date().isoformat() == execution_day and not 0 <= (current - observed).total_seconds() <= 120:
+                return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return price
 
 
 class TradingRuntime:
@@ -143,10 +223,14 @@ class TradingRuntime:
 
             # 3. Market Regime Classification (consuming pre-verified MarketSnapshot or calculating via MarketRiskRule)
             snapshot = snapshot or market_data.get("snapshot")
+            if snapshot is not None:
+                market_data["snapshot"] = snapshot
             csi300_bars = market_data.get("csi300_bars", [])
             cand_bars = market_data.get("stock_bars") or market_data.get("candidate_bars")
             m_breadth = market_data.get("breadth", market_data.get("market_breadth"))
             cov_ratio = market_data.get("coverage_ratio")
+            if cov_ratio is None:
+                cov_ratio = (getattr(snapshot, "source_lineage", {}) or {}).get("coverage_ratio")
 
             # Determine signal_asof vs execution_date
             signal_asof = (
@@ -212,7 +296,8 @@ class TradingRuntime:
                 quotes=quotes,
                 market_data=market_data,
                 market_risk_audit=mkt_audit,
-                signal_asof_date=signal_asof
+                signal_asof_date=signal_asof,
+                now=now
             )
             step_summary["balanced"] = res_bal
 
@@ -228,7 +313,8 @@ class TradingRuntime:
                 quotes=quotes,
                 market_data=market_data,
                 market_risk_audit=mkt_audit,
-                signal_asof_date=signal_asof
+                signal_asof_date=signal_asof,
+                now=now
             )
             step_summary["aggressive"] = res_agg
             self.last_step_summary = step_summary
@@ -281,7 +367,8 @@ class TradingRuntime:
         market_data: Dict[str, Any],
         breadth: Optional[float] = None,
         market_risk_audit: Optional[RiskAuditResult] = None,
-        signal_asof_date: Optional[str] = None
+        signal_asof_date: Optional[str] = None,
+        now: Optional[datetime.datetime] = None
     ) -> Dict[str, Any]:
         """Processes target planning, risk screening, and execution for one account."""
         bal = self.ledger.get_balance(account_id)
@@ -295,7 +382,22 @@ class TradingRuntime:
         # 2. Check essential market data availability and market risk audit
         csi_bars = market_data.get("csi300_bars", [])
         filtered_bench_bars = [b for b in csi_bars if str(b.get("date", b.get("trade_date", "")))[:10] <= sig_date] if csi_bars else []
-        missing_market_data = (not filtered_bench_bars or len(filtered_bench_bars) < 120)
+        missing_market_data = (not filtered_bench_bars or len(filtered_bench_bars) < 120
+                               or _bar_day(filtered_bench_bars[-1]) != sig_date)
+        try:
+            from trade_calendar import get_previous_trading_day
+            if sig_date not in (as_of, get_previous_trading_day(as_of).isoformat()):
+                missing_market_data = True
+        except (ValueError, TypeError):
+            missing_market_data = True
+
+        snapshot = market_data.get("snapshot")
+        snapshot_quality = getattr(snapshot, "quality", None)
+        snapshot_quality = getattr(snapshot_quality, "value", snapshot_quality)
+        if snapshot_quality is not None and snapshot_quality != "VALID":
+            missing_market_data = True
+        if (getattr(snapshot, "source_lineage", {}) or {}).get("trading_ready") is False:
+            missing_market_data = True
 
         # Market risk audit failure (missing breadth on golden cross, expired benchmark, coverage < 60%)
         mkt_audit_failed = False
@@ -313,8 +415,9 @@ class TradingRuntime:
                 passed=False,
                 severity=RiskSeverity.WARNING,
                 action_taken="BLOCK_NEW_BUYS",
-                message=f"Essential benchmark market data is missing/insufficient for {sig_date} (<120 bars); blocking new buys to ensure capital preservation.",
-                details={"as_of": sig_date, "bench_bars_count": len(filtered_bench_bars)}
+                message=f"Essential benchmark/snapshot evidence is missing, stale or unaccepted for {sig_date}; blocking new buys.",
+                details={"as_of": sig_date, "bench_bars_count": len(filtered_bench_bars),
+                         "snapshot_quality": snapshot_quality}
             )
             self.ledger.record_risk_event(mkt_audit_res)
 
@@ -322,6 +425,16 @@ class TradingRuntime:
         allowed_signals = []
         top_sectors = market_data.get("top_sectors", [])
         for s in signals:
+            rejection = _signal_entry_rejection(s, sig_date, market_data)
+            if rejection:
+                self.ledger.record_risk_event(RiskAuditResult(
+                    audit_id=f"RA_STOCK_{uuid.uuid4().hex[:10]}",
+                    timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
+                    layer=RiskLayer.MARKET, rule_name="SYMBOL_ENTRY_DATA_INTEGRITY",
+                    passed=False, severity=RiskSeverity.BLOCK, action_taken="REJECT_SYMBOL_ENTRY",
+                    message=rejection, details={"symbol": s.symbol, "signal_asof": s.signal_asof,
+                                                 "required_signal_date": sig_date}))
+                continue
             if regime == MarketRegime.RISK_OFF:
                 history = market_data.get("stock_bars") or market_data.get("candidate_bars") or {}
                 bars = history.get(s.symbol, [])
@@ -358,10 +471,45 @@ class TradingRuntime:
         # 5. Position Risk Exits (-6% hard stop, trailing ATR, MA20 breakdown) executed FIRST
         if self.mode == "ACTIVE":
             for sym, pos in list(positions.items()):
+                lineage = getattr(market_data.get("snapshot"), "source_lineage", {}) or {}
+                nontrading = (lineage.get("nontrading_statuses") or {}).get(sym)
+                status = nontrading.get("status") if isinstance(nontrading, dict) else nontrading
+                status = str(getattr(status, "value", status) or "").upper()
+                if status in ("SUSPENDED", "DELISTED"):
+                    self.ledger.record_risk_event(RiskAuditResult(
+                        audit_id=f"RA_EXIT_STATUS_{uuid.uuid4().hex[:10]}",
+                        timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
+                        layer=RiskLayer.POSITION, rule_name="POSITION_NONTRADING_STATUS",
+                        passed=False, severity=RiskSeverity.WARNING, action_taken="HOLD_NONTRADABLE_SYMBOL",
+                        message="Verified nontrading status; do not sell on a residual quote",
+                        details={"symbol": sym, "status": status}))
+                    continue
                 q = quotes.get(sym, {})
-                price = float(q.get("price") or q.get("current") or q.get("close") or pos.last_price or 0.0)
-                atr = float(q.get("atr") or 1.0)
-                ma20 = float(q.get("ma20") or price)
+                price = _live_exit_price(q, as_of, now)
+                if price is None:
+                    self.ledger.record_risk_event(RiskAuditResult(
+                        audit_id=f"RA_EXIT_DATA_{uuid.uuid4().hex[:10]}",
+                        timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
+                        layer=RiskLayer.POSITION, rule_name="POSITION_QUOTE_FRESHNESS",
+                        passed=False, severity=RiskSeverity.WARNING, action_taken="HOLD_UNVERIFIED_PRICE",
+                        message="Missing/stale live quote; no market sell based on cached position mark",
+                        details={"symbol": sym, "execution_date": as_of}))
+                    continue
+                def indicator(key):
+                    try:
+                        value = float(q.get(key) or 0.0)
+                        return value if math.isfinite(value) and value > 0 else 0.0
+                    except (TypeError, ValueError, OverflowError):
+                        return 0.0
+                atr, ma20 = indicator("atr"), indicator("ma20")
+                if not atr or not ma20:
+                    self.ledger.record_risk_event(RiskAuditResult(
+                        audit_id=f"RA_EXIT_IND_{uuid.uuid4().hex[:10]}",
+                        timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
+                        layer=RiskLayer.POSITION, rule_name="POSITION_INDICATOR_AVAILABILITY",
+                        passed=False, severity=RiskSeverity.WARNING, action_taken="HARD_STOP_REMAINS_ACTIVE",
+                        message="Unavailable ATR/MA20-dependent exit rules disabled; hard stop remains active",
+                        details={"symbol": sym, "atr_available": bool(atr), "ma20_available": bool(ma20)}))
                 should_exit, exit_reason, audit = risk_mgr.position_rule.check_position_exit(pos, price, atr=atr, ma20=ma20)
                 self.ledger.record_risk_event(audit)
                 if should_exit and pos.tradable_shares > 0:

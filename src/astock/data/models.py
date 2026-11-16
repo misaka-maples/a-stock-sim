@@ -65,7 +65,7 @@ class DailyBar:
     amplitude_pct: Optional[float] = None
     change_pct: Optional[float] = None
     is_suspended: bool = False
-    is_st: bool = False
+    is_st: Optional[bool] = None
 
     def __post_init__(self):
         if self.raw_open <= 0.0 and self.open > 0.0:
@@ -105,7 +105,8 @@ class DailyBar:
         amp = float(d["amplitude_pct"]) if d.get("amplitude_pct") is not None else None
         chg = float(d["change_pct"]) if d.get("change_pct") is not None else None
         is_suspended = bool(d.get("is_suspended", False))
-        is_st = bool(d.get("is_st", False))
+        is_st = d.get("is_st")
+        is_st = bool(is_st) if is_st is not None else None
 
         return cls(
             symbol=symbol,

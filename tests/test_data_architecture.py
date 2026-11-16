@@ -240,7 +240,8 @@ class TestLocalStorageParquet(unittest.TestCase):
                 adjust_type="qfq", updated_at="2026-11-13T15:30:00", is_final=True
             )
         ]
-        self.storage.save_daily_bars("sh600000", bar2, adjust_type="qfq")
+        # qfq increments carry overlap to prove their adjustment basis.
+        self.storage.save_daily_bars("sh600000", bar1 + bar2, adjust_type="qfq")
 
         read_bars = self.storage.get_daily_bars("sh600000", adjust_type="qfq")
         self.assertEqual(len(read_bars), 2)
@@ -394,6 +395,8 @@ class TestProviderManagerFailover(unittest.TestCase):
 
         pm.providers["baostock"] = failing_primary
         pm.providers["sina"] = working_secondary
+        # Never reach live fallbacks added after these two mocked sources.
+        pm.daily_provider_chain = ["baostock", "sina"]
 
         bars = pm.fetch_stock_daily("sh600000", "2026-11-13", "2026-11-13")
         self.assertEqual(len(bars), 1)

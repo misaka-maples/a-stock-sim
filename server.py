@@ -482,7 +482,8 @@ def worker_step(now=None):
                     }
                     if snapshot:
                         m_data["market_breadth"] = snapshot.market_breadth
-                        m_data["coverage_ratio"] = getattr(snapshot, "coverage_ratio", 0.95)
+                        m_data["coverage_ratio"] = getattr(snapshot, "source_lineage", {}).get(
+                            "coverage_ratio", getattr(snapshot, "coverage_ratio", None))
                         m_data["signal_asof_date"] = snapshot.signal_asof_date
 
                     v3_res = ctx.trading_runtime.step(
@@ -636,6 +637,7 @@ async def lifespan(app: FastAPI):
     ctx.worker_thread = threading.Thread(target=background_worker, daemon=True)
     ctx.worker_thread.start()
     try:
+        data_scheduler.set_sync_symbols(ctx.symbols)
         data_scheduler.start()
         logger.info("数据层增量行情调度器已启动")
     except Exception as _e:
@@ -1103,11 +1105,14 @@ def get_data_system_status():
     """获取数据层统一状态、存储覆盖率、基准K线及调度器状态"""
     now = datetime.datetime.now(BEIJING)
     sync_prog = data_storage.get_all_sync_progress()
-    total_tracked = len(sync_prog)
+    scope = (data_scheduler.sync_symbols if data_scheduler.sync_symbols is not None
+             else ctx.symbols)
+    total_tracked = len(scope)
     last_mkt_day = last_completed_trading_day(now)
 
-    up_to_date = sum(1 for p in sync_prog.values() if p.last_trade_date == last_mkt_day)
-    coverage = round(up_to_date / total_tracked * 100, 1) if total_tracked > 0 else 0.0
+    up_to_date = sum(1 for symbol in scope if symbol in sync_prog
+                     and sync_prog[symbol].last_trade_date >= last_mkt_day)
+    coverage = round(up_to_date / total_tracked * 100, 2) if total_tracked > 0 else 0.0
 
     parquet_dir = BASE_DIR / "data" / "storage" / "parquet"
     parquet_files = list(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
@@ -1117,7 +1122,7 @@ def get_data_system_status():
     db_path = BASE_DIR / "data" / "storage" / "sqlite" / "metadata.db"
     db_size_mb = round(db_path.stat().st_size / (1024 * 1024), 2) if db_path.exists() else 0.0
 
-    bm_bars = data_service.get_benchmark_bars("sh000300")
+    bm_bars = data_service.get_benchmark_bars("sh000300", auto_fetch=False)
     bm_info = {
         "symbol": "sh000300",
         "name": "沪深300指数",
@@ -1125,15 +1130,44 @@ def get_data_system_status():
         "total_bars": len(bm_bars)
     }
 
-    cache_stats = data_storage.memory_cache.get_stats() if hasattr(data_storage, "memory_cache") else {}
-
+    cache_stats = data_storage.mem_cache.get_stats()
+    scheduler_status = data_scheduler.get_status()
+    benchmark_current = bool(len(bm_bars) >= 120 and bm_bars[-1].trade_date >= last_mkt_day)
+    status_reader = getattr(data_service, "get_security_statuses", None)
+    nontrading = status_reader(last_mkt_day, scope) if callable(status_reader) else {}
+    missing = [symbol for symbol in scope if symbol not in nontrading and
+               (symbol not in sync_prog or sync_prog[symbol].last_trade_date < last_mkt_day)]
+    expected = total_tracked - len(nontrading)
+    accepted = scheduler_status.get("last_sync_result", {})
+    trading_ready = bool(accepted.get("trade_date") == last_mkt_day
+                         and accepted.get("trading_ready"))
+    if scheduler_status["is_syncing"]:
+        status = "updating"
+    elif total_tracked and not missing and benchmark_current:
+        status = "ready_with_exclusions" if nontrading else "ready"
+    elif last_mkt_day == now.date().isoformat() and now.time() < datetime.time(16, 30):
+        status = "waiting_for_scheduled_sync"
+    else:
+        status = "partial"
     return {
-        "status": "ready",
+        "status": status,
         "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "last_completed_trading_day": last_mkt_day,
         "total_symbols_tracked": total_tracked,
         "up_to_date_symbols": up_to_date,
         "coverage_pct": coverage,
+        "coverage_scope": "configured_trading_watchlist",
+        "missing_symbols_count": len(missing),
+        "missing_symbols": missing[:50],
+        "nontrading_symbols_count": len(nontrading),
+        "nontrading_statuses": nontrading,
+        "expected_daily_bar_symbols": expected,
+        "current_expected_symbols": expected - len(missing),
+        "expected_coverage_pct": round((expected - len(missing)) / expected * 100, 2) if expected else 0.0,
+        "excluded_from_new_buys": sorted(set(missing) | set(nontrading)),
+        "data_complete": bool(total_tracked and not missing and benchmark_current),
+        "trading_ready": trading_ready,
+        "daily_sync_time": "16:30 Asia/Shanghai",
         "storage": {
             "parquet_files": parquet_count,
             "parquet_size_mb": parquet_size_mb,
@@ -1142,7 +1176,7 @@ def get_data_system_status():
             "cache_size": cache_stats.get("current_size", 0)
         },
         "benchmark": bm_info,
-        "scheduler": data_scheduler.get_status()
+        "scheduler": scheduler_status
     }
 
 

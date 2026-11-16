@@ -16,6 +16,8 @@ class SinaProvider(BaseMarketDataProvider):
     Provides fast, free daily bars for A-share stocks and market indices without authentication.
     """
 
+    supported_adjustments = {"none"}
+
     def __init__(self, timeout: float = 6.0):
         self._name = "sina"
         self._timeout = timeout
@@ -41,6 +43,8 @@ class SinaProvider(BaseMarketDataProvider):
     def fetch_stock_daily(self, symbol: str, start_date: str, end_date: str,
                           adjust_type: str = "qfq") -> List[DailyBar]:
         """Fetch daily bars for a stock."""
+        if adjust_type != "none":
+            raise ValueError("Sina K-line endpoint supplies unadjusted prices only")
         sym = normalize_symbol(symbol)
         url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=no&datalen=300"
         with self._lock:
@@ -67,7 +71,7 @@ class SinaProvider(BaseMarketDataProvider):
                 close_p = float(row["close"])
                 vol_shares = float(row.get("volume") or 0.0)
                 vol_lots = vol_shares / 100.0
-                amt_yuan = vol_lots * 100 * ((open_p + close_p) / 2.0)
+                amt_yuan = float(row.get("amount") or 0.0)  # Never synthesize turnover
 
                 bars.append(DailyBar(
                     symbol=sym,
@@ -123,7 +127,7 @@ class SinaProvider(BaseMarketDataProvider):
                 close_p = float(row["close"])
                 vol_shares = float(row.get("volume") or 0.0)
                 vol_lots = vol_shares / 100.0
-                amt_yuan = vol_lots * 100 * close_p
+                amt_yuan = float(row.get("amount") or 0.0)  # Never synthesize turnover
 
                 bars.append(DailyBar(
                     symbol=sym,

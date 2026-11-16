@@ -1,0 +1,175 @@
+{
+  "target_date": "2026-11-16",
+  "verified_at": "2026-11-16T16:29:41+08:00",
+  "scope_note": "Dated official evidence. Suspensions expire after verified_through. Definitive delisting remains effective. RESUMED rows are evidence only and never excluded. No future information may enter earlier sessions.",
+  "records": [
+    {
+      "symbol": "sh600185",
+      "name": "珠免集团",
+      "status": "SUSPENDED",
+      "effective_from": "2026-11-12",
+      "announcement_date": "2026-11-12",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-11-12/1225667574.PDF",
+      "title": "珠海珠免集团股份有限公司关于筹划重大资产重组事项的停牌公告",
+      "evidence_summary": "公告2026-073明确自2026年11月12日开市起停牌，预计不超过10个交易日。11月16日报价开盘价、成交量及成交额均为0，未检得复牌公告。仅核验至目标日，不假设满10日自动复牌。",
+      "expected_resumption_date": null,
+      "expected_duration": "不超过10个交易日",
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161457",
+        "open": 0,
+        "volume_lots": 0,
+        "amount_10k_yuan": 0,
+        "last": 4.28,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sh605255",
+      "name": "天普股份",
+      "status": "SUSPENDED",
+      "effective_from": "2026-11-16",
+      "announcement_date": "2026-11-14",
+      "source_url": "https://static.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-11-14/605255_20261114_GBK0.pdf",
+      "title": "宁波市天普橡胶科技股份有限公司关于停牌核查的公告",
+      "evidence_summary": "公告2026-061明确自2026年11月16日开市起停牌，披露核查公告后复牌，未指定结束日期。上交所queryCompanyBulletin公告检索确认该正式PDF地址及披露日。11月16日报价开盘价、成交量、成交额为0。",
+      "expected_resumption_date": null,
+      "verified_through": "2026-11-16",
+      "source_registry_url": "https://query.sse.com.cn/security/stock/queryCompanyBulletin.do?isPagination=true&productId=605255&keyWord=%E5%81%9C%E7%89%8C&securityType=0101&reportType2=LSGG&reportType=ALL&beginDate=2026-11-14&endDate=2026-11-14&pageHelp.pageSize=20&pageHelp.pageNo=1&pageHelp.beginPage=1&pageHelp.cacheSize=1",
+      "source_registry_metadata": {
+        "SSEDATE": "2026-11-14",
+        "ADDDATE": "2026-11-13 19:03:54",
+        "SECURITY_CODE": "605255",
+        "TITLE": "天普股份关于停牌核查的公告",
+        "URL": "/disclosure/listedinfo/announcement/c/new/2026-11-14/605255_20261114_GBK0.pdf"
+      },
+      "source_access_note": "Official registry returned the PDF URL and date. Direct CDN access returned an HTML access page during verification; full issuer announcement 2026-061 was read from the matching PDF mirror, not misrepresented as a successful official-CDN body fetch.",
+      "body_mirror_url": "https://file.finance.sina.com.cn/211.154.219.97:9494/MRGG/CNSESH_STOCK/2026/2026-11/2026-11-14/12706667.PDF",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161459",
+        "open": 0,
+        "volume_lots": 0,
+        "amount_10k_yuan": 0,
+        "last": 73.82,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sz000635",
+      "name": "英力特",
+      "status": "SUSPENDED",
+      "effective_from": "2026-11-13",
+      "announcement_date": "2026-11-13",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-11-13/1225670041.PDF",
+      "title": "宁夏英力特化工股份有限公司关于控股股东拟协议转让公司股份公开征集受让方事项的进展及公司拟筹划发行股份购买资产暨关联交易事项的停牌公告",
+      "evidence_summary": "公告2026-063明确自11月13日开市起停牌；预计不超过5个交易日，最晚11月20日开市起复牌。11月16日报价开盘价、成交量及成交额为0。预计复牌日仅为公告安排，不自动将未来状态改为已复牌。",
+      "expected_resumption_date": "2026-11-20",
+      "expected_duration": "不超过5个交易日",
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161454",
+        "open": 0,
+        "volume_lots": 0,
+        "amount_10k_yuan": 0,
+        "last": 11.0,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sz000831",
+      "name": "中国稀土",
+      "status": "RESUMED",
+      "effective_from": "2026-11-16",
+      "announcement_date": "2026-11-14",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-11-14/1225671894.PDF",
+      "title": "中国稀土集团资源科技股份有限公司关于披露重组预案的一般风险提示暨公司股票复牌的公告",
+      "evidence_summary": "公告2026-043（落款11月13日，11月14日披露）明确11月16日开市复牌，结束此前11月2日起停牌。11月16日腾讯实际成交量853181手、成交额435603万元、开盘52.35及收盘49.80，证实当日已交易。不能从当天应更新池中剔除。",
+      "resumption_date": "2026-11-16",
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161430",
+        "open": 52.35,
+        "volume_lots": 853181,
+        "amount_10k_yuan": 435603,
+        "last": 49.8,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sz002129",
+      "name": "TCL中环",
+      "status": "RESUMED",
+      "effective_from": "2026-11-16",
+      "announcement_date": "2026-11-14",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-11-14/1225672061.PDF",
+      "title": "TCL中环新能源科技股份有限公司关于披露发行股份购买资产并募集配套资金暨关联交易预案的一般风险提示暨公司股票复牌的公告",
+      "evidence_summary": "公告2026-069（落款11月13日，11月14日披露）明确11月16日开市复牌，结束此前11月2日起停牌。11月16日腾讯成交量2594753手、成交额249915万元、开盘10.30及收盘9.18，证实当日实际交易，不得沿用旧停牌状态排除。",
+      "resumption_date": "2026-11-16",
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161418",
+        "open": 10.3,
+        "volume_lots": 2594753,
+        "amount_10k_yuan": 249915,
+        "last": 9.18,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sz002717",
+      "name": "*ST岭南",
+      "status": "SUSPENDED",
+      "effective_from": "2026-10-13",
+      "announcement_date": "2026-11-12",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-11-12/1225667855.PDF",
+      "title": "岭南生态文旅股份有限公司向不特定对象发行可转换公司债券2026年度第三十五次临时受托管理事务报告",
+      "evidence_summary": "巨潮披露的原始受托管理报告第7页确认股票自10月13日开市起停牌；第5页说明已触及交易类强制退市并收到终止上市事先告知书。11月16日报价开盘价、成交量及成交额为0。不能把事先告知/拟终止直接当成完成摘牌。",
+      "expected_resumption_date": null,
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116161433",
+        "open": 0,
+        "volume_lots": 0,
+        "amount_10k_yuan": 0,
+        "last": 0.45,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    },
+    {
+      "symbol": "sz002731",
+      "name": "萃华退",
+      "status": "DELISTED",
+      "effective_from": "2026-11-13",
+      "announcement_date": "2026-11-13",
+      "source_url": "https://disc.static.szse.cn/download/disc/disk03/finalpage/2026-11-13/f0878011-459d-4e1b-88c4-4f50876ae48f.PDF",
+      "title": "沈阳萃华金银珠宝股份有限公司关于公司股票终止上市暨摘牌的公告",
+      "evidence_summary": "公告2026-124、深交所正式PDF明确最后交易日11月12日，11月13日摘牌；终止上市决定日期10月15日。11月16日腾讯仅残留萃华退报价，开盘、成交量及成交额为0。应更新名称及上市状态，保留历史行情，不制造11月16日日线。",
+      "delisting_date": "2026-11-13",
+      "last_trading_date": "2026-11-12",
+      "verified_through": "2026-11-16",
+      "quote_corroboration": {
+        "provider": "tencent",
+        "queried_at": "2026-11-16T16:29:41+08:00",
+        "timestamp": "20261116090000",
+        "open": 0,
+        "volume_lots": 0,
+        "amount_10k_yuan": 0,
+        "last": 0.21,
+        "note": "Corroboration only; no bar is fabricated from the quote."
+      }
+    }
+  ],
+  "version": 1
+}

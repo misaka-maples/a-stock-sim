@@ -3,6 +3,7 @@ from .baostock_provider import BaoStockProvider
 from .sina_provider import SinaProvider
 from .tencent_provider import TencentProvider
 from .akshare_provider import AKShareProvider
+from .eastmoney_provider import EastMoneyProvider
 from .manager import ProviderManager
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     'TencentProvider',
     'AKShareProvider',
     'ProviderManager',
+    'EastMoneyProvider',
 ]

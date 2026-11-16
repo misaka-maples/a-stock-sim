@@ -57,9 +57,9 @@ class DataQualityValidator:
         if bar.raw_low - eps > min(bar.raw_open, bar.raw_close, bar.raw_high):
             raise DataValidationError("invalid_raw_low_price", f"Raw low {bar.raw_low} is greater than raw open/close/high")
 
-        if bar.volume < 0:
+        if not math.isfinite(bar.volume) or bar.volume < 0:
             raise DataValidationError("negative_volume", f"Volume is negative: {bar.volume}")
-        if bar.amount < 0:
+        if not math.isfinite(bar.amount) or bar.amount < 0:
             raise DataValidationError("negative_amount", f"Amount is negative: {bar.amount}")
 
         if bar.adjustment_factor <= 0 or not math.isfinite(bar.adjustment_factor):

@@ -1,5 +1,8 @@
 # src/astock/data/storage.py
 import os
+import math
+import statistics
+from dataclasses import replace
 import sqlite3
 import threading
 import tempfile
@@ -318,7 +321,7 @@ class LocalStorageManager:
 
     def update_sync_task(self, task_id: str, completed_symbols: int, failed_symbols: int,
                          status: str, error_message: Optional[str] = None):
-        now_str = datetime.utcnow().isoformat() if status in ("COMPLETED", "FAILED") else None
+        now_str = datetime.utcnow().isoformat() if status in ("COMPLETED", "FAILED", "PARTIAL") else None
         with self._db_lock, self._get_connection() as conn:
             conn.execute("""
             UPDATE sync_tasks SET
@@ -377,6 +380,77 @@ class LocalStorageManager:
         target_path = self._parquet_path(sym, adjust_type)
 
         existing_bars = self.read_daily_bars(sym, adjust_type=adjust_type, use_cache=False)
+        # Independently downloaded qfq windows can use different adjustment
+        # bases. Prove the common basis before appending, then rebase history.
+        if (adjust_type == "qfq" and existing_bars and
+                max(b.trade_date for b in new_bars) > existing_bars[-1].trade_date):
+            old = {b.trade_date: b for b in existing_bars}
+            new = {b.trade_date: b for b in new_bars}
+            overlap = sorted(set(old) & set(new))[-3:]
+            sparse_suspension_bridge = existing_bars[-1].trade_date not in overlap
+            if sparse_suspension_bridge:
+                # BaoStock keeps verified zero-volume suspension placeholders;
+                # Tencent omits those dates. Bridge that representation difference
+                # only with three actual trading observations on both sources.
+                trading = [b for b in existing_bars if b.volume > 0 and b.is_suspended is not True]
+                required = trading[-3:]
+                if len(required) < 3 or any(b.trade_date not in new for b in required):
+                    raise ValueError("qfq_increment_missing_overlap")
+                anchor = required[-1]
+                suspended_tail = [b for b in existing_bars if b.trade_date > anchor.trade_date]
+                if not suspended_tail:
+                    raise ValueError("qfq_increment_missing_overlap")
+                for b in suspended_tail:
+                    if (b.source != "baostock" or b.is_suspended is not True
+                            or b.volume != 0 or b.amount != 0
+                            or not math.isclose(b.adjustment_factor, anchor.adjustment_factor,
+                                                rel_tol=1e-6, abs_tol=1e-8)
+                            or any(not math.isclose(getattr(b, f), anchor.raw_close,
+                                                    rel_tol=1e-6, abs_tol=1e-6)
+                                   for f in ("raw_open", "raw_high", "raw_low", "raw_close"))
+                            or any(not math.isclose(getattr(b, f), anchor.close,
+                                                    rel_tol=1e-6, abs_tol=1e-6)
+                                   for f in ("open", "high", "low", "close"))):
+                        raise ValueError("qfq_increment_unverified_suspension_gap")
+                    # A new response contradicting a verified suspended session
+                    # requires investigation, never a silent overwrite.
+                    if b.trade_date in new:
+                        incoming = new[b.trade_date]
+                        if incoming.volume != 0 or incoming.is_suspended is not True:
+                            raise ValueError("qfq_increment_suspension_history_changed")
+                overlap = [b.trade_date for b in required]
+            elif len(overlap) < min(3, len(existing_bars)):
+                raise ValueError("qfq_increment_missing_overlap")
+            ratios = []
+            for day in overlap:
+                before, after = old[day], new[day]
+                for field in ("raw_open", "raw_high", "raw_low", "raw_close", "volume"):
+                    if not math.isclose(getattr(before, field), getattr(after, field),
+                                        rel_tol=1e-4, abs_tol=(0.500001 if field == "volume" else 1e-4)):
+                        raise ValueError("qfq_increment_raw_history_changed")
+                ratios.append(after.close / before.close)
+                ratios.append(after.adjustment_factor / before.adjustment_factor)
+                if sparse_suspension_bridge:
+                    ratios.extend(getattr(after, field) / getattr(before, field)
+                                  for field in ("open", "high", "low"))
+            ratio = statistics.median(ratios)
+            if not math.isfinite(ratio) or ratio <= 0 or any(
+                    not math.isclose(r, ratio, rel_tol=.001, abs_tol=1e-6) for r in ratios):
+                raise ValueError("qfq_increment_inconsistent_adjustment_basis")
+            existing_bars = [replace(b, open=b.open * ratio, high=b.high * ratio,
+                low=b.low * ratio, close=b.close * ratio,
+                adjustment_factor=b.adjustment_factor * ratio) for b in existing_bars]
+        # Tencent reports integer lots; preserve a more precise overlapping
+        # observation when the difference is only nearest-lot rounding.
+        prior_by_date = {b.trade_date: b for b in existing_bars}
+        new_bars = [replace(b, volume=prior_by_date[b.trade_date].volume)
+                    if b.source == "tencent" and b.trade_date in prior_by_date
+                    and b.volume == int(b.volume)
+                    and abs(b.volume - prior_by_date[b.trade_date].volume) <= .500001
+                    else b for b in new_bars]
+        known_flags = {b.trade_date: b.is_st for b in existing_bars if b.is_st is not None}
+        new_bars = [replace(b, is_st=known_flags[b.trade_date])
+                    if b.is_st is None and b.trade_date in known_flags else b for b in new_bars]
         combined = existing_bars + new_bars
         cleaned = DataQualityValidator.clean_and_sort_bars(combined)
         if not cleaned:
@@ -449,10 +523,19 @@ class LocalStorageManager:
         """
         sym = normalize_symbol(symbol)
         cache_key = f"{sym}_{adjust_type}"
+        path = self._parquet_path(sym, adjust_type)
+        try:
+            stat = path.stat()
+            version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            self.mem_cache.invalidate(cache_key)
+            return []
 
         all_bars = None
         if use_cache:
-            all_bars = self.mem_cache.get(cache_key)
+            cached = self.mem_cache.get(cache_key)
+            if cached is not None and cached[0] == version:
+                all_bars = cached[1]
 
         if all_bars is None:
             path = self._parquet_path(sym, adjust_type)
@@ -486,11 +569,11 @@ class LocalStorageManager:
                         amplitude_pct=float(row["amplitude_pct"]) if pd.notna(row["amplitude_pct"]) else None,
                         change_pct=float(row["change_pct"]) if pd.notna(row["change_pct"]) else None,
                         is_suspended=bool(row["is_suspended"]),
-                        is_st=bool(row["is_st"]),
+                        is_st=bool(row["is_st"]) if pd.notna(row["is_st"]) else None,
                     ))
                 all_bars = bars
                 if use_cache:
-                    self.mem_cache.put(cache_key, all_bars)
+                    self.mem_cache.put(cache_key, (version, all_bars))
             except Exception:
                 return []
 

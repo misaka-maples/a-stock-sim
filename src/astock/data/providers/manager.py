@@ -6,6 +6,12 @@ from .baostock_provider import BaoStockProvider
 from .sina_provider import SinaProvider
 from .tencent_provider import TencentProvider
 from .akshare_provider import AKShareProvider
+from .eastmoney_provider import EastMoneyProvider
+from ..models import normalize_symbol
+from trade_calendar import is_trading_day, get_previous_trading_day
+from datetime import date
+import math
+import threading
 from ..models import DailyBar, StockInfo
 from ..quality import DataQualityValidator
 from ..rate_limiter import SmartRateLimiter, RateLimitConfig, CircuitBreakerOpen
@@ -25,6 +31,7 @@ class ProviderManager:
 
     def __init__(self):
         self.providers: Dict[str, BaseMarketDataProvider] = {
+            "eastmoney": EastMoneyProvider(),
             "baostock": BaoStockProvider(),
             "sina": SinaProvider(),
             "tencent": TencentProvider(),
@@ -33,6 +40,9 @@ class ProviderManager:
 
         # Rate limiter configurations per provider
         self.limiters: Dict[str, SmartRateLimiter] = {
+            "eastmoney": SmartRateLimiter("eastmoney", RateLimitConfig(
+                requests_per_second=2.0,max_concurrency=2,retry_times=1,
+                failure_threshold=3,circuit_cooldown_seconds=60.0)),
             "baostock": SmartRateLimiter("baostock", RateLimitConfig(
                 enabled=True,
                 requests_per_second=10.0,
@@ -53,7 +63,7 @@ class ProviderManager:
             )),
             "tencent": SmartRateLimiter("tencent", RateLimitConfig(
                 enabled=True,
-                requests_per_second=10.0,
+                requests_per_second=2.0,
                 max_concurrency=4,
                 retry_times=2,
                 backoff_factor=1.5,
@@ -72,7 +82,68 @@ class ProviderManager:
         }
 
         # Priority chain for daily stock bars
-        self.daily_provider_chain = ["baostock", "sina", "tencent", "akshare"]
+        self.daily_provider_chain = ["eastmoney", "tencent", "baostock", "akshare", "sina"]
+        self._data_lock = threading.Lock()
+        self._data_metrics = {}
+
+    @staticmethod
+    def _target_date(end_date):
+        if not end_date:
+            from history_data import last_completed_trading_day
+            return last_completed_trading_day()
+        return end_date if is_trading_day(end_date) else get_previous_trading_day(end_date).isoformat()
+
+    def _record_data_result(self, name, result, latest=None):
+        with self._data_lock:
+            stats = self._data_metrics.setdefault(name, {
+                "usable_responses": 0, "unusable_responses": 0,
+                "last_result": "not_tested", "last_usable_trade_date": None})
+            stats["usable_responses" if result == "usable" else "unusable_responses"] += 1
+            stats["last_result"] = result
+            if result == "usable": stats["last_usable_trade_date"] = latest
+
+    supports_storage_admission = True
+
+    def _fetch_validated(self, symbol, start, end, adjust_type, index=False, accept=None):
+        expected = self._target_date(end)
+        symbol = normalize_symbol(symbol)
+        for name in self.daily_provider_chain:
+            provider, limiter = self.providers.get(name), self.limiters.get(name)
+            if not provider or not limiter: continue
+            if adjust_type not in getattr(provider, "supported_adjustments", {"none", "qfq", "hfq"}):
+                self._record_data_result(name, "unsupported_adjustment")
+                continue
+            try:
+                raw = limiter.execute(lambda: provider.fetch_index_daily(symbol, start, end)
+                    if index else provider.fetch_stock_daily(symbol, start, end, adjust_type))
+                bars = DataQualityValidator.clean_and_sort_bars(raw or [])
+                bars = [b for b in bars if (not start or b.trade_date >= start)
+                        and b.trade_date <= expected]
+                if not bars:
+                    self._record_data_result(name, "empty_or_invalid")
+                    continue
+                if bars[-1].trade_date != expected or not bars[-1].is_final:
+                    self._record_data_result(name, "stale_or_unsettled")
+                    continue
+                valid = all(b.symbol == symbol and b.adjust_type == adjust_type
+                    and math.isfinite(b.volume) and math.isfinite(b.amount)
+                    and math.isclose(b.close / b.raw_close, b.adjustment_factor, rel_tol=.001)
+                    and (index or b.volume == 0 or b.amount > 0) for b in bars)
+                if not valid:
+                    self._record_data_result(name, "invalid_price_basis_or_amount")
+                    continue
+                # A target-day payload is insufficient when its incremental
+                # price basis cannot be joined to the verified local history.
+                # Rejection must try the next independent provider as well.
+                if accept is not None and accept(bars) is False:
+                    self._record_data_result(name, "storage_admission_rejected")
+                    continue
+                self._record_data_result(name, "usable", bars[-1].trade_date)
+                return bars
+            except Exception as exc:
+                self._record_data_result(name, type(exc).__name__)
+                logger.debug("Provider %s unavailable for %s: %s", name, symbol, type(exc).__name__)
+        return []
 
     def fetch_stock_daily(self, symbol: str, start_date: str, end_date: str,
                           adjust_type: str = "qfq") -> List[DailyBar]:
@@ -80,60 +151,14 @@ class ProviderManager:
         Executes query through the failover chain.
         Returns validated, sorted bars or empty list if no bars exist.
         """
-        errors = []
-        for name in self.daily_provider_chain:
-            provider = self.providers.get(name)
-            limiter = self.limiters.get(name)
-            if not provider or not limiter:
-                continue
+        return self._fetch_validated(symbol, start_date, end_date, adjust_type)
 
-            try:
-                def _call():
-                    return provider.fetch_stock_daily(symbol, start_date, end_date, adjust_type)
-
-                raw_bars = limiter.execute(_call)
-                if raw_bars:
-                    cleaned = DataQualityValidator.clean_and_sort_bars(raw_bars)
-                    if cleaned:
-                        return cleaned
-                elif raw_bars is not None and name == "baostock":
-                    # If BaoStock successfully replied (no exception) with 0 bars for an SH/SZ stock,
-                    # the stock was suspended, delisted, or unlisted in this window.
-                    # Do not trigger cascading errors on backup providers unless it is a non-standard code.
-                    if symbol.startswith(("sh", "sz")):
-                        return []
-            except (CircuitBreakerOpen, Exception) as exc:
-                errors.append(f"{name}: {type(exc).__name__}({str(exc)})")
-                continue
-
-        if errors:
-            logger.debug(f"Providers error for {symbol}: {', '.join(errors)}")
-        return []
+    def fetch_stock_daily_admitted(self, symbol, start_date, end_date, accept, adjust_type="qfq"):
+        return self._fetch_validated(symbol, start_date, end_date, adjust_type, accept=accept)
 
     def fetch_index_daily(self, index_code: str, start_date: str, end_date: str) -> List[DailyBar]:
-        """Fetch index daily bars with failover."""
-        errors = []
-        for name in ("baostock", "sina", "tencent", "akshare"):
-            provider = self.providers.get(name)
-            limiter = self.limiters.get(name)
-            if not provider or not limiter:
-                continue
-
-            try:
-                def _call():
-                    return provider.fetch_index_daily(index_code, start_date, end_date)
-
-                raw_bars = limiter.execute(_call)
-                if raw_bars:
-                    cleaned = DataQualityValidator.clean_and_sort_bars(raw_bars)
-                    if cleaned:
-                        return cleaned
-            except Exception as exc:
-                errors.append(f"{name}: {type(exc).__name__}")
-                continue
-
-        logger.warning(f"All providers failed for index {index_code}: {', '.join(errors)}")
-        return []
+        """Require a settled target-date benchmark, with bounded failover."""
+        return self._fetch_validated(index_code, start_date, end_date, "none", index=True)
 
     def fetch_stock_list(self) -> List[StockInfo]:
         """Fetch universe stock list."""
@@ -167,6 +192,11 @@ class ProviderManager:
         for name, limiter in self.limiters.items():
             metrics = limiter.metrics.to_dict()
             metrics["circuit_state"] = limiter.circuit.state
-            metrics["healthy"] = (limiter.circuit.state != "OPEN")
+            with self._data_lock:
+                data_metrics = dict(self._data_metrics.get(name, {"last_result": "not_tested"}))
+            metrics.update(data_metrics)
+            metrics["healthy"] = ((limiter.circuit.state != "OPEN") and
+                                  data_metrics["last_result"] == "usable")
+            metrics["upstream"] = "eastmoney" if name in ("eastmoney", "akshare") else name
             res[name] = metrics
         return res

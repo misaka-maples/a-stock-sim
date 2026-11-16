@@ -93,7 +93,7 @@ class TestV3MarketRegimeConsistency:
     ])
     def test_scenarios_1_to_4_valid_breadth_levels(self, breadth_val, expected_regime, expected_bal_cap, expected_agg_cap):
         """Scenarios 1-4: Valid market breadth at 20%, 45%, 55%, 65%."""
-        as_of = "2026-05-10"
+        as_of = "2026-05-11"
         bench_bars = make_bullish_benchmark(as_of, 150)
 
         # 1. MarketRiskRule direct check
@@ -124,7 +124,15 @@ class TestV3MarketRegimeConsistency:
                     {"symbol": "sh600001", "name": "中国石化", "score": 88.0, "sector": "石油", "price": 12.0, "ret20": 7.0, "atr": 0.6},
                 ],
                 "csi300_bars": bench_bars,
-                "market_breadth": breadth_val
+                "market_breadth": breadth_val,
+                # Native candidates still need completed, dated per-stock evidence.
+                "stock_bars": {
+                    symbol: [{"date": b["date"], "close": price,
+                              "volume": 100000.0, "amount": price * 10_000_000,
+                              "is_final": True, "is_st": False, "is_suspended": False}
+                             for b in bench_bars[-130:]]
+                    for symbol, price in [("sh600000", 10.0), ("sh600001", 12.0)]
+                }
             }
             summary = rt.step(as_of, quotes, market_data)
             assert summary["regime"] == expected_regime.value
