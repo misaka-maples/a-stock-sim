@@ -230,6 +230,7 @@ class Position:
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
     sector: str = "其他"
+    trailing_stop_price: float = 0.0
 
     @property
     def total_shares(self) -> int:

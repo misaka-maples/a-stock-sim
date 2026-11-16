@@ -67,11 +67,11 @@ class AggressiveStrategy(BaseStrategy):
                 p_wt = p.market_value / total_equity if total_equity > 0 else 0.0
                 sector_wts[sec] = sector_wts.get(sec, 0.0) + p_wt
 
-            for sig in signals[:available_slots]:
+            for sig in [s for s in signals if s.symbol not in positions][:available_slots]:
                 sym = sig.symbol
                 if sym in positions:
                     continue
-                if len(positions) + len(target_positions) >= self.max_positions:
+                if len(target_positions) >= self.max_positions:
                     break
                 if allocated_weight >= remaining_allowed_wt - 1e-4:
                     break

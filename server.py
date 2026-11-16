@@ -381,18 +381,124 @@ def _close_prices_ready(now, held_symbols, fetched):
     return True
 
 
+
+def _tracked_holding_symbols(account, runtime=None):
+    """Subscribe both independent ledgers without changing the legacy positions API."""
+    held = set(account.positions) if account else set()
+    if runtime is not None:
+        for account_id in ("balanced", "aggressive"):
+            held.update(runtime.ledger.get_positions(account_id))
+    return sorted(held)
+
+
+def _holding_position_indicators(symbols, strategy, signal_day):
+    """Read completed holding history only; never fetch network data or use today's partial bar."""
+    from src.astock.trade.market_inputs import completed_position_indicators
+    history = getattr(strategy, "history_cache", {})
+    result = {}
+    for symbol in symbols:
+        bars = history.get(symbol, []) if hasattr(history, "get") else []
+        indicators = completed_position_indicators(bars or [], signal_day)
+        if (not indicators or not indicators.get("atr") or not indicators.get("ma20")):
+            stored = data_service.get_bars(symbol, end_date=signal_day, auto_fetch=False)
+            if stored:
+                dated = [bar.to_legacy_dict() if hasattr(bar, "to_legacy_dict") else bar
+                         for bar in stored]
+                indicators = completed_position_indicators(dated, signal_day)
+        if indicators:
+            result[symbol] = indicators
+    return result
+
+
+
+def _v3_execution_policies(strategy, runtime):
+    """Load validated profiles at startup and after a real configuration change."""
+    from dataclasses import asdict as config_asdict, is_dataclass
+    from src.astock.trade.execution_policy import load_execution_policies
+    config = getattr(strategy, "config", None)
+    parameters = (config_asdict(config) if config is not None and is_dataclass(config)
+                  else {key: value for key, value in getattr(config, "__dict__", {}).items()
+                        if not key.startswith("_")})
+    paths = [BASE_DIR / "configs" / "accounts.yaml",
+             BASE_DIR / "configs" / "strategies" / "balanced.yaml",
+             BASE_DIR / "configs" / "strategies" / "aggressive.yaml",
+             BASE_DIR / "data" / "strategy_config.json"]
+    versions = []
+    for path in paths:
+        try:
+            stat = path.stat()
+            versions.append((str(path), stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            versions.append((str(path), None, None))
+    cache_key = (tuple(versions), json.dumps(parameters, sort_keys=True, default=str))
+    if getattr(runtime, "_execution_policy_cache_key", None) != cache_key:
+        # Do not silently fall back to defaults if validation fails.
+        policies = load_execution_policies(BASE_DIR, primary_parameters=parameters)
+        configure = getattr(runtime, "configure_execution_policies", None)
+        if callable(configure):
+            configure(policies)
+        else:
+            runtime.execution_policies = policies
+        runtime._execution_policy_cache_key = cache_key
+    return runtime.execution_policies
+
+
+def _v3_industry_screen(strategy, snapshot, signal_day, industry_map):
+    """Consume the completed snapshot screen without scanning a live large pool."""
+    lineage = getattr(snapshot, "source_lineage", {}) or {}
+    published = lineage.get("industry_screen")
+    if (isinstance(published, dict)
+            and published.get("signal_asof_date") == signal_day
+            and isinstance(published.get("top_sectors"), list)
+            and isinstance(published.get("sector_scores"), dict)):
+        return published
+
+    # A history-cache revision also changes when individual quotes or holdings
+    # load. It must not trigger another full-universe industry screen.
+    snapshot_key = getattr(snapshot, "snapshot_id", None) or id(snapshot)
+    cache_key = (signal_day, snapshot_key)
+    if getattr(strategy, "_v3_sector_screen_key", None) == cache_key:
+        return strategy._v3_sector_screen
+    watchlist = getattr(strategy, "watchlist", [])
+    if len(watchlist) > 150:
+        # Missing industry evidence blocks the existing RISK_OFF entry gate.
+        # Do not delay live holding exits with thousands of cold history reads.
+        screen = {"signal_asof_date": signal_day, "top_sectors": [],
+                  "sector_scores": {}, "industry_stats": {},
+                  "status": "AWAITING_SNAPSHOT_SCREEN"}
+        logger.warning("Snapshot %s has no completed industry screen for %s; "
+                       "RISK_OFF entries await background computation", snapshot_key, signal_day)
+    else:
+        # Preserve the lightweight native/test path for explicitly small pools.
+        from src.astock.trade.strategy.signal_inputs import leading_industries
+        screen = leading_industries(
+            signal_day, getattr(strategy, "history_cache", {}), industry_map,
+            symbols=watchlist, names=getattr(strategy, "_stock_names", {}))
+    strategy._v3_sector_screen_key = cache_key
+    strategy._v3_sector_screen = screen
+    return screen
+
+
 def worker_step(now=None):
     """One poll, exposed for offline timing/failure tests; no sleeping here."""
     supplied_clock = now is not None
     now = now or datetime.datetime.now(BEIJING)
     with ctx.lock:
         ctx.last_step_time = now
-        held = list(ctx.account.positions) if ctx.account else []
+        held = _tracked_holding_symbols(ctx.account, getattr(ctx, "trading_runtime", None))
         symbols = list(ctx.symbols)
         strategy = ctx.strategy
     if strategy and hasattr(strategy, "prepare"):
         strategy.prepare(now)
         preview = strategy.preview_candidates(now) if hasattr(strategy, "preview_candidates") else strategy.latest_candidates
+        # A cold aggressive-only holding is not necessarily in today's Top50.
+        # Register and pin the union so its completed history stays accessible.
+        history_cache = getattr(strategy, "history_cache", None)
+        if history_cache is not None:
+            if hasattr(history_cache, "register_known_symbols"):
+                history_cache.register_known_symbols(held)
+            if hasattr(history_cache, "pin"):
+                history_cache.pin(held)
         with ctx.lock:
             if ctx.strategy is strategy:
                 ctx.radar_candidates = preview
@@ -442,7 +548,6 @@ def worker_step(now=None):
         if storage_healthy and ctx.strategy_active and ctx.strategy and (MarketFeed.is_trading_time(checked_at) or ctx.ignore_market_hours):
             if getattr(ctx, "trading_runtime", None):
                 try:
-                    as_of_str = checked_at.date().isoformat()
                     # 1. Retrieve authoritative MarketSnapshot from DataScheduler or DataService
                     snapshot = data_scheduler.get_latest_snapshot()
                     if not snapshot:
@@ -456,20 +561,11 @@ def worker_step(now=None):
                     # 2. Build unified market data referencing authoritative MarketSnapshot
                     csi300_bars = getattr(ctx.strategy, "_benchmark", [])
                     cands = getattr(ctx.strategy, "latest_candidates", [])
-                    from src.astock.trade.strategy.signal_inputs import leading_industries
                     signal_day = (getattr(snapshot, "signal_asof_date", None)
                                   or last_completed_trading_day(checked_at))
                     industry_map = (getattr(snapshot, "sector_map", None)
                                     or getattr(ctx.strategy, "industry_map", {}))
-                    sector_key = (signal_day, getattr(ctx.strategy, "_history_revision", 0),
-                                  id(industry_map))
-                    if getattr(ctx.strategy, "_v3_sector_screen_key", None) != sector_key:
-                        ctx.strategy._v3_sector_screen = leading_industries(
-                            signal_day, getattr(ctx.strategy, "history_cache", {}),
-                            industry_map, symbols=getattr(ctx.strategy, "watchlist", []),
-                            names=getattr(ctx.strategy, "_stock_names", {}))
-                        ctx.strategy._v3_sector_screen_key = sector_key
-                    sector_screen = ctx.strategy._v3_sector_screen
+                    sector_screen = _v3_industry_screen(ctx.strategy, snapshot, signal_day, industry_map)
                     m_data = {
                         "snapshot": snapshot,
                         "data_scheduler_result": data_scheduler.get_status().get("last_sync_result"),
@@ -478,7 +574,10 @@ def worker_step(now=None):
                         "industry_map": industry_map,
                         "top_sectors": sector_screen["top_sectors"],
                         "sector_scores": sector_screen["sector_scores"],
-                        "candidate_bars": getattr(ctx.strategy, "history_cache", {})
+                        "industry_screen_status": sector_screen.get("status", "READY"),
+                        "candidate_bars": getattr(ctx.strategy, "history_cache", {}),
+                        "position_indicators": _holding_position_indicators(held, ctx.strategy, signal_day),
+                        "execution_policy": _v3_execution_policies(ctx.strategy, ctx.trading_runtime)
                     }
                     if snapshot:
                         m_data["market_breadth"] = snapshot.market_breadth
@@ -486,13 +585,21 @@ def worker_step(now=None):
                             "coverage_ratio", getattr(snapshot, "coverage_ratio", None))
                         m_data["signal_asof_date"] = snapshot.signal_asof_date
 
-                    v3_res = ctx.trading_runtime.step(
-                        as_of=as_of_str,
-                        quotes=ctx.last_quotes,
-                        market_data=m_data,
-                        now=checked_at,
-                        signal_asof_date=m_data.get("signal_asof_date")
-                    )
+                    # Preparation can outlast a quote or even the session. The
+                    # execution clock and freshness must be checked afterwards.
+                    checked_at = now if supplied_clock else datetime.datetime.now(BEIJING)
+                    refresh_quote_freshness(checked_at)
+                    for symbol in invalid:
+                        if symbol in ctx.last_quotes:
+                            ctx.last_quotes[symbol]["fresh"] = False
+                    if MarketFeed.is_trading_time(checked_at) or ctx.ignore_market_hours:
+                        ctx.trading_runtime.step(
+                            as_of=checked_at.date().isoformat(),
+                            quotes=ctx.last_quotes,
+                            market_data=m_data,
+                            now=checked_at,
+                            signal_asof_date=m_data.get("signal_asof_date")
+                        )
                     ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
                 except Exception as _e:
                     logger.exception("V3 TradingRuntime step execution error: %s", _e)
@@ -508,7 +615,7 @@ def worker_step(now=None):
                 ctx.account.update_market_prices(ctx.last_quotes, now=checked_at)
         if ctx.account:
             ctx.account.save_if_due()
-        current_held = list(ctx.account.positions) if ctx.account else []
+        current_held = _tracked_holding_symbols(ctx.account, getattr(ctx, "trading_runtime", None))
         ctx.closing_report_pending = closing_due and not _close_prices_ready(checked_at, current_held, valid)
         if closing_due and not ctx.closing_report_pending:
             day = checked_at.date().isoformat()
@@ -2450,6 +2557,8 @@ def main():
     strat_kwargs = saved_cfg.get("parameters", {})
     ctx.strategy_active = saved_cfg.get("strategy_active", True)
     ctx.strategy = configured_strategy(active_strat_id, ctx.account, ctx.symbols, strat_kwargs)
+    if getattr(ctx, "trading_runtime", None) is not None:
+        _v3_execution_policies(ctx.strategy, ctx.trading_runtime)
     sync_execution_settings(strat_kwargs.get("participation_rate"))
     persist_settings()
     logger.info(f"当前生效模拟策略: {getattr(ctx.strategy, 'display_name', ctx.strategy.name)}")

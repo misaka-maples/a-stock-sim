@@ -9,6 +9,8 @@ double-entry cash journaling, and historical reconstruction.
 import sqlite3
 import json
 import datetime
+import math
+import time
 from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Optional, Tuple, Any
@@ -42,9 +44,34 @@ class SQLiteAccountLedger:
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=FULL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            # A new database may be opened by both accounts at once. Changing its
+            # journal mode can report SQLITE_BUSY before normal transaction waits.
+            # Keep this initialization bounded, and avoid requesting a mode change
+            # on the normal (already-WAL) connection path.
+            conn.execute("PRAGMA busy_timeout=250")
+            delays = (0.01, 0.03, 0.08, 0.2, 0.5)
+            for attempt in range(len(delays) + 1):
+                try:
+                    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    if str(mode).lower() != "wal":
+                        conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    locked = ((code is not None and code & 0xff in
+                               (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)) or
+                              str(exc).lower() in
+                              ("database is locked", "database table is locked"))
+                    if not locked or attempt == len(delays):
+                        raise
+                    time.sleep(delays[attempt])
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            conn.close()
+            raise
         return conn
 
     def _init_schema(self):
@@ -108,6 +135,8 @@ class SQLiteAccountLedger:
                     avg_cost REAL NOT NULL,
                     last_price REAL NOT NULL,
                     market_value_cents INTEGER NOT NULL,
+                    highest_price REAL NOT NULL DEFAULT 0,
+                    trailing_stop_price REAL NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account_id, symbol),
                     FOREIGN KEY (account_id) REFERENCES accounts(account_id)
@@ -176,6 +205,18 @@ class SQLiteAccountLedger:
             }
             if "passed" not in risk_columns:
                 conn.execute("ALTER TABLE risk_events ADD COLUMN passed INTEGER")
+            position_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(positions)")
+            }
+            if "highest_price" not in position_columns:
+                conn.execute("ALTER TABLE positions ADD COLUMN highest_price REAL NOT NULL DEFAULT 0")
+            if "trailing_stop_price" not in position_columns:
+                conn.execute("ALTER TABLE positions ADD COLUMN trailing_stop_price REAL NOT NULL DEFAULT 0")
+            # Old ledgers did not retain the holding's observed peak. Use only
+            # known cost/mark evidence; do not invent an earlier historical high.
+            conn.execute("""UPDATE positions
+                SET highest_price = MAX(COALESCE(avg_cost, 0), COALESCE(last_price, 0), 0)
+                WHERE highest_price IS NULL OR highest_price <= 0""")
 
     def init_account(
         self,
@@ -291,7 +332,11 @@ class SQLiteAccountLedger:
         """Loads all open positions for account."""
         positions = {}
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM positions WHERE account_id = ?", (account_id,)).fetchall()
+            rows = conn.execute("""SELECT p.*,
+                (SELECT MIN(l.buy_date) FROM position_lots l
+                 WHERE l.account_id = p.account_id AND l.symbol = p.symbol
+                   AND l.remaining_shares > 0) AS remaining_entry_date
+                FROM positions p WHERE p.account_id = ?""", (account_id,)).fetchall()
             for r in rows:
                 if r["total_shares"] > 0:
                     positions[r["symbol"]] = Position(
@@ -302,7 +347,10 @@ class SQLiteAccountLedger:
                         cost_price=r["avg_cost"],
                         current_price=r["last_price"],
                         market_value=from_cents(r["market_value_cents"]),
-                        sector=r["sector"] or "其他"
+                        sector=r["sector"] or "其他",
+                        highest_price=float(r["highest_price"] or 0.0),
+                        entry_date=r["remaining_entry_date"] or "",
+                        trailing_stop_price=float(r["trailing_stop_price"] or 0.0)
                     )
         return positions
 
@@ -314,15 +362,42 @@ class SQLiteAccountLedger:
             for r in rows:
                 sym = r["symbol"]
                 if sym in quotes:
-                    price = float(quotes[sym].get("price") or quotes[sym].get("current") or quotes[sym].get("close") or 0.0)
-                    if price > 0:
+                    quote = quotes[sym]
+                    value = quote.get("price") or quote.get("current") or quote.get("close") or 0.0
+                    try:
+                        price = float(value)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not isinstance(value, bool) and math.isfinite(price) and price > 0:
                         mv_cents = to_cents(price * r["total_shares"])
+                        # The server supplies timestamp-verified freshness. Old
+                        # marks may value a holding, but cannot raise its peak.
+                        verified_quote = (quote.get("fresh") is True
+                                          and quote.get("is_stale") is not True
+                                          and quote.get("is_suspended") is not True)
                         conn.execute(
                             """UPDATE positions
-                               SET last_price = ?, market_value_cents = ?, updated_at = ?
+                               SET last_price = ?, market_value_cents = ?, updated_at = ?,
+                                   highest_price = CASE WHEN ? THEN MAX(highest_price, ?) ELSE highest_price END
                                WHERE account_id = ? AND symbol = ?""",
-                            (price, mv_cents, now_iso, r["account_id"], sym)
+                            (price, mv_cents, now_iso, verified_quote, price, r["account_id"], sym)
                         )
+
+    def raise_trailing_stop(self, account_id: str, symbol: str, price: float) -> float:
+        """Persist a positive finite protection line without ever lowering it."""
+        try:
+            value = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if isinstance(price, bool) or not math.isfinite(value) or value <= 0:
+            return 0.0
+        with self.connect() as conn:
+            conn.execute("""UPDATE positions
+                SET trailing_stop_price = MAX(COALESCE(trailing_stop_price, 0), ?)
+                WHERE account_id = ? AND symbol = ?""", (value, account_id, symbol))
+            row = conn.execute("""SELECT trailing_stop_price FROM positions
+                WHERE account_id = ? AND symbol = ?""", (account_id, symbol)).fetchone()
+            return float(row["trailing_stop_price"]) if row else 0.0
 
     def save_order(self, order: Order):
         """Inserts or updates an order in database."""
@@ -574,17 +649,18 @@ class SQLiteAccountLedger:
                     mv_cents = to_cents(new_shares * fill_price)
                     conn.execute(
                         """UPDATE positions
-                           SET total_shares = ?, avg_cost = ?, last_price = ?, market_value_cents = ?, updated_at = ?
+                           SET total_shares = ?, avg_cost = ?, last_price = ?, market_value_cents = ?, updated_at = ?,
+                               highest_price = MAX(highest_price, ?)
                            WHERE account_id = ? AND symbol = ?""",
-                        (new_shares, new_cost, fill_price, mv_cents, now_iso, fill.account_id, fill.symbol)
+                        (new_shares, new_cost, fill_price, mv_cents, now_iso, fill_price, fill.account_id, fill.symbol)
                     )
                 else:
                     mv_cents = to_cents(fill_shares * fill_price)
                     conn.execute(
                         """INSERT INTO positions
-                           (account_id, symbol, name, sector, total_shares, tradable_shares, frozen_shares, avg_cost, last_price, market_value_cents, updated_at)
-                           VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)""",
-                        (fill.account_id, fill.symbol, fill_name, sector, fill_shares, lot_cost, fill_price, mv_cents, now_iso)
+                           (account_id, symbol, name, sector, total_shares, tradable_shares, frozen_shares, avg_cost, last_price, market_value_cents, updated_at, highest_price)
+                           VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)""",
+                        (fill.account_id, fill.symbol, fill_name, sector, fill_shares, lot_cost, fill_price, mv_cents, now_iso, fill_price)
                     )
 
             elif fill.side == OrderSide.SELL:
@@ -625,9 +701,10 @@ class SQLiteAccountLedger:
                         mv_cents = to_cents(new_tot * fill_price)
                         conn.execute(
                             """UPDATE positions
-                               SET total_shares = ?, tradable_shares = ?, last_price = ?, market_value_cents = ?, updated_at = ?
+                               SET total_shares = ?, tradable_shares = ?, last_price = ?, market_value_cents = ?, updated_at = ?,
+                                   highest_price = MAX(highest_price, ?)
                                WHERE account_id = ? AND symbol = ?""",
-                            (new_tot, new_tradable, fill_price, mv_cents, now_iso, fill.account_id, fill.symbol)
+                            (new_tot, new_tradable, fill_price, mv_cents, now_iso, fill_price, fill.account_id, fill.symbol)
                         )
 
             # 6. Update Order Status

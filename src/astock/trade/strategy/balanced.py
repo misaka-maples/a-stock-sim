@@ -86,8 +86,8 @@ class BalancedStrategy(BaseStrategy):
             w_a, w_b = BALANCED_AB_BUDGETS.get(regime, (0.70, 0.30))
 
             # Split signals into A (core) and B (dynamic)
-            sigs_a = [s for s in signals if s.symbol in PRODUCT_A_CORE]
-            sigs_b = [s for s in signals if s.symbol not in PRODUCT_A_CORE]
+            sigs_a = [s for s in signals if s.symbol in PRODUCT_A_CORE and s.symbol not in positions]
+            sigs_b = [s for s in signals if s.symbol not in PRODUCT_A_CORE and s.symbol not in positions]
 
             available_slots = max(0, self.max_positions - len(positions))
             target_weights: Dict[str, float] = {}
@@ -122,7 +122,7 @@ class BalancedStrategy(BaseStrategy):
             for sym, raw_wt in sorted(target_weights.items(), key=lambda x: -x[1]):
                 if sym in positions:
                     continue
-                if len(positions) + len(target_positions) >= self.max_positions:
+                if len(target_positions) >= self.max_positions:
                     break
                 if allocated_weight >= remaining_allowed_wt - 1e-4:
                     break

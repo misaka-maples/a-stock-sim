@@ -34,6 +34,7 @@ from .portfolio.manager import PortfolioManager
 from .strategy.balanced import BalancedStrategy
 from .strategy.aggressive import AggressiveStrategy
 from .config import get_db_path, get_audit_path
+from .market_inputs import nontrading_on_execution
 
 logger = logging.getLogger("TradingRuntime")
 
@@ -96,6 +97,12 @@ def _live_exit_price(quote, execution_day, now=None):
     if (quote.get("fresh") is False or quote.get("is_stale") is True
             or quote.get("is_suspended") is True):
         return None
+    if 'open' in quote and 'volume_lots' in quote:
+        try:
+            if float(quote['open']) <= 0 and float(quote['volume_lots']) <= 0:
+                return None
+        except (ValueError, TypeError, OverflowError):
+            return None
     stamp = quote.get("timestamp") or quote.get("time") or quote.get("quote_time")
     if not stamp:
         # Server-produced freshness is already checked against a timestamp.
@@ -117,6 +124,29 @@ def _live_exit_price(quote, execution_day, now=None):
     return price
 
 
+def _entry_quote_rejection(signal, quote, policy, execution_day, now):
+    price = _live_exit_price(quote, execution_day, now)
+    if price is None:
+        return 'entry_live_quote_missing_or_stale'
+    name = str(quote.get('name') or signal.name or '').upper()
+    if quote.get('is_st') is True or 'ST' in name or '退' in name:
+        return 'entry_live_risk_warning'
+    try:
+        if ('open' in quote and 'volume_lots' in quote and
+                float(quote['open']) <= 0 and float(quote['volume_lots']) <= 0):
+            return 'entry_no_live_trading'
+        from strategy_rules import entry_guard_reason
+        from types import SimpleNamespace
+        adjusted = float(signal.features.get('signal_price_adjusted') or 0)
+        factor = adjusted / signal.price if signal.price > 0 else 0
+        return entry_guard_reason(
+            {'raw_signal_price': signal.price, 'adjustment_factor': factor, 'ma20': signal.ma20},
+            SimpleNamespace(**policy),
+            quote.get('raw_pre_close') or quote.get('pre_close'), quote.get('open'), price)
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+        return 'entry_unverified_prices'
+
+
 class TradingRuntime:
     """Unified trading runtime executing dual accounts over SQLite ledger."""
 
@@ -134,6 +164,7 @@ class TradingRuntime:
         self.last_trade_date: Optional[str] = None
         self.data_scheduler = data_scheduler
         self.last_sync_completed_time: Optional[str] = None
+        self.execution_policies = {}
 
         # 1. Transactional SQLite Ledger (authoritative state of record)
         self.ledger = SQLiteAccountLedger(str(self.db_path))
@@ -175,6 +206,17 @@ class TradingRuntime:
             self.mode = mode.upper()
             logger.info(f"TradingRuntime mode switched to {self.mode}")
 
+    def configure_execution_policies(self, policies):
+        """Wire the saved account profiles without changing their parameters."""
+        for account_id, manager in [('balanced', self.risk_manager_bal),
+                                    ('aggressive', self.risk_manager_agg)]:
+            policy = policies[account_id]
+            manager.portfolio_rule.alert_drawdown_pct = policy['max_drawdown_warn_pct']
+            manager.portfolio_rule.freeze_drawdown_pct = policy['max_drawdown_freeze_pct']
+            manager.position_rule.hard_stop_loss_pct = policy['stop_loss_pct']
+            manager.position_rule.atr_multiplier = policy['atr_trailing_multiplier']
+        self.execution_policies = policies
+
     def step(
         self,
         as_of: str,
@@ -206,6 +248,10 @@ class TradingRuntime:
             self.last_step_time = now
             market_data = dict(market_data or {})
             quotes = quotes or {}
+            policies = market_data.get('execution_policy') or self.execution_policies
+            if policies:
+                self.configure_execution_policies(policies)
+                market_data['execution_policy'] = policies
             if snapshot is None:
                 snapshot = market_data.get("snapshot")
             if data_scheduler_result is None:
@@ -374,7 +420,17 @@ class TradingRuntime:
         bal = self.ledger.get_balance(account_id)
         positions = self.ledger.get_positions(account_id)
 
+        def resolve_holding_industries(current):
+            mapping = market_data.get('industry_map') or {}
+            for symbol, position in current.items():
+                if position.sector in ('', '其他', '未知行业') and mapping.get(symbol):
+                    position.sector = mapping[symbol]
+            return current
+
+        positions = resolve_holding_industries(positions)
+
         sig_date = signal_asof_date or as_of
+        policy = (market_data.get('execution_policy') or {}).get(account_id)
 
         # 1. Generate Signals (using signal_asof_date)
         signals = strategy.generate_signals(sig_date, market_data, regime)
@@ -435,6 +491,16 @@ class TradingRuntime:
                     message=rejection, details={"symbol": s.symbol, "signal_asof": s.signal_asof,
                                                  "required_signal_date": sig_date}))
                 continue
+            if policy and self.mode == 'ACTIVE':
+                rejection = _entry_quote_rejection(s, quotes.get(s.symbol, {}), policy, as_of, now)
+                if rejection:
+                    self.ledger.record_risk_event(RiskAuditResult(
+                        audit_id=f'RA_ENTRY_QUOTE_{uuid.uuid4().hex[:10]}',
+                        timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
+                        layer=RiskLayer.ORDER, rule_name='ENTRY_LIVE_QUOTE_INTEGRITY',
+                        passed=False, severity=RiskSeverity.BLOCK, action_taken='REJECT_SYMBOL_ENTRY',
+                        message=rejection, details={'symbol': s.symbol, 'execution_date': as_of}))
+                    continue
             if regime == MarketRegime.RISK_OFF:
                 history = market_data.get("stock_bars") or market_data.get("candidate_bars") or {}
                 bars = history.get(s.symbol, [])
@@ -475,7 +541,7 @@ class TradingRuntime:
                 nontrading = (lineage.get("nontrading_statuses") or {}).get(sym)
                 status = nontrading.get("status") if isinstance(nontrading, dict) else nontrading
                 status = str(getattr(status, "value", status) or "").upper()
-                if status in ("SUSPENDED", "DELISTED"):
+                if nontrading_on_execution(nontrading, as_of):
                     self.ledger.record_risk_event(RiskAuditResult(
                         audit_id=f"RA_EXIT_STATUS_{uuid.uuid4().hex[:10]}",
                         timestamp=datetime.datetime.now().isoformat(), account_id=account_id,
@@ -495,13 +561,18 @@ class TradingRuntime:
                         message="Missing/stale live quote; no market sell based on cached position mark",
                         details={"symbol": sym, "execution_date": as_of}))
                     continue
+                supplied = (market_data.get('position_indicators') or {}).get(sym, {})
+                if supplied.get('signal_asof') != sig_date:
+                    supplied = {}
                 def indicator(key):
                     try:
-                        value = float(q.get(key) or 0.0)
+                        value = float(supplied.get(key, q.get(key)) or 0.0)
                         return value if math.isfinite(value) and value > 0 else 0.0
                     except (TypeError, ValueError, OverflowError):
                         return 0.0
                 atr, ma20 = indicator("atr"), indicator("ma20")
+                if policy and policy['ma20_exit_consecutive_days'] == 1 and supplied.get('ma20_previous19_sum'):
+                    ma20 = (supplied['ma20_previous19_sum'] + price) / 20
                 if not atr or not ma20:
                     self.ledger.record_risk_event(RiskAuditResult(
                         audit_id=f"RA_EXIT_IND_{uuid.uuid4().hex[:10]}",
@@ -510,8 +581,13 @@ class TradingRuntime:
                         passed=False, severity=RiskSeverity.WARNING, action_taken="HARD_STOP_REMAINS_ACTIVE",
                         message="Unavailable ATR/MA20-dependent exit rules disabled; hard stop remains active",
                         details={"symbol": sym, "atr_available": bool(atr), "ma20_available": bool(ma20)}))
-                should_exit, exit_reason, audit = risk_mgr.position_rule.check_position_exit(pos, price, atr=atr, ma20=ma20)
+                should_exit, exit_reason, audit = risk_mgr.position_rule.check_position_exit(
+                    pos, price, atr=atr, ma20=ma20,
+                    consecutive_below_ma20=int(supplied.get('consecutive_below_ma20') or 0),
+                    policy=policy)
                 self.ledger.record_risk_event(audit)
+                if audit.details.get('trailing_stop_price', 0) > 0:
+                    self.ledger.raise_trailing_stop(account_id, sym, audit.details['trailing_stop_price'])
                 if should_exit and pos.tradable_shares > 0:
                     exit_order = Order(
                         order_id=f"ORD_EXIT_{sym}_{as_of}_{account_id[:3]}",
@@ -525,6 +601,13 @@ class TradingRuntime:
                         status=OrderStatus.PROPOSED,
                         reason=f"RiskExit_{exit_reason}"
                     )
+                    passed, order_audit = risk_mgr.validate_pre_trade_order(
+                        exit_order, available_cash=bal.available_cash, current_position=pos,
+                        prev_close=q.get('raw_pre_close') or q.get('pre_close'),
+                        is_suspended=q.get('is_suspended', False), is_st=q.get('is_st', False))
+                    self.ledger.record_risk_event(order_audit)
+                    if not passed:
+                        continue
                     self.order_manager.submit_order(exit_order)
                     self.ledger.save_order(exit_order)
                     fill = self.broker.execute_order(exit_order, execution_price=price, trade_date=as_of)
@@ -533,7 +616,7 @@ class TradingRuntime:
                             self.ledger.apply_fill(fill, name=pos.name, sector=pos.sector)
 
             # Refresh positions and balances after exits
-            positions = self.ledger.get_positions(account_id)
+            positions = resolve_holding_industries(self.ledger.get_positions(account_id))
             bal = self.ledger.get_balance(account_id)
 
         # 6. Plan Target Portfolio (with updated post-exit positions and released cash)
@@ -545,6 +628,12 @@ class TradingRuntime:
             positions=positions,
             is_frozen=is_freeze
         )
+        cycle_details = {}
+        if policy and not is_freeze:
+            from .execution_cycles import restrict_entry_cycle
+            target_pf, cycle_details = restrict_entry_cycle(
+                self.ledger, account_id, sig_date, as_of, target_pf, positions, policy,
+                persist=self.mode == 'ACTIVE')
 
         # Save strategy run snapshot to SQLite
         run_id = f"RUN_{account_id.upper()}_{as_of}_{datetime.datetime.now().strftime('%H%M%S')}"
@@ -573,6 +662,7 @@ class TradingRuntime:
                 "entry_risk_freeze": is_freeze,
                 "missing_market_data": missing_market_data,
                 "allowed_signal_count": len(allowed_signals),
+                "execution_cycle": cycle_details,
                 "target_positions": len(target_pf.target_positions),
                 "total_target_weight": target_pf.total_weight,
                 "cash_weight": target_pf.cash_weight,
@@ -580,7 +670,9 @@ class TradingRuntime:
             }
 
         # B. Portfolio Rebalancing Buys
-        price_map = {sym: float(q.get("price") or q.get("current") or q.get("close") or 0.0) for sym, q in quotes.items()}
+        price_map = {sym: float(q.get("price") or q.get("current") or q.get("close") or 0.0)
+                     for sym, q in quotes.items()
+                     if not policy or _live_exit_price(q, as_of, now) is not None}
         stock_info_map = {sym: {"pre_close": float(q.get("pre_close") or q.get("price") or 0.0), "is_suspended": q.get("is_suspended", False), "is_st": q.get("is_st", False)} for sym, q in quotes.items()}
 
         orders = pm.execute_rebalance(
@@ -591,6 +683,9 @@ class TradingRuntime:
 
         executed_fills = []
         for o in orders:
+            signal = next((s for s in signals if s.symbol == o.symbol), None)
+            o.name = quotes.get(o.symbol, {}).get('name') or (signal.name if signal else o.name)
+            o.sector = signal.sector if signal else getattr(positions.get(o.symbol), 'sector', '其他')
             self.ledger.save_order(o)
             price = price_map.get(o.symbol, o.price)
             name = quotes.get(o.symbol, {}).get("name", o.symbol)
@@ -606,6 +701,7 @@ class TradingRuntime:
             "entry_risk_freeze": is_freeze,
             "missing_market_data": missing_market_data,
             "allowed_signal_count": len(allowed_signals),
+            "execution_cycle": cycle_details,
             "target_positions": len(target_pf.target_positions),
             "total_target_weight": target_pf.total_weight,
             "executed_orders": len(orders),

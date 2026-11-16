@@ -1,5 +1,6 @@
 # src/astock/data/service.py
 import json
+import copy
 import logging
 import math
 import threading
@@ -51,6 +52,7 @@ class AStockDataService:
         self.providers = providers or ProviderManager()
         self.offline_mode = offline_mode
         self._snapshot_cache: Dict[str, MarketSnapshot] = {}
+        self._industry_screen_cache: Dict[Any, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._industry_map_cache: Optional[Dict[str, str]] = None
         self._stock_names_cache: Optional[Dict[str, str]] = None
@@ -180,6 +182,64 @@ class AStockDataService:
     # Market Analysis & Unified Snapshot (Shared by Dual Accounts)
     # --------------------------------------------------------------------------
 
+    def compute_industry_screen(self, as_of: str, symbols: List[str]) -> Dict[str, Any]:
+        """Precompute the existing industry screen from a narrow Arrow projection.
+
+        Only admitted local Parquets are read; no network, account mutation,
+        DailyBar construction, or pandas iterrows is involved. The original
+        leading_industries function remains the single owner of every threshold.
+        """
+        from ..trade.strategy.signal_inputs import leading_industries
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        import pyarrow.parquet as pq
+
+        date.fromisoformat(as_of)
+        scope = tuple(dict.fromkeys(normalize_symbol(symbol) for symbol in symbols))
+        industry_map = self.get_industry_map()
+        names = self.get_stock_names()
+        progress = self.storage.get_all_sync_progress()
+        key = (as_of, scope,
+               tuple((symbol, industry_map.get(symbol), names.get(symbol)) for symbol in scope),
+               tuple((symbol, getattr(progress.get(symbol), "updated_at", None),
+                       getattr(progress.get(symbol), "last_trade_date", None)) for symbol in scope))
+        with self._lock:
+            cached = self._industry_screen_cache.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+
+        storage = self.storage
+        class ColumnHistory:
+            def get(self, symbol, default=None):
+                path = storage._parquet_path(symbol, adjust_type="qfq")
+                if not path.is_file():
+                    return []
+                try:
+                    table = pq.read_table(path, columns=["trade_date", "close", "volume", "amount",
+                                                        "is_st", "is_suspended"], use_threads=False)
+                    # Filtering precedes the small tail: future rows cannot push
+                    # genuinely available history out of the indicator window.
+                    table = table.filter(pc.less_equal(table["trade_date"], pa.scalar(as_of)))
+                    if table.num_rows < 126:
+                        return []
+                    table = table.sort_by([("trade_date", "ascending")])
+                    rows = table.slice(max(0, table.num_rows - 135)).to_pylist()
+                    for row in rows:
+                        row["date"] = row.pop("trade_date")
+                    return rows
+                except Exception as exc:
+                    logger.warning("Industry-screen local history unavailable for %s (%s)",
+                                   symbol, type(exc).__name__)
+                    return []
+
+        screen = leading_industries(as_of, ColumnHistory(), industry_map,
+                                    symbols=scope, names=names)
+        with self._lock:
+            self._industry_screen_cache[key] = copy.deepcopy(screen)
+            while len(self._industry_screen_cache) > 4:
+                self._industry_screen_cache.pop(next(iter(self._industry_screen_cache)))
+        return screen
+
     def compute_market_snapshot(self, as_of: str, watchlist: Optional[List[str]] = None) -> MarketSnapshot:
         """
         Pure local offline calculation:
@@ -271,6 +331,7 @@ class AStockDataService:
             ) for b in bench_bars[-120:]
         ]
 
+        industry_screen = self.compute_industry_screen(as_of, symbols)
         snapshot_id = f"snap_{as_of}_{uuid.uuid4().hex[:8]}"
         now_str = datetime.utcnow().isoformat()
 
@@ -290,7 +351,8 @@ class AStockDataService:
                             "coverage_ratio": coverage,
                             "trading_ready": quality == DataQuality.VALID and coverage >= 0.70,
                             "excluded_symbols": excluded,
-                            "nontrading_statuses": nontrading}
+                            "nontrading_statuses": nontrading,
+                            "industry_screen": industry_screen}
         )
 
         with self._lock:

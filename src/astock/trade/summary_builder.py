@@ -8,6 +8,7 @@ import os
 import json
 import sqlite3
 import datetime
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -22,23 +23,74 @@ def to_cents(val: float) -> int:
     return int(round(float(val) * 100))
 
 
-def _compute_atr_and_peak(symbol: str, cost_price: float, current_price: float) -> tuple:
-    """Calculates 14-day ATR and peak price since holding using DataService if available."""
+def _positive_number(value):
     try:
-        from src.astock.data.service import AStockDataService
-        ds = AStockDataService()
-        bars = ds.get_bars(symbol, start_date="2026-10-01")
-        if bars and len(bars) >= 2:
-            trs = []
-            for i in range(1, len(bars)):
-                tr = max(bars[i].high - bars[i].low, abs(bars[i].high - bars[i-1].close), abs(bars[i].low - bars[i-1].close))
-                trs.append(tr)
-            atr14 = sum(trs[-14:]) / len(trs[-14:]) if trs else 0.1
-            peak = max([b.high for b in bars[-14:]] + [current_price, cost_price])
-            return round(atr14, 3), round(peak, 2)
-    except Exception:
-        pass
-    return 0.1, round(max(current_price, cost_price), 2)
+        number = float(value)
+        return number if not isinstance(value, bool) and math.isfinite(number) and number > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _current_completed_signal_day():
+    from trade_calendar import BEIJING, is_trading_day, get_previous_trading_day
+    now = datetime.datetime.now(BEIJING)
+    if is_trading_day(now.date()) and now.time() >= datetime.time(15, 5):
+        return now.date().isoformat()
+    return get_previous_trading_day(now.date()).isoformat()
+
+
+def _position_risk_state(runtime, row, signal_day):
+    """Show observed ledger protection and local, dated indicators without inventing peaks."""
+    from .market_inputs import completed_position_indicators
+    account = row["account_id"]
+    policy = (getattr(runtime, "execution_policies", {}) or {}).get(account, {})
+    indicators = {}
+    scheduler = getattr(runtime, "data_scheduler", None)
+    service = getattr(scheduler, "service", None)
+    if service is not None:
+        try:
+            bars = service.get_bars(row["symbol"], end_date=signal_day, auto_fetch=False)
+            bars = [bar.to_legacy_dict() if hasattr(bar, "to_legacy_dict") else bar for bar in bars]
+            indicators = completed_position_indicators(bars, signal_day)
+        except (OSError, ValueError, TypeError, AttributeError):
+            indicators = {}
+    peak = _positive_number(row.get("highest_price"))
+    stop = _positive_number(row.get("trailing_stop_price"))
+    cost = _positive_number(row.get("avg_cost"))
+    activation = policy.get("trailing_stop_activation_pct")
+    trailing_enabled = policy.get("trailing_stop_enabled")
+    peak_eligible = (bool(cost and peak and (peak / cost - 1) * 100 >= float(activation) - 1e-8)
+                     if activation is not None and trailing_enabled is not None else None)
+    active = (bool(stop) if trailing_enabled is True else False if trailing_enabled is False else None)
+    floor_enabled = policy.get("profit_floor_enabled")
+    floor_pct = policy.get("profit_floor_pct")
+    if floor_enabled is True:
+        floor_locked = (bool(active and peak_eligible and stop is not None
+                             and stop + 1e-8 >= cost * (1 + float(floor_pct) / 100))
+                        if cost and peak_eligible is not None and floor_pct is not None else None)
+    else:
+        floor_locked = False if floor_enabled is False else None
+    stop_loss_pct = policy.get("stop_loss_pct")
+    if stop_loss_pct is None:
+        manager = getattr(runtime, "risk_manager_bal" if account == "balanced" else "risk_manager_agg", None)
+        stop_loss_pct = getattr(getattr(manager, "position_rule", None), "hard_stop_loss_pct", None)
+    hard_stop = round(cost * (1 + float(stop_loss_pct) / 100), 2) if cost and stop_loss_pct is not None else None
+    return {
+        "hard_stop_line": hard_stop, "stop_loss_price": hard_stop,
+        "take_profit_price": None, "trailing_stop_line": round(stop, 4) if stop else None,
+        "profit_floor_locked": floor_locked, "trailing_stop_active": active,
+        "trailing_peak_eligible": peak_eligible, "peak_price": peak,
+        "peak_price_source": "ledger_observed_peak" if peak else "unverified",
+        "trailing_stop_source": "ledger_persisted" if stop else "not_recorded",
+        "atr14": _positive_number(indicators.get("atr")),
+        "completed_ma20": _positive_number(indicators.get("ma20")),
+        "indicator_asof": indicators.get("signal_asof"),
+        "indicator_status": "verified_completed_session" if indicators else "unverified",
+        "trailing_stop_activation_pct": activation,
+        "atr_trailing_multiplier": policy.get("atr_trailing_multiplier"),
+        "profit_floor_enabled": floor_enabled,
+        "profit_floor_pct": floor_pct if floor_enabled else None,
+    }
 
 
 def build_dual_accounts_summary(
@@ -76,6 +128,8 @@ def build_dual_accounts_summary(
             if snap and getattr(snap, "market_regime", None):
                 mr = snap.market_regime
                 market_regime = mr.value if hasattr(mr, "value") else str(mr)
+
+    indicator_day = _current_completed_signal_day()
 
     # Load backup history for trade timestamps, stock names, realized PnL, and daily equity curve
     backup_trades: Dict[str, Any] = {}
@@ -119,15 +173,7 @@ def build_dual_accounts_summary(
 
         pnl = round((price - cost) * shares, 2) if cost > 0 else 0.0
         pnl_pct = round((price - cost) / cost * 100.0, 2) if cost > 0 else 0.0
-        hard_stop = round(cost * 0.94, 2)
-
-        atr14, peak_price = _compute_atr_and_peak(sym, cost, price)
-        profit_floor_locked = (peak_price >= cost * 1.03)
-        floor_price = round(cost * 1.03, 2) if profit_floor_locked else 0.0
-        if profit_floor_locked:
-            trailing_stop = round(max(peak_price - 3.5 * atr14, floor_price), 2)
-        else:
-            trailing_stop = round(max(peak_price - 3.5 * atr14, 0.0), 2)
+        risk_state = _position_risk_state(runtime, dict(r), indicator_day)
 
         positions_by_acc.setdefault(acc_id, []).append({
             "symbol": sym,
@@ -143,11 +189,7 @@ def build_dual_accounts_summary(
             "pnl_pct": pnl_pct,
             "unrealized_pnl": pnl,
             "unrealized_pnl_pct": pnl_pct,
-            "hard_stop_line": hard_stop,
-            "stop_loss_price": hard_stop,
-            "take_profit_price": None,
-            "trailing_stop_line": trailing_stop,
-            "profit_floor_locked": profit_floor_locked
+            **risk_state
         })
 
     # 3. Fills & Trades
@@ -248,14 +290,15 @@ def build_dual_accounts_summary(
         stock_wt = round(mv / equity, 4) if equity > 0 else 0.0
 
         peak_eq = max(from_cents(acc_db.get("peak_equity_cents", 10000000)), equity)
-        dd_pct = round((peak_eq - equity) / peak_eq * 100.0, 2) if peak_eq > 0 else 0.0
+        raw_dd_pct = (peak_eq - equity) / peak_eq * 100.0 if peak_eq > 0 else 0.0
+        dd_pct = round(raw_dd_pct, 2)
 
         max_cap = cfg["regime_caps"].get(market_regime, 0.0)
         manager = getattr(runtime, "risk_manager_bal" if acc_id == "balanced" else "risk_manager_agg", None)
         rule = getattr(manager, "portfolio_rule", None) or PortfolioRiskRule(acc_id)
         freeze_dd = rule.freeze_drawdown_pct
-        is_frozen = bool(acc_db.get("is_frozen", 0)) or dd_pct >= freeze_dd
-        is_alert = dd_pct >= rule.alert_drawdown_pct
+        is_frozen = bool(acc_db.get("is_frozen", 0)) or raw_dd_pct >= freeze_dd
+        is_alert = raw_dd_pct >= rule.alert_drawdown_pct
         risk_status = "冻结新增开仓" if is_frozen else ("回撤预警" if is_alert else "正常")
         # A bearish benchmark reduces the budget; it does not prohibit buying.
         # Match the trading layer's 2% minimum allocation and data-risk freeze.
@@ -266,7 +309,13 @@ def build_dual_accounts_summary(
         elif max_cap <= 0:
             no_entry_reason = "市场状态未知，暂停新增开仓"
         elif not market_audit:
-            no_entry_reason = "等待交易引擎完成市场数据校验"
+            scheduler = getattr(runtime, "data_scheduler", None)
+            scheduler_state = scheduler.get_status() if scheduler is not None else {}
+            pipeline = scheduler_state.get("last_sync_result", {})
+            verified_ready = (pipeline.get("trading_ready") is True
+                              and pipeline.get("trade_date") == indicator_day)
+            no_entry_reason = ("收盘数据已就绪，等待下一交易时段执行风控校验"
+                               if verified_ready else "等待交易引擎完成市场数据校验")
         elif not market_audit.get("passed", False):
             no_entry_reason = "市场数据校验未通过，暂停新增开仓"
         elif step.get(acc_id, {}).get("entry_risk_freeze", False):
@@ -279,7 +328,10 @@ def build_dual_accounts_summary(
             no_entry_reason = "暂无可用现金"
         else:
             no_entry_reason = ""
-        allow_entries = not no_entry_reason
+        waiting_execution_validation = (not market_audit and no_entry_reason == "收盘数据已就绪，等待下一交易时段执行风控校验")
+        allow_entries = None if waiting_execution_validation else not no_entry_reason
+        entry_permission_state = ("awaiting_execution_validation" if waiting_execution_validation
+                                  else "eligible" if allow_entries else "blocked")
 
         # Performance curves
         all_trades = trades_by_acc.get(acc_id, [])
@@ -423,6 +475,8 @@ def build_dual_accounts_summary(
             "is_alert": is_alert,
             "risk_status": risk_status,
             "allow_new_entries": allow_entries,
+            "entry_permission_state": entry_permission_state,
+            "entry_validation_pending": waiting_execution_validation,
             "no_entry_reason": no_entry_reason,
             "entry_filter_note": ("弱市允许额度内开仓，仍须通过个股MA60/MA120、正动量、强势行业和流动性检查"
                                   if market_regime == "RISK_OFF" else "仍须通过选股及交易风控检查"),
