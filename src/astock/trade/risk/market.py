@@ -66,7 +66,12 @@ class MarketRiskRule:
         now_iso = datetime.datetime.now().isoformat()
 
         # 1. Strict lookahead protection: filter benchmark bars up to as_of
-        filtered_bench = [b for b in bench_bars if str(b.get("date", ""))[:10] <= as_of] if bench_bars else []
+        def _extract_date(b):
+            if isinstance(b, dict):
+                return b.get("date") or b.get("trade_date") or ""
+            return getattr(b, "date", getattr(b, "trade_date", "")) or ""
+
+        filtered_bench = [b for b in bench_bars if str(_extract_date(b))[:10] <= as_of] if bench_bars else []
 
         if not filtered_bench or len(filtered_bench) < 120:
             res = RiskAuditResult(
@@ -83,9 +88,16 @@ class MarketRiskRule:
             )
             return MarketRegime.RISK_OFF, None, res
 
-        # 2. Check if benchmark is expired (e.g. latest bar date < as_of)
-        latest_bench_date = str(filtered_bench[-1].get("date", ""))[:10]
-        if latest_bench_date != as_of and (as_of > latest_bench_date):
+        # 2. Check if benchmark is expired (must be at least from previous trading day or same day)
+        latest_bench_date = str(_extract_date(filtered_bench[-1]))[:10]
+        try:
+            from trade_calendar import get_previous_trading_day
+            prev_td = get_previous_trading_day(as_of).isoformat()
+        except Exception:
+            prev_td = as_of
+
+        is_bench_current = (latest_bench_date >= prev_td)
+        if not is_bench_current:
             res = RiskAuditResult(
                 audit_id=audit_id,
                 timestamp=now_iso,
@@ -95,15 +107,18 @@ class MarketRiskRule:
                 passed=False,
                 severity=RiskSeverity.BLOCK,
                 action_taken="BLOCK_NEW_BUYS",
-                message=f"Data quality error: Benchmark data expired (latest: {latest_bench_date} < as_of: {as_of})",
-                details={"latest_date": latest_bench_date, "as_of": as_of}
+                message=f"Data quality error: Benchmark data expired (latest: {latest_bench_date} < prev_trading_day: {prev_td})",
+                details={"latest_date": latest_bench_date, "as_of": as_of, "prev_trading_day": prev_td}
             )
             return MarketRegime.RISK_OFF, None, res
 
-        c = float(filtered_bench[-1]["close"])
-        ma120 = sum(float(b["close"]) for b in filtered_bench[-120:]) / 120.0
-        ma60 = sum(float(b["close"]) for b in filtered_bench[-60:]) / 60.0
-        ma20 = sum(float(b["close"]) for b in filtered_bench[-20:]) / 20.0
+        def _extract_close(b):
+            return float(b["close"]) if isinstance(b, dict) else float(getattr(b, "close", 0.0))
+
+        c = _extract_close(filtered_bench[-1])
+        ma120 = sum(_extract_close(b) for b in filtered_bench[-120:]) / 120.0
+        ma60 = sum(_extract_close(b) for b in filtered_bench[-60:]) / 60.0
+        ma20 = sum(_extract_close(b) for b in filtered_bench[-20:]) / 20.0
 
         # 3. Calculate or extract market breadth (NEVER default to 1.0 or 0.5)
         breadth: Optional[float] = None
@@ -114,11 +129,11 @@ class MarketRiskRule:
             above_120 = 0
             total_cand = 0
             for sym, bars in candidate_bars.items():
-                sym_sub = [b for b in bars if str(b.get("date", ""))[:10] <= as_of]
+                sym_sub = [b for b in bars if str(_extract_date(b))[:10] <= as_of]
                 if len(sym_sub) >= 120:
                     total_cand += 1
-                    b_c = float(sym_sub[-1]["close"])
-                    b_ma120 = sum(float(b["close"]) for b in sym_sub[-120:]) / 120.0
+                    b_c = _extract_close(sym_sub[-1])
+                    b_ma120 = sum(_extract_close(b) for b in sym_sub[-120:]) / 120.0
                     if b_c > b_ma120:
                         above_120 += 1
             cand_cov = (total_cand / len(candidate_bars)) if candidate_bars else 0.0
@@ -216,15 +231,22 @@ class MarketRiskRule:
         audit_id = f"RA_ENTRY_{uuid.uuid4().hex[:10]}"
         now_iso = datetime.datetime.now().isoformat()
 
-        # 1. Date consistency check
-        if signal_asof and current_asof and signal_asof != current_asof:
-            return RiskAuditResult(
-                audit_id=audit_id, timestamp=now_iso, account_id="global",
-                layer=RiskLayer.MARKET, rule_name="RISK_OFF_ENTRY_GATE",
-                passed=False, severity=RiskSeverity.BLOCK, action_taken="REJECT_ENTRY",
-                message=f"Signal date {signal_asof} does not match current trade date {current_asof}",
-                details={"symbol": symbol, "signal_asof": signal_asof, "current_asof": current_asof}
-            )
+        # 1. Date consistency check (supports same-day execution or morning execution of previous trading day)
+        if signal_asof and current_asof:
+            try:
+                from trade_calendar import get_previous_trading_day
+                prev_td = get_previous_trading_day(current_asof).isoformat()
+            except Exception:
+                prev_td = current_asof
+            is_valid_signal_date = (signal_asof == current_asof or signal_asof == prev_td)
+            if not is_valid_signal_date:
+                return RiskAuditResult(
+                    audit_id=audit_id, timestamp=now_iso, account_id="global",
+                    layer=RiskLayer.MARKET, rule_name="RISK_OFF_ENTRY_GATE",
+                    passed=False, severity=RiskSeverity.BLOCK, action_taken="REJECT_ENTRY",
+                    message=f"Signal date {signal_asof} does not match or is expired for execution date {current_asof} (prev trading day: {prev_td})",
+                    details={"symbol": symbol, "signal_asof": signal_asof, "current_asof": current_asof, "prev_trading_day": prev_td}
+                )
 
         if price <= 0:
             return RiskAuditResult(
@@ -234,9 +256,9 @@ class MarketRiskRule:
                 message=f"Invalid stock price: {price}", details={"symbol": symbol}
             )
 
-        # 2. Strict lookahead truncation
-        cutoff_date = current_asof or signal_asof
-        filtered_bars = [b for b in bars if str(b.get("date", ""))[:10] <= cutoff_date] if (bars and cutoff_date) else (bars or [])
+        # 2. Strict lookahead truncation: evaluate indicators as of signal generation date
+        cutoff_date = signal_asof or current_asof
+        filtered_bars = [b for b in bars if str(b.get("date", b.get("trade_date", "")))[:10] <= cutoff_date] if (bars and cutoff_date) else (bars or [])
 
         if not filtered_bars or len(filtered_bars) < 120:
             return RiskAuditResult(

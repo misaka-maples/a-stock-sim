@@ -87,28 +87,44 @@ def validate_acceptance_record(r: Dict[str, Any]) -> Tuple[bool, List[str]]:
             reasons.append(f"Trade calendar error for {trade_date}: {e}")
 
     # Real data sync verification
-    sync_time = r.get("market_sync_completed_at")
+    sync_time = str(r.get("market_sync_completed_at", ""))
     if not sync_time or sync_time in ("UNVERIFIED", "None", ""):
         reasons.append("Market sync completion is unverified or missing (no real data task confirmation)")
 
-    # 1. Real data task date must match trade_date if present
-    task_date = r.get("data_task_date")
-    if task_date and task_date != trade_date:
-        reasons.append(f"Data task date mismatch: task_date={task_date} vs trade_date={trade_date}")
+    # 1. Data task ID verification (cannot be explicitly UNVERIFIED)
+    task_id = str(r.get("data_task_id", ""))
+    if task_id in ("UNVERIFIED", "None"):
+        reasons.append("DataScheduler task_id is unverified")
 
-    # 2. Data task status must be SUCCESS if present
-    task_status = r.get("data_task_status")
-    if task_status and task_status not in ("SUCCESS", "COMPLETED"):
-        reasons.append(f"Data task status failed or invalid: {task_status}")
+    # 2. Data task date verification (must be trade_date or previous trading day if provided)
+    task_date = str(r.get("data_task_date", ""))
+    if task_date and task_date not in ("UNVERIFIED", "None", ""):
+        try:
+            prev_td = trade_calendar.get_previous_trading_day(trade_date).isoformat()
+        except Exception:
+            prev_td = trade_date
+        if task_date != trade_date and task_date != prev_td:
+            reasons.append(f"Data task date mismatch: task_date={task_date} is neither trade_date={trade_date} nor prev_trading_day={prev_td}")
+    elif task_date in ("UNVERIFIED", "None"):
+        reasons.append("DataScheduler task_date is unverified")
 
-    # 3. Data quality check must be passed if present
+    # 3. Data task status: if provided, must strictly not be PARTIAL / FAILED / UNVERIFIED
+    task_status = str(r.get("data_task_status", ""))
+    if task_status:
+        if task_status in ("PARTIAL", "FAILED", "UNVERIFIED"):
+            reasons.append(f"DataScheduler task status failed or invalid: '{task_status}' (must be 'SUCCESS')")
+        elif task_status not in ("SUCCESS", "COMPLETED"):
+            reasons.append(f"DataScheduler task status failed or invalid: '{task_status}' (must be 'SUCCESS')")
+
+    # 4. Data quality check must be passed if present
     if "data_quality_passed" in r and not r.get("data_quality_passed"):
-        reasons.append("Data quality validation failed")
+        reasons.append("Data quality validation failed (quality_passed is False)")
 
-    # 4. Coverage ratio check (>= 70%) if present
+    # 5. Coverage ratio check (>= 70%) if present
     cov = r.get("data_coverage_ratio")
-    if cov is not None and cov < 0.70:
-        reasons.append(f"Data coverage ratio {cov*100:.1f}% is below required 70% threshold")
+    if cov is not None and float(cov) < 0.70:
+        cov_pct = float(cov) * 100
+        reasons.append(f"Data coverage ratio {cov_pct:.1f}% is below required 70% threshold")
 
     strat_status = r.get("strategy_status")
     if strat_status in ("ERROR", "FAILED"):
@@ -290,6 +306,8 @@ class DailyAuditRecorder:
         orders_executed: int = 0,
         orders_rejected: Optional[List[Dict[str, Any]]] = None,
         error_summary: str = "None",
+        data_scheduler_result: Optional[Dict[str, Any]] = None,
+        data_task_id: Optional[str] = None,
         data_task_date: Optional[str] = None,
         data_task_status: Optional[str] = None,
         data_quality_passed: Optional[bool] = None,
@@ -338,42 +356,49 @@ class DailyAuditRecorder:
                 logger.error(f"Failed to query ledger for daily record: {e}")
                 recon_status = f"ERROR: {e}"
 
-        # Verified sync completion lookup: never forge with datetime.now()
-        sync_time = sync_completed_time or getattr(runtime, "last_sync_completed_time", "")
+        # Extract task proof strictly from DataScheduler or explicit passed result
+        sched_res = data_scheduler_result
+        if not sched_res and hasattr(runtime, "data_scheduler") and runtime.data_scheduler:
+            try:
+                st = runtime.data_scheduler.get_status()
+                sched_res = st.get("last_sync_result", {})
+            except Exception as _e:
+                logger.warning(f"Error reading scheduler in daily audit: {_e}")
+
+        task_id = data_task_id
         task_dt = data_task_date
         task_st = data_task_status
         task_qual = data_quality_passed
         task_cov = data_coverage_ratio
+        sync_time = sync_completed_time
 
-        if hasattr(runtime, "data_scheduler") and runtime.data_scheduler:
-            try:
-                sched_status = runtime.data_scheduler.get_status()
-                if sched_status.get("last_sync_date") == trade_date and sched_status.get("last_sync_result", {}).get("status") == "SUCCESS":
-                    if not sync_time or sync_time == "UNVERIFIED":
-                        sync_time = sched_status["last_sync_result"].get("sync_res", {}).get("completed_at", "VERIFIED")
-                if not task_dt:
-                    task_dt = sched_status.get("last_sync_date", "")
-                last_res = sched_status.get("last_sync_result", {})
-                if not task_st:
-                    task_st = last_res.get("status", "UNKNOWN")
-                if task_cov is None:
-                    task_cov = last_res.get("coverage", 0.0)
-                if task_qual is None:
-                    task_qual = (last_res.get("quality_passed", False) or task_st == "SUCCESS")
-            except Exception as _e:
-                logger.warning(f"Error reading scheduler in daily audit: {_e}")
+        if sched_res:
+            if not task_id:
+                task_id = sched_res.get("task_id")
+            if not task_dt:
+                task_dt = sched_res.get("trade_date")
+            if not task_st:
+                task_st = sched_res.get("status")
+            if task_qual is None:
+                task_qual = sched_res.get("quality_passed")
+            if task_cov is None:
+                task_cov = sched_res.get("coverage")
+            if not sync_time or sync_time == "UNVERIFIED":
+                sync_time = sched_res.get("completed_at")
 
+        # Never fake 95% or SUCCESS: if unverified or missing, explicitly mark UNVERIFIED / 0.0
         if not sync_time:
             sync_time = "UNVERIFIED"
-
-        if not task_dt and sync_time and sync_time != "UNVERIFIED":
-            task_dt = trade_date
-        if not task_st and sync_time and sync_time != "UNVERIFIED":
-            task_st = "SUCCESS"
-        if task_qual is None and sync_time and sync_time != "UNVERIFIED":
-            task_qual = True
-        if task_cov is None and sync_time and sync_time != "UNVERIFIED":
-            task_cov = 0.95
+        if not task_id:
+            task_id = "UNVERIFIED"
+        if not task_dt:
+            task_dt = "UNVERIFIED"
+        if not task_st:
+            task_st = "UNVERIFIED"
+        if task_qual is None:
+            task_qual = False
+        if task_cov is None:
+            task_cov = 0.0
 
         restarts = get_systemd_restarts()
         peak_mb = get_peak_memory_mb()
@@ -392,6 +417,7 @@ class DailyAuditRecorder:
             "systemd_restarts": restarts,
             "peak_memory_mb": peak_mb,
             "error_summary": error_summary,
+            "data_task_id": task_id,
             "data_task_date": task_dt,
             "data_task_status": task_st,
             "data_quality_passed": task_qual,

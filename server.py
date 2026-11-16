@@ -442,16 +442,40 @@ def worker_step(now=None):
         if storage_healthy and ctx.strategy_active and ctx.strategy and (MarketFeed.is_trading_time(checked_at) or ctx.ignore_market_hours):
             if getattr(ctx, "trading_runtime", None):
                 try:
+                    as_of_str = checked_at.date().isoformat()
+                    # 1. Retrieve authoritative MarketSnapshot from DataScheduler or DataService
+                    snapshot = data_scheduler.get_latest_snapshot()
+                    if not snapshot:
+                        try:
+                            from trade_calendar import get_previous_trading_day
+                            prev_td = get_previous_trading_day(checked_at.date()).isoformat()
+                            snapshot = data_service.get_market_snapshot(prev_td)
+                        except Exception as _snap_err:
+                            logger.warning("Could not load market snapshot for %s: %s", checked_at, _snap_err)
+
+                    # 2. Build unified market data referencing authoritative MarketSnapshot
                     csi300_bars = getattr(ctx.strategy, "_benchmark", [])
                     cands = getattr(ctx.strategy, "latest_candidates", [])
                     m_data = {
+                        "snapshot": snapshot,
+                        "data_scheduler_result": data_scheduler.get_status().get("last_sync_result"),
                         "csi300_bars": csi300_bars,
                         "candidates": cands,
                         "top_sectors": getattr(ctx.strategy, "top_industries", []),
                         "candidate_bars": getattr(ctx.strategy, "history_cache", {})
                     }
-                    as_of_str = checked_at.date().isoformat()
-                    v3_res = ctx.trading_runtime.step(as_of_str, ctx.last_quotes, m_data, now=checked_at)
+                    if snapshot:
+                        m_data["market_breadth"] = snapshot.market_breadth
+                        m_data["coverage_ratio"] = getattr(snapshot, "coverage_ratio", 0.95)
+                        m_data["signal_asof_date"] = snapshot.signal_asof_date
+
+                    v3_res = ctx.trading_runtime.step(
+                        as_of=as_of_str,
+                        quotes=ctx.last_quotes,
+                        market_data=m_data,
+                        now=checked_at,
+                        signal_asof_date=m_data.get("signal_asof_date")
+                    )
                     ctx.radar_candidates = getattr(ctx.strategy, "latest_candidates", [])
                 except Exception as _e:
                     logger.exception("V3 TradingRuntime step execution error: %s", _e)
@@ -2331,7 +2355,12 @@ def main():
                     sandbox_account_json_path=str(BASE_DIR / "sandbox_ab_account.json"),
                     sqlite_db_path=str(v3_db_path)
                 )
-            ctx.trading_runtime = TradingRuntime(db_path=str(v3_db_path), mode=v3_mode, initial_capital=args.cash)
+            ctx.trading_runtime = TradingRuntime(
+                db_path=str(v3_db_path),
+                mode=v3_mode,
+                initial_capital=args.cash,
+                data_scheduler=data_scheduler
+            )
             ctx.account = TradingRuntimeAdapter(ctx.trading_runtime, primary_account_id="balanced")
             logger.info("★ V3 统一交易架构已正式接管！运行模式: %s, 数据库: %s", v3_mode, v3_db_path)
         except Exception as _e:

@@ -97,9 +97,12 @@ class TradingRuntime:
     def step(
         self,
         as_of: str,
-        quotes: Dict[str, Dict[str, Any]],
+        quotes: Optional[Dict[str, Dict[str, Any]]] = None,
         market_data: Optional[Dict[str, Any]] = None,
-        now: Optional[datetime.datetime] = None
+        now: Optional[datetime.datetime] = None,
+        signal_asof_date: Optional[str] = None,
+        snapshot: Optional[Any] = None,
+        data_scheduler_result: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Executes one full synchronous trading step across both accounts:
@@ -121,11 +124,16 @@ class TradingRuntime:
             now = now or datetime.datetime.now()
             self.last_step_time = now
             market_data = market_data or {}
+            quotes = quotes or {}
+            if snapshot is None:
+                snapshot = market_data.get("snapshot")
+            if data_scheduler_result is None:
+                data_scheduler_result = market_data.get("data_scheduler_result") or market_data.get("scheduler_result")
 
             # 1. Update Market Prices across positions in SQLite
             self.ledger.update_market_prices(quotes)
 
-            # 2. Daily T+1 Rollover
+            # 2. Daily T+1 Rollover (based on execution trade date)
             if self.last_trade_date != as_of:
                 self.ledger.roll_t1(as_of)
                 if hasattr(self.broker, "roll_trading_day"):
@@ -133,11 +141,19 @@ class TradingRuntime:
                 self.last_trade_date = as_of
 
             # 3. Market Regime Classification (consuming pre-verified MarketSnapshot or calculating via MarketRiskRule)
-            snapshot = market_data.get("snapshot")
+            snapshot = snapshot or market_data.get("snapshot")
             csi300_bars = market_data.get("csi300_bars", [])
             cand_bars = market_data.get("stock_bars") or market_data.get("candidate_bars")
             m_breadth = market_data.get("breadth", market_data.get("market_breadth"))
             cov_ratio = market_data.get("coverage_ratio")
+
+            # Determine signal_asof vs execution_date
+            signal_asof = (
+                signal_asof_date or
+                getattr(snapshot, "signal_asof_date", None) or
+                market_data.get("signal_asof_date") or
+                as_of
+            )
 
             if snapshot and hasattr(snapshot, "market_regime") and snapshot.market_regime:
                 # Direct consumption of authoritative MarketSnapshot from DataService
@@ -145,10 +161,13 @@ class TradingRuntime:
                 breadth = getattr(snapshot, "market_breadth", None)
                 snap_bench = getattr(snapshot, "benchmark_bars", None)
                 if snap_bench and not csi300_bars:
-                    csi300_bars = [{"date": b.trade_date, "close": b.close} for b in snap_bench]
+                    csi300_bars = [
+                        {"date": getattr(b, "date", getattr(b, "trade_date", "")), "close": b.close}
+                        for b in snap_bench
+                    ]
                 _, _, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
                     bench_bars=csi300_bars,
-                    as_of=as_of,
+                    as_of=signal_asof,
                     candidate_bars=cand_bars,
                     market_breadth=breadth,
                     coverage_ratio=cov_ratio
@@ -156,7 +175,7 @@ class TradingRuntime:
             else:
                 regime, breadth, mkt_audit = self.risk_manager_bal.market_rule.determine_regime(
                     bench_bars=csi300_bars,
-                    as_of=as_of,
+                    as_of=signal_asof,
                     candidate_bars=cand_bars,
                     market_breadth=m_breadth,
                     coverage_ratio=cov_ratio
@@ -165,6 +184,8 @@ class TradingRuntime:
 
             step_summary = {
                 "as_of": as_of,
+                "execution_date": as_of,
+                "signal_asof_date": signal_asof,
                 "mode": self.mode,
                 "regime": regime.value,
                 "breadth": breadth,
@@ -184,7 +205,8 @@ class TradingRuntime:
                 as_of=as_of,
                 quotes=quotes,
                 market_data=market_data,
-                market_risk_audit=mkt_audit
+                market_risk_audit=mkt_audit,
+                signal_asof_date=signal_asof
             )
             step_summary["balanced"] = res_bal
 
@@ -199,7 +221,8 @@ class TradingRuntime:
                 as_of=as_of,
                 quotes=quotes,
                 market_data=market_data,
-                market_risk_audit=mkt_audit
+                market_risk_audit=mkt_audit,
+                signal_asof_date=signal_asof
             )
             step_summary["aggressive"] = res_agg
             self.last_step_summary = step_summary
@@ -214,7 +237,12 @@ class TradingRuntime:
                     a_rej = res_agg.get("rejected_orders", [])
 
                     # Verified sync completed time
-                    verified_sync = market_data.get("sync_completed_at") or self.last_sync_completed_time or ""
+                    verified_sync = (
+                        market_data.get("sync_completed_at") or
+                        (data_scheduler_result.get("completed_at") if data_scheduler_result else None) or
+                        self.last_sync_completed_time or
+                        ""
+                    )
 
                     DailyAuditRecorder(log_path=rec_path).capture_from_runtime(
                         runtime=self,
@@ -225,10 +253,7 @@ class TradingRuntime:
                         orders_executed=b_exec + a_exec,
                         orders_rejected=b_rej + a_rej,
                         error_summary="None",
-                        data_task_date=market_data.get("task_date") or as_of,
-                        data_task_status=market_data.get("task_status") or ("SUCCESS" if verified_sync and verified_sync != "UNVERIFIED" else "UNKNOWN"),
-                        data_quality_passed=market_data.get("quality_passed") if "quality_passed" in market_data else (mkt_audit.passed if mkt_audit else True),
-                        data_coverage_ratio=market_data.get("coverage_ratio") or getattr(snapshot, "coverage_ratio", 0.95 if verified_sync and verified_sync != "UNVERIFIED" else 0.0)
+                        data_scheduler_result=data_scheduler_result
                     )
                 except Exception as _e:
                     logger.warning(f"DailyAuditRecorder step capture error: {_e}")
@@ -249,18 +274,21 @@ class TradingRuntime:
         quotes: Dict[str, Dict[str, Any]],
         market_data: Dict[str, Any],
         breadth: Optional[float] = None,
-        market_risk_audit: Optional[RiskAuditResult] = None
+        market_risk_audit: Optional[RiskAuditResult] = None,
+        signal_asof_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """Processes target planning, risk screening, and execution for one account."""
         bal = self.ledger.get_balance(account_id)
         positions = self.ledger.get_positions(account_id)
 
-        # 1. Generate Signals
-        signals = strategy.generate_signals(as_of, market_data, regime)
+        sig_date = signal_asof_date or as_of
+
+        # 1. Generate Signals (using signal_asof_date)
+        signals = strategy.generate_signals(sig_date, market_data, regime)
 
         # 2. Check essential market data availability and market risk audit
         csi_bars = market_data.get("csi300_bars", [])
-        filtered_bench_bars = [b for b in csi_bars if str(b.get("date", b.get("trade_date", "")))[:10] <= as_of] if csi_bars else []
+        filtered_bench_bars = [b for b in csi_bars if str(b.get("date", b.get("trade_date", "")))[:10] <= sig_date] if csi_bars else []
         missing_market_data = (not filtered_bench_bars or len(filtered_bench_bars) < 120)
 
         # Market risk audit failure (missing breadth on golden cross, expired benchmark, coverage < 60%)
@@ -279,8 +307,8 @@ class TradingRuntime:
                 passed=False,
                 severity=RiskSeverity.WARNING,
                 action_taken="BLOCK_NEW_BUYS",
-                message=f"Essential benchmark market data is missing/insufficient for {as_of} (<120 bars); blocking new buys to ensure capital preservation.",
-                details={"as_of": as_of, "bench_bars_count": len(filtered_bench_bars)}
+                message=f"Essential benchmark market data is missing/insufficient for {sig_date} (<120 bars); blocking new buys to ensure capital preservation.",
+                details={"as_of": sig_date, "bench_bars_count": len(filtered_bench_bars)}
             )
             self.ledger.record_risk_event(mkt_audit_res)
 
@@ -304,7 +332,7 @@ class TradingRuntime:
                     ret20=s.ret20,
                     ret60=s.ret60,
                     amount=real_amt,
-                    signal_asof=s.signal_asof,
+                    signal_asof=getattr(s, "signal_asof", sig_date),
                     current_asof=as_of
                 )
                 self.ledger.record_risk_event(audit)

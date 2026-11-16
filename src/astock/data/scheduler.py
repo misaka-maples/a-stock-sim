@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .service import AStockDataService
+from ..domain.enums import DataQuality
+from ..domain.models import MarketSnapshot
 from trade_calendar import BEIJING, is_trading_day, get_previous_trading_day
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,13 @@ class DataScheduler:
         self._lock = threading.Lock()
         self.last_sync_date: Optional[str] = None
         self.last_sync_result: Dict[str, Any] = {}
+        self.latest_snapshot: Optional[MarketSnapshot] = None
         self.is_syncing = False
+
+    def get_latest_snapshot(self) -> Optional[MarketSnapshot]:
+        """Returns the latest verified MarketSnapshot computed by the daily pipeline."""
+        with self._lock:
+            return self.latest_snapshot
 
     def start(self):
         with self._lock:
@@ -76,7 +84,7 @@ class DataScheduler:
             self._stop_event.wait(timeout=60.0)
 
     def run_daily_pipeline(self, target_date: str) -> Dict[str, Any]:
-        """Runs the complete post-close ingestion & market analysis pipeline."""
+        """Runs the complete post-close ingestion & market analysis pipeline with strict validation."""
         with self._lock:
             if self.is_syncing:
                 return {"status": "ALREADY_RUNNING", "target_date": target_date}
@@ -84,38 +92,100 @@ class DataScheduler:
 
         logger.info(f"=== Starting Daily Market Data Pipeline for {target_date} ===")
         t0 = time.time()
+        task_id = f"pipeline_{target_date}_{int(time.time())}"
+        completed_at = datetime.datetime.now().isoformat()
         try:
             # 1. Sync daily increment
             sync_res = self.service.sync_daily_increment(target_date)
             logger.info(f"Daily sync completed: {sync_res}")
+            sync_status = sync_res.get("status", "FAILED")
+            fail_count = sync_res.get("fail_count", 0)
+
+            # Check actual universe stock data coverage
+            get_univ = getattr(self.service, "get_universe_symbols", getattr(self.service, "get_stock_pool", lambda: []))
+            universe_syms = get_univ()
+            total_syms = len(universe_syms)
+            if total_syms > 0:
+                coverage = round(max(0.0, (total_syms - fail_count) / total_syms), 4)
+            else:
+                synced = sync_res.get("synced_symbols", 0)
+                coverage = round(synced / (synced + fail_count), 4) if (synced + fail_count) > 0 else 1.0
 
             # 2. Compute MarketSnapshot
-            snapshot = self.service.compute_market_snapshot(target_date)
-            logger.info(f"MarketSnapshot computed: Regime={snapshot.market_regime}, Breadth={snapshot.market_breadth}")
+            get_snap = getattr(self.service, "compute_market_snapshot", getattr(self.service, "get_market_snapshot", None))
+            snapshot = get_snap(target_date)
+            logger.info(f"MarketSnapshot computed: Regime={snapshot.market_regime}, Breadth={snapshot.market_breadth}, Quality={snapshot.quality}")
 
-            # 3. Callback to trigger strategy portfolio update if registered
+            # 3. Validate benchmark index completeness (HS300 >= 120 bars ending on target_date)
+            bench_bars = snapshot.benchmark_bars
+            bench_valid = bool(bench_bars and len(bench_bars) >= 120 and getattr(bench_bars[-1], "date", getattr(bench_bars[-1], "trade_date", "")) == target_date)
+
+            # 4. Strict Quality & Success Evaluation
+            # Requirements:
+            # - sync_status must be COMPLETED (not PARTIAL, not FAILED)
+            # - snapshot.quality must be VALID (not INVALID or DEGRADED)
+            # - benchmark bars valid & current
+            # - coverage ratio >= 70% (0.70)
+            quality_passed = (
+                sync_status == "COMPLETED" and
+                snapshot.quality == DataQuality.VALID and
+                bench_valid and
+                coverage >= 0.70
+            )
+
+            # Status classification:
+            # SUCCESS: 100% of checks passed
+            # PARTIAL: sync completed partially or coverage < 70%
+            # FAILED: critical quality failure, missing benchmark, or exception
+            if quality_passed:
+                pipeline_status = "SUCCESS"
+            elif getattr(snapshot, "quality", None) == DataQuality.INVALID or not bench_valid:
+                pipeline_status = "FAILED"
+            elif sync_status == "PARTIAL" or coverage < 0.70:
+                pipeline_status = "PARTIAL"
+            else:
+                pipeline_status = "FAILED"
+
+            completed_at = datetime.datetime.now().isoformat()
+            self.last_sync_date = target_date
+            self.latest_snapshot = snapshot
+
+            result = {
+                "task_id": task_id,
+                "trade_date": target_date,
+                "data_version": getattr(snapshot, "universe_version", "v3.0"),
+                "sync_res": sync_res,
+                "sync_status": sync_status,
+                "status": pipeline_status,
+                "quality_passed": quality_passed,
+                "quality": snapshot.quality.value if hasattr(snapshot.quality, "value") else str(snapshot.quality),
+                "coverage": coverage,
+                "benchmark_valid": bench_valid,
+                "regime": snapshot.market_regime.value if hasattr(snapshot.market_regime, "value") else str(snapshot.market_regime),
+                "breadth": snapshot.market_breadth,
+                "duration_seconds": round(time.time() - t0, 2),
+                "completed_at": completed_at
+            }
+            self.last_sync_result = result
+
+            # 5. Callback to trigger strategy portfolio update if registered
             if self.on_pipeline_completed:
                 try:
                     self.on_pipeline_completed(target_date, snapshot)
                 except Exception as exc:
                     logger.error(f"Callback on_pipeline_completed error: {exc}", exc_info=True)
 
-            self.last_sync_date = target_date
-            self.last_sync_result = {
-                "target_date": target_date,
-                "sync_res": sync_res,
-                "regime": snapshot.market_regime.value,
-                "breadth": snapshot.market_breadth,
-                "duration_seconds": round(time.time() - t0, 2),
-                "status": "SUCCESS"
-            }
-            return self.last_sync_result
+            return result
         except Exception as exc:
             logger.error(f"Daily pipeline failed for {target_date}: {exc}", exc_info=True)
             self.last_sync_result = {
-                "target_date": target_date,
+                "task_id": task_id,
+                "trade_date": target_date,
                 "error": str(exc),
-                "status": "FAILED"
+                "status": "FAILED",
+                "quality_passed": False,
+                "coverage": 0.0,
+                "completed_at": datetime.datetime.now().isoformat()
             }
             return self.last_sync_result
         finally:

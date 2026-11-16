@@ -34,6 +34,23 @@ class Bar:
     is_suspended: bool = False
     is_st: bool = False
 
+    @property
+    def trade_date(self) -> str:
+        """Alias for date to ensure compatibility with DailyBar and domain Bar."""
+        return self.date
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in ("date", "trade_date"):
+            return self.date
+        return getattr(self, key, default)
+
+    def __getitem__(self, item: str) -> Any:
+        if item in ("date", "trade_date"):
+            return self.date
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
 
 @dataclass(frozen=True)
 class Quote:
@@ -62,6 +79,14 @@ class MarketSnapshot:
     market_breadth: Optional[float] = None
     sector_map: Dict[str, str] = field(default_factory=dict)
     source_lineage: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def trade_date(self) -> str:
+        return self.signal_asof_date
+
+    @property
+    def as_of(self) -> str:
+        return self.signal_asof_date
 
 
 @dataclass(frozen=True)
