@@ -619,18 +619,24 @@ class TradingRuntime:
             positions = resolve_holding_industries(self.ledger.get_positions(account_id))
             bal = self.ledger.get_balance(account_id)
 
+        plan_signals = allowed_signals
+        if policy and not is_freeze:
+            from .execution_cycles import filter_cycle_ineligible_signals, restrict_entry_cycle
+            plan_signals = filter_cycle_ineligible_signals(
+                self.ledger, account_id, as_of, allowed_signals, policy
+            )
+
         # 6. Plan Target Portfolio (with updated post-exit positions and released cash)
         target_pf = strategy.plan_targets(
             as_of=as_of,
             regime=regime,
-            signals=allowed_signals,
+            signals=plan_signals,
             balance=bal,
             positions=positions,
             is_frozen=is_freeze
         )
         cycle_details = {}
         if policy and not is_freeze:
-            from .execution_cycles import restrict_entry_cycle
             target_pf, cycle_details = restrict_entry_cycle(
                 self.ledger, account_id, sig_date, as_of, target_pf, positions, policy,
                 persist=self.mode == 'ACTIVE')

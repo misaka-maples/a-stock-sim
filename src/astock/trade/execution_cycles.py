@@ -1,7 +1,9 @@
 """Persistent entry-cycle discipline, independent of trading and financial state.
 
-A cycle freezes the first scheduled set of new targets. Later polls can retry an
-unfilled original target, but cannot replace it or enlarge it using released cash.
+Supports both multi-day locked cycles (when ``refill_vacancies=False``) and
+daily / intraday vacancy refill after risk exits (when ``rebalance_every=1``
+and ``refill_vacancies=True``), while enforcing per-symbol buy deduplication
+and post-sell cooldowns.
 """
 import datetime as dt
 import json
@@ -38,6 +40,55 @@ def _positive(value):
     return result if not isinstance(value, bool) and math.isfinite(result) and result > 0 else 0.0
 
 
+def _open_ledger_conn(ledger, *, persist: bool):
+    if persist:
+        return ledger.connect()
+    conn = sqlite3.connect(Path(ledger.db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _load_fill_constraints(conn, account_id: str, execution_day: str):
+    has_fills = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fills'").fetchone())
+    if not has_fills:
+        return set(), {}, set()
+    sells_today = {r["symbol"] for r in conn.execute("""SELECT DISTINCT symbol FROM fills
+        WHERE account_id = ? AND side = 'SELL' AND trade_date = ?""", (account_id, execution_day))}
+    sold_dates = {r["symbol"]: r["last_sell"] for r in conn.execute("""SELECT symbol, MAX(trade_date) AS last_sell
+        FROM fills WHERE account_id = ? AND side = 'SELL' AND trade_date <= ? GROUP BY symbol""",
+        (account_id, execution_day))}
+    bought_today = {r["symbol"] for r in conn.execute("""SELECT DISTINCT symbol FROM fills
+        WHERE account_id = ? AND side = 'BUY' AND trade_date = ?""", (account_id, execution_day))}
+    return sells_today, sold_dates, bought_today
+
+
+def _symbol_fill_block_reason(sym: str, execution_day: str, cooldown_days: int, sold_dates, bought_today):
+    if sym in bought_today:
+        return "cycle_target_already_bought_today"
+    if sym in sold_dates and _sessions_between(sold_dates[sym], execution_day) <= cooldown_days:
+        return "sell_cooldown"
+    return None
+
+
+def filter_cycle_ineligible_signals(ledger, account_id, execution_day, signals, policy):
+    """Filter out signals blocked by same-day fill dedup or post-sell cooldown before target sizing.
+
+    Prevents cooled-down stopped-out symbols from consuming weight/slot budgets in
+    ``plan_targets`` and starving eligible intraday refill candidates.
+    """
+    if policy is None or ledger is None or not signals:
+        return list(signals)
+    dt.date.fromisoformat(execution_day)
+    cooldown_days = max(0, int(_setting(policy, "cooldown_days", 3)))
+    conn = _open_ledger_conn(ledger, persist=False)
+    with closing(conn), conn:
+        _, sold_dates, bought_today = _load_fill_constraints(conn, account_id, execution_day)
+    return [
+        sig for sig in signals
+        if _symbol_fill_block_reason(sig.symbol, execution_day, cooldown_days, sold_dates, bought_today) is None
+    ]
+
+
 def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
                          target_portfolio, positions, policy, *, persist=True):
     """Return a restricted plan and diagnostics without submitting any orders.
@@ -52,19 +103,15 @@ def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
     dt.date.fromisoformat(execution_day)
     if signal_day > execution_day:
         raise ValueError("signal_day must not follow execution_day")
-    rebalance_every = max(1, int(_setting(policy, "rebalance_every", 5)))
+    rebalance_every = max(1, int(_setting(policy, "rebalance_every", 1)))
     cooldown_days = max(0, int(_setting(policy, "cooldown_days", 3)))
-    refill = bool(_setting(policy, "refill_vacancies", False))
+    refill = bool(_setting(policy, "refill_vacancies", True))
     diag = {"policy_applied": True, "persist": bool(persist),
             "signal_day": signal_day, "execution_day": execution_day,
             "refill_vacancies": refill, "cycle_started": False,
             "blocked_symbols": {}, "allowed_new_symbols": []}
 
-    if persist:
-        conn = ledger.connect()
-    else:
-        conn = sqlite3.connect(Path(ledger.db_path).resolve().as_uri() + "?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
+    conn = _open_ledger_conn(ledger, persist=persist)
     with closing(conn), conn:
         if persist:
             conn.execute("BEGIN IMMEDIATE")
@@ -89,13 +136,7 @@ def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
                     reason="HOLD_EXISTING") for sym, pos in positions.items()}
         proposed = {sym: tp for sym, tp in target_portfolio.target_positions.items()
                     if sym not in positions and _positive(tp.target_weight)}
-        sells_today = {r["symbol"] for r in conn.execute("""SELECT DISTINCT symbol FROM fills
-            WHERE account_id = ? AND side = 'SELL' AND trade_date = ?""", (account_id, execution_day))}
-        sold_dates = {r["symbol"]: r["last_sell"] for r in conn.execute("""SELECT symbol, MAX(trade_date) AS last_sell
-            FROM fills WHERE account_id = ? AND side = 'SELL' AND trade_date <= ? GROUP BY symbol""",
-            (account_id, execution_day))}
-        bought_today = {r["symbol"] for r in conn.execute("""SELECT DISTINCT symbol FROM fills
-            WHERE account_id = ? AND side = 'BUY' AND trade_date = ?""", (account_id, execution_day))}
+        sells_today, sold_dates, bought_today = _load_fill_constraints(conn, account_id, execution_day)
 
         if target_portfolio.constraints.get("is_frozen", False):
             diag["reason"] = "risk_freeze"
@@ -113,7 +154,7 @@ def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
             diag["sessions_since_cycle"] = elapsed
             diag["last_cycle_signal_day"] = last["signal_day"] if last else None
             due = last is None or (elapsed is not None and elapsed >= rebalance_every)
-            if same_cycle and last["execution_day"] == execution_day:
+            if same_cycle and last["execution_day"] == execution_day and not refill:
                 # Reuse only currently eligible members, never add a replacement.
                 stored = json.loads(last["targets_json"])
                 permitted = {sym: replace(proposed[sym],
@@ -123,7 +164,7 @@ def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
                 diag["reason"] = "retry_original_cycle_targets"
                 for sym in proposed.keys() - permitted.keys():
                     diag["blocked_symbols"][sym] = "not_in_original_cycle"
-            elif same_cycle:
+            elif same_cycle and last["execution_day"] != execution_day:
                 permitted = {}
                 diag["reason"] = "cycle_execution_day_expired"
             elif due or refill:
@@ -145,11 +186,9 @@ def restrict_entry_cycle(ledger, account_id, signal_day, execution_day,
                 diag["reason"] = "waiting_for_scheduled_cycle"
 
         for sym in list(permitted):
-            if sym in bought_today:
-                diag["blocked_symbols"][sym] = "cycle_target_already_bought_today"
-                permitted.pop(sym)
-            elif sym in sold_dates and _sessions_between(sold_dates[sym], execution_day) <= cooldown_days:
-                diag["blocked_symbols"][sym] = "sell_cooldown"
+            block_reason = _symbol_fill_block_reason(sym, execution_day, cooldown_days, sold_dates, bought_today)
+            if block_reason is not None:
+                diag["blocked_symbols"][sym] = block_reason
                 permitted.pop(sym)
         diag["allowed_new_symbols"] = sorted(permitted)
         targets = dict(held)

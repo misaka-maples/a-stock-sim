@@ -32,8 +32,8 @@ def test_existing_profiles_retain_distinct_execution_and_risk_rules():
             ('balanced',3.5,True,1,8.,12.),('aggressive',4.5,False,2,15.,20.)]:
         p=profiles[account]
         assert p['account_id']==account
-        assert (p['rebalance_every'],p['min_holding_days'],p['cooldown_days'])==(5,5,3)
-        assert p['refill_vacancies'] is False
+        assert (p['rebalance_every'],p['min_holding_days'],p['cooldown_days'])==(1,5,3)
+        assert p['refill_vacancies'] is True
         assert p['stop_loss_pct']==-6. and p['stop_loss_mode']=='intraday'
         assert p['trailing_stop_enabled'] is True and p['trailing_stop_mode']=='atr'
         assert p['trailing_stop_activation_pct']==20. and p['atr_trailing_multiplier']==mult
@@ -87,7 +87,7 @@ def test_missing_nonlegacy_parameter_never_uses_invented_default(config_project)
     ('ma20_exit_consecutive_days',0),('max_entry_gap_up_pct',-1.),
     ('max_entry_intraday_drop_pct',float('-inf')),('entry_require_ma20',1),
     ('trailing_stop_mode','unknown'),('stop_loss_mode','unknown'),
-    ('refill_vacancies',True),('participation_rate',0.),
+    ('refill_vacancies','true'),('refill_vacancies',1),('participation_rate',0.),
 ])
 def test_illegal_primary_parameter_is_rejected(key,value):
     with pytest.raises(ValueError):load_execution_policies(ROOT,{key:value})
@@ -116,3 +116,10 @@ def test_unrelated_bad_primary_value_is_ignored_not_broadcast_to_aggressive():
     profiles=load_execution_policies(ROOT,{'unrelated':float('nan'),'strategy_state':{'x':object()}})
     assert profiles['balanced']['atr_trailing_multiplier']==3.5
     assert profiles['aggressive']['atr_trailing_multiplier']==4.5
+
+
+def test_primary_can_toggle_refill_vacancies_and_daily_rebalance():
+    out=load_execution_policies(ROOT,{'rebalance_every':1,'refill_vacancies':False})
+    assert out['balanced']['rebalance_every']==1
+    assert out['balanced']['refill_vacancies'] is False
+    assert out['aggressive']['refill_vacancies'] is True

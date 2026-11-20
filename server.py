@@ -634,36 +634,7 @@ def worker_step(now=None):
                     logger.exception("每日三轨收盘诊断报告自动生成失败")
 
             try:
-                sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
-                sb_acc = getattr(ctx.strategy, "sandbox_account", None)
-                sb_summary = sb_acc.get_summary() if sb_acc else None
-                sb_positions = dict(sb_acc.positions) if sb_acc else None
-                alloc_st = ctx.strategy.allocation_status(checked_at) if hasattr(ctx.strategy, "allocation_status") else {}
-                p_entries = ctx.strategy.state.get("pending_entries", {}) if hasattr(ctx.strategy, "state") else {}
-                p_exits = ctx.strategy.state.get("pending_exits", {}) if hasattr(ctx.strategy, "state") else {}
-                curr_regime = ctx.strategy.state.get("current_regime", "RISK_OFF") if hasattr(ctx.strategy, "state") else "RISK_OFF"
-                w_a = ctx.strategy.state.get("weight_a", 1.0) if hasattr(ctx.strategy, "state") else 1.0
-                w_b = ctx.strategy.state.get("weight_b", 0.0) if hasattr(ctx.strategy, "state") else 0.0
-                strat_status = {
-                    "strategy_id": getattr(ctx.strategy, "name", "Product_AB"),
-                    "strategy_display_name": getattr(ctx.strategy, "display_name", "Product AB"),
-                    "regime": curr_regime,
-                    "weight_a": w_a,
-                    "weight_b": w_b,
-                    "max_regime_total_wt_num": alloc_st.get("max_regime_total_wt_num", 0.0 if curr_regime == "RISK_OFF" else 0.35),
-                    "pending_entries": p_entries,
-                    "pending_exits": p_exits,
-                    "allow_new_entries": alloc_st.get("allow_new_entries", False),
-                    "no_entry_reason": alloc_st.get("no_entry_reason", "当前处于 RISK_OFF 弱市状态，新买入上限为 0.0%，全额现金防御；绝不为了凑齐3只股票而主动买入"),
-                    "wait_reason": alloc_st.get("wait_reason", ""),
-                    "primary_positions_count": len(ctx.account.positions) if ctx.account else 0,
-                    "primary_max_positions": alloc_st.get("primary_max_positions", 3),
-                    "sandbox_positions_count": len(sb_positions) if sb_positions else 0,
-                    "sandbox_max_positions": alloc_st.get("sandbox_max_positions", 3),
-                    "service_status": "正常运行 (openarmx-quant.service)",
-                    "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
-                    "order_execution_status": f"正常 ({len(p_entries)} 笔待执行买单)",
-                } if ctx.strategy else None
+                sizing_tbl, sb_summary, sb_positions, strat_status = _build_daily_summary_payload(day, checked_at)
 
                 NotificationManager().notify_daily_summary(
                     summary=ctx.account.get_summary(),
@@ -679,6 +650,91 @@ def worker_step(now=None):
                 logger.exception("最终收盘战报通知失败；收盘快照已保存")
         ctx.worker_last_success = checked_at
         ctx.worker_last_error = getattr(ctx.account, "_persistence_error", None) if ctx.account else None
+
+
+def _build_daily_summary_payload(day: str, checked_at=None):
+    sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
+    if getattr(ctx, "trading_runtime", None) is not None:
+        dual = ctx.trading_runtime.get_dual_accounts_summary()
+        prim = dual.get("primary") or {}
+        sec = dual.get("secondary") or {}
+        curr_regime = dual.get("market_regime") or prim.get("regime") or "RISK_OFF"
+        sb_summary = dict(sec.get("summary") or {})
+        raw_sb_pos = sec.get("positions") or {}
+        if isinstance(raw_sb_pos, list):
+            sb_positions = {p["symbol"]: p for p in raw_sb_pos if "symbol" in p}
+        else:
+            sb_positions = dict(raw_sb_pos)
+        p_entries = prim.get("pending_entries") or {}
+        p_exits = prim.get("pending_exits") or {}
+        w_a = float(prim.get("weight_a", 0.70))
+        w_b = float(prim.get("weight_b", 0.30))
+        bal_cap = float(prim.get("max_regime_total_wt", 0.30 if curr_regime == "RISK_OFF" else 0.45))
+        agg_cap = float(sec.get("max_regime_total_wt", 0.50 if curr_regime == "RISK_OFF" else 0.70))
+        prim_trades_today = [t for t in (prim.get("trades") or []) if str(t.get("date", "")) == day]
+        sec_trades_today = [t for t in (sec.get("trades") or []) if str(t.get("date", "")) == day]
+        strat_status = {
+            "strategy_id": "Product_AB_Balanced_v2",
+            "strategy_display_name": prim.get("strategy_display_name", "Product AB Balanced v3.0 (稳健账户)"),
+            "regime": curr_regime,
+            "weight_a": w_a,
+            "weight_b": w_b,
+            "max_regime_total_wt_num": bal_cap,
+            "sandbox_max_regime_total_wt_num": agg_cap,
+            "regime_caps": prim.get("regime_caps") or {"RISK_OFF": 0.30, "NEUTRAL": 0.45, "RISK_ON": 0.65, "STRONG_RISK_ON": 0.80},
+            "sandbox_regime_caps": sec.get("regime_caps") or {"RISK_OFF": 0.50, "NEUTRAL": 0.70, "RISK_ON": 0.90, "STRONG_RISK_ON": 1.00},
+            "drawdown_pct": float(prim.get("current_drawdown_pct", 0.0)),
+            "sandbox_drawdown_pct": float(sec.get("current_drawdown_pct", 0.0)),
+            "pending_entries": p_entries,
+            "pending_exits": p_exits,
+            "allow_new_entries": bool(prim.get("allow_new_entries")),
+            "no_entry_reason": prim.get("no_entry_reason") or "当前处于仓位上限或选股风控约束中",
+            "sandbox_allow_new_entries": bool(sec.get("allow_new_entries")),
+            "sandbox_no_entry_reason": sec.get("no_entry_reason") or "当前处于仓位上限或选股风控约束中",
+            "wait_reason": prim.get("no_entry_reason", ""),
+            "primary_positions_count": int(prim.get("positions_count", len(ctx.account.positions) if ctx.account else 0)),
+            "primary_max_positions": int(prim.get("max_positions", 3)),
+            "sandbox_positions_count": int(sec.get("positions_count", len(sb_positions))),
+            "sandbox_max_positions": int(sec.get("max_positions", 5)),
+            "primary_today_trades": prim_trades_today,
+            "sandbox_today_trades": sec_trades_today,
+            "service_status": "正常运行 (openarmx-quant.service / V3 Active)",
+            "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
+            "order_execution_status": f"正常 (今日 Balanced 成交 {len(prim_trades_today)} 笔 / Aggressive 成交 {len(sec_trades_today)} 笔)",
+        }
+        return sizing_tbl, sb_summary, sb_positions, strat_status
+
+    sb_acc = getattr(ctx.strategy, "sandbox_account", None)
+    sb_summary = sb_acc.get_summary() if sb_acc else None
+    sb_positions = dict(sb_acc.positions) if sb_acc else None
+    alloc_st = ctx.strategy.allocation_status(checked_at or datetime.datetime.now(BEIJING)) if hasattr(ctx.strategy, "allocation_status") else {}
+    p_entries = ctx.strategy.state.get("pending_entries", {}) if hasattr(ctx.strategy, "state") else {}
+    p_exits = ctx.strategy.state.get("pending_exits", {}) if hasattr(ctx.strategy, "state") else {}
+    curr_regime = ctx.strategy.state.get("current_regime", "RISK_OFF") if hasattr(ctx.strategy, "state") else "RISK_OFF"
+    w_a = ctx.strategy.state.get("weight_a", 0.70) if hasattr(ctx.strategy, "state") else 0.70
+    w_b = ctx.strategy.state.get("weight_b", 0.30) if hasattr(ctx.strategy, "state") else 0.30
+    strat_status = {
+        "strategy_id": getattr(ctx.strategy, "name", "Product_AB_Balanced_v2"),
+        "strategy_display_name": getattr(ctx.strategy, "display_name", "Product AB"),
+        "regime": curr_regime,
+        "weight_a": w_a,
+        "weight_b": w_b,
+        "max_regime_total_wt_num": alloc_st.get("max_regime_total_wt_num", 0.30 if curr_regime == "RISK_OFF" else 0.45),
+        "sandbox_max_regime_total_wt_num": alloc_st.get("sandbox_max_regime_total_wt_num", 0.50 if curr_regime == "RISK_OFF" else 0.70),
+        "pending_entries": p_entries,
+        "pending_exits": p_exits,
+        "allow_new_entries": alloc_st.get("allow_new_entries", False),
+        "no_entry_reason": alloc_st.get("no_entry_reason", ""),
+        "wait_reason": alloc_st.get("wait_reason", ""),
+        "primary_positions_count": len(ctx.account.positions) if ctx.account else 0,
+        "primary_max_positions": alloc_st.get("primary_max_positions", 3),
+        "sandbox_positions_count": len(sb_positions) if sb_positions else 0,
+        "sandbox_max_positions": alloc_st.get("sandbox_max_positions", 5),
+        "service_status": "正常运行 (openarmx-quant.service)",
+        "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
+        "order_execution_status": f"正常 ({len(p_entries)} 笔待执行买单)",
+    } if ctx.strategy else None
+    return sizing_tbl, sb_summary, sb_positions, strat_status
 
 
 def worker_wait_seconds(now):
@@ -1909,36 +1965,7 @@ def trigger_daily_summary_notification():
             except Exception as e:
                 logger.warning(f"生成诊断报告失败: {e}")
 
-        sizing_tbl = ctx.strategy.get_position_sizing_table() if (ctx.strategy and hasattr(ctx.strategy, "get_position_sizing_table")) else None
-        sb_acc = getattr(ctx.strategy, "sandbox_account", None)
-        sb_summary = sb_acc.get_summary() if sb_acc else None
-        sb_positions = dict(sb_acc.positions) if sb_acc else None
-        alloc_st = ctx.strategy.allocation_status(datetime.datetime.now(BEIJING)) if hasattr(ctx.strategy, "allocation_status") else {}
-        p_entries = ctx.strategy.state.get("pending_entries", {}) if hasattr(ctx.strategy, "state") else {}
-        p_exits = ctx.strategy.state.get("pending_exits", {}) if hasattr(ctx.strategy, "state") else {}
-        curr_regime = ctx.strategy.state.get("current_regime", "RISK_OFF") if hasattr(ctx.strategy, "state") else "RISK_OFF"
-        w_a = ctx.strategy.state.get("weight_a", 1.0) if hasattr(ctx.strategy, "state") else 1.0
-        w_b = ctx.strategy.state.get("weight_b", 0.0) if hasattr(ctx.strategy, "state") else 0.0
-        strat_status = {
-            "strategy_id": getattr(ctx.strategy, "name", "Product_AB"),
-            "strategy_display_name": getattr(ctx.strategy, "display_name", "Product AB"),
-            "regime": curr_regime,
-            "weight_a": w_a,
-            "weight_b": w_b,
-            "max_regime_total_wt_num": alloc_st.get("max_regime_total_wt_num", 0.0 if curr_regime == "RISK_OFF" else 0.35),
-            "pending_entries": p_entries,
-            "pending_exits": p_exits,
-            "allow_new_entries": alloc_st.get("allow_new_entries", False),
-            "no_entry_reason": alloc_st.get("no_entry_reason", "当前处于 RISK_OFF 弱市状态，新买入上限为 0.0%，全额现金防御；绝不为了凑齐3只股票而主动买入"),
-            "wait_reason": alloc_st.get("wait_reason", ""),
-            "primary_positions_count": len(ctx.account.positions) if ctx.account else 0,
-            "primary_max_positions": alloc_st.get("primary_max_positions", 3),
-            "sandbox_positions_count": len(sb_positions) if sb_positions else 0,
-            "sandbox_max_positions": alloc_st.get("sandbox_max_positions", 3),
-            "service_status": "正常运行 (openarmx-quant.service)",
-            "data_status_str": f"正常 ({len(getattr(ctx.strategy, 'watchlist', [])) or 3185} 只股票增量更新已就绪)",
-            "order_execution_status": f"正常 ({len(p_entries)} 笔待执行买单)",
-        } if ctx.strategy else None
+        sizing_tbl, sb_summary, sb_positions, strat_status = _build_daily_summary_payload(day, datetime.datetime.now(BEIJING))
 
         res = NotificationManager().notify_daily_summary(
             summary=ctx.account.get_summary(),

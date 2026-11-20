@@ -69,7 +69,7 @@ def test_bad_live_quote_rejects_only_that_stock(tmp_path, monkeypatch, fault):
         assert set(rt.ledger.get_positions(account)) == {'sh600000'}
 
 
-def test_hard_stop_cannot_rebuy_or_refill_same_day_even_after_restart(tmp_path, monkeypatch):
+def test_hard_stop_blocks_same_symbol_rebuy_and_refills_other_symbol_without_restart_duplicates(tmp_path, monkeypatch):
     rt = make_runtime(tmp_path, monkeypatch)
     for account in ['balanced', 'aggressive']:
         rt.ledger.apply_fill(TradeFill(
@@ -80,13 +80,62 @@ def test_hard_stop_cannot_rebuy_or_refill_same_day_even_after_restart(tmp_path, 
             timestamp='2026-11-13T10:00:00'))
     data, quotes = inputs()
     result = rt.step(EXEC, quotes=quotes, market_data=data, now=NOW, signal_asof_date=SIG)
+    initial_shares = {}
     for account in ['balanced', 'aggressive']:
         assert result[account]['allowed_signal_count'] == 2
-        assert result[account]['executed_fills'] == 0
-        assert not rt.ledger.get_positions(account)
+        assert result[account]['executed_fills'] == 1
+        positions = rt.ledger.get_positions(account)
+        assert set(positions) == {'sh600001'}  # Stopped-out sh600000 stays in cooldown; sh600001 refills immediately.
+        initial_shares[account] = positions['sh600001'].total_shares
     restarted = TradingRuntime(db_path=str(tmp_path/'ledger.sqlite'), mode='ACTIVE')
-    restarted.step(EXEC, quotes=quotes, market_data=data, now=NOW, signal_asof_date=SIG)
-    assert all(not restarted.ledger.get_positions(a) for a in ['balanced', 'aggressive'])
+    res_restart = restarted.step(EXEC, quotes=quotes, market_data=data, now=NOW, signal_asof_date=SIG)
+    for account in ['balanced', 'aggressive']:
+        assert res_restart[account]['executed_fills'] == 0
+        positions = restarted.ledger.get_positions(account)
+        assert set(positions) == {'sh600001'}
+        assert positions['sh600001'].total_shares == initial_shares[account]
+
+
+def test_morning_entry_then_intraday_stop_refills_next_ranked_candidate(tmp_path, monkeypatch):
+    rt = make_runtime(tmp_path, monkeypatch)
+    # Pre-existing T+1 tradable holding sh600000 bought on 2026-11-16 (~25% of equity)
+    rt.ledger.apply_fill(TradeFill(
+        fill_id='seed-agg-prev', order_id='seed-ord-agg',
+        client_order_id='seed-cli-agg', account_id='aggressive', symbol='sh600000',
+        name='普通股票', side=OrderSide.BUY, price=10.29, shares=2400, amount=24696.0,
+        commission=5.0, stamp_tax=0.0, transfer_fee=0.0, slippage=0.0, realized_pnl=0.0,
+        timestamp='2026-11-16T10:00:00'), name='普通股票', sector='行业0')
+    rt.ledger.roll_t1(EXEC)
+
+    data, quotes = inputs()
+    bars = copy.deepcopy(data['candidate_bars']['sh600000'])
+    data['candidates'].append({
+        'symbol': 'sh600002', 'name': '普通股票', 'price': 10.29, 'score': 78,
+        'sector': '行业2', 'as_of': SIG, 'ret20': 10, 'ret60': 20, 'amount': 40000000,
+        'ma20': 10.1, 'ma60': 9.8, 'ma120': 9.5,
+    })
+    data['top_sectors'].append('行业2')
+    data['candidate_bars']['sh600002'] = copy.deepcopy(bars)
+    quotes['sh600002'] = {
+        'price': 10.29, 'current': 10.29, 'open': 10.29, 'pre_close': 10.29,
+        'timestamp': NOW.isoformat(), 'fresh': True, 'name': '普通股票', 'volume_lots': 10000,
+    }
+    # 09:31: aggressive holds sh600000 (25%) and buys sh600001 (25%) up to 50% RISK_OFF cap
+    res_open = rt.step(EXEC, quotes=quotes, market_data=data, now=NOW, signal_asof_date=SIG)
+    assert res_open['aggressive']['executed_fills'] == 1
+    assert set(rt.ledger.get_positions('aggressive')) == {'sh600000', 'sh600001'}
+
+    # 10:16: sh600000 triggers -6% hard stop intraday while still rank #1; sh600002 refills immediately!
+    later = NOW + dt.timedelta(minutes=45)
+    for q in quotes.values():
+        q['timestamp'] = later.isoformat()
+    # Trigger -6% hard stop on sh600000 without triggering entry_intraday_drop (> -3% check is skipped via sell_cooldown anyway, and -2.5% from open wouldn't hit -3%)
+    quotes['sh600000'].update({'price': 9.60, 'current': 9.60, 'open': 9.80, 'pre_close': 10.29})
+    res_intraday = rt.step(EXEC, quotes=quotes, market_data=data, now=later, signal_asof_date=SIG)
+    assert set(rt.ledger.get_positions('aggressive')) == {'sh600001', 'sh600002'}
+    assert res_intraday['aggressive']['execution_cycle']['reason'] == 'explicit_refill_enabled'
+    assert res_intraday['aggressive']['executed_fills'] == 1
+
 
 
 @pytest.mark.parametrize('strategy, held_count, expected', [(BalancedStrategy, 2, 6), (AggressiveStrategy, 3, 5)])

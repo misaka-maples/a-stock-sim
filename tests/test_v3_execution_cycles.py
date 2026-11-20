@@ -154,3 +154,36 @@ def test_concurrent_polls_start_exactly_one_cycle_and_keep_first_weight(tmp_path
     with ledger.connect() as conn:
         rows=conn.execute('SELECT * FROM execution_cycles').fetchall()
     assert len(rows)==1 and json.loads(rows[0]['targets_json'])['sh600001']['target_weight']==.10
+
+
+def test_daily_entry_and_same_day_intraday_refill_after_stop_loss(tmp_path):
+    from src.astock.trade.execution_cycles import filter_cycle_ineligible_signals
+    from src.astock.trade.models import Signal
+    daily_refill_policy={'rebalance_every':1,'refill_vacancies':True,'cooldown_days':3}
+    ledger=db(tmp_path)
+    # Pre-existing T+1 tradable holding sh600009 from 2026-11-13
+    trade(ledger,'old-hold',OrderSide.BUY,'2026-11-13',symbol='sh600009',account='aggressive')
+    ledger.roll_t1('2026-11-17')
+    # 09:30 Morning cycle starts with sh600001
+    p1,d1=restrict_entry_cycle(ledger,'aggressive','2026-11-16','2026-11-17',
+        plan('aggressive',{'sh600001':.25}),ledger.get_positions('aggressive'),daily_refill_policy)
+    assert 'sh600001' in p1.target_positions and d1['cycle_started'] and d1['reason']=='scheduled_cycle'
+    trade(ledger,'morning-buy',OrderSide.BUY,'2026-11-17',symbol='sh600001',account='aggressive')
+    # 10:15 Same-day stop-loss sell of pre-existing sh600009
+    trade(ledger,'intraday-stop',OrderSide.SELL,'2026-11-17',symbol='sh600009',account='aggressive')
+    # 10:15:03 Same day (same signal_day='2026-11-16'): sh600002 refills immediately, sh600009 blocked
+    p2,d2=restrict_entry_cycle(ledger,'aggressive','2026-11-16','2026-11-17',
+        plan('aggressive',{'sh600009':.25,'sh600002':.25}),ledger.get_positions('aggressive'),daily_refill_policy)
+    assert d2['reason']=='explicit_refill_enabled'
+    assert set(p2.target_positions)=={'sh600001','sh600002'}
+    assert d2['blocked_symbols']['sh600009']=='sell_cooldown'
+    # Filter helper also excludes sh600001 (bought today) and sh600009 (sold today) prior to plan_targets
+    sigs=[Signal(run_id='r',signal_asof='2026-11-16',symbol='sh600009',name='Old',rank=1,score=95.,sector='S',price=10.),
+          Signal(run_id='r',signal_asof='2026-11-16',symbol='sh600002',name='B',rank=2,score=90.,sector='S2',price=10.)]
+    filtered=filter_cycle_ineligible_signals(ledger,'aggressive','2026-11-17',sigs,daily_refill_policy)
+    assert [s.symbol for s in filtered]==['sh600002']
+    # Next trading day (signal_day='2026-11-17', execution_day='2026-11-18'): no 5-session wait
+    p3,d3=restrict_entry_cycle(ledger,'aggressive','2026-11-17','2026-11-18',
+        plan('aggressive',{'sh600003':.25}),ledger.get_positions('aggressive'),daily_refill_policy)
+    assert d3['reason']=='scheduled_cycle' and d3['sessions_since_cycle']==1 and d3['cycle_started']
+    assert 'sh600003' in p3.target_positions

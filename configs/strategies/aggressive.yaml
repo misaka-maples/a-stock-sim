@@ -28,9 +28,9 @@ parameters:
   ma20_exit_consecutive_days: 2
 
   # 轮动与调仓
-  rebalance_every: 5
+  rebalance_every: 1
   min_holding_days: 5
-  refill_vacancies: false
+  refill_vacancies: true
   rank_buffer: 3
   cooldown_days: 3
   participation_rate: 0.05

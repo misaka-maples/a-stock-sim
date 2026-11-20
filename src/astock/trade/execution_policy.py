@@ -87,8 +87,6 @@ def _validate(policy: Dict[str, Any], account: str) -> None:
         raise ValueError(f"{account}.stop_loss_pct must be negative")
     if policy["max_drawdown_warn_pct"] >= policy["max_drawdown_freeze_pct"]:
         raise ValueError(f"{account} drawdown warning must be below freeze threshold")
-    if policy["refill_vacancies"]:
-        raise ValueError(f"{account} vacancy refill remains disabled in the existing execution policy")
     if policy["trailing_stop_mode"] != "atr":
         raise ValueError(f"{account}.trailing_stop_mode must retain the supported ATR policy")
     if policy["stop_loss_mode"] not in ("intraday", "daily_close"):
