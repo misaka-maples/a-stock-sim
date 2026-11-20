@@ -53,18 +53,19 @@ class BoundedHistoryCache(MutableMapping):
                     self._hot_cache[sym] = bars
 
     def rescan_disk(self):
-        with self._lock:
-            try:
-                # 仅当 feed 是具备磁盘缓存特性的真实 Feed 或 None 时才关联磁盘
-                if (self.feed is None or hasattr(self.feed, "cache_dir") or hasattr(self.feed, "_peek_cached")) and self.cache_dir.exists():
-                    self._disk_symbols = {
-                        f.name.replace("_qfq.json", "")
-                        for f in self.cache_dir.glob("*_qfq.json")
-                    }
-                else:
-                    self._disk_symbols = set()
-            except Exception as e:
-                logger.warning(f"扫描磁盘缓存目录失败: {e}")
+        try:
+            # 仅当 feed 是具备磁盘缓存特性的真实 Feed 或 None 时才关联磁盘
+            if (self.feed is None or hasattr(self.feed, "cache_dir") or hasattr(self.feed, "_peek_cached")) and self.cache_dir.exists():
+                scanned = {
+                    f.name.replace("_qfq.json", "")
+                    for f in self.cache_dir.glob("*_qfq.json")
+                }
+            else:
+                scanned = set()
+            with self._lock:
+                self._disk_symbols = scanned
+        except Exception as e:
+            logger.warning(f"扫描磁盘缓存目录失败: {e}")
 
     def set_as_of(self, as_of: str):
         with self._lock:
@@ -92,9 +93,12 @@ class BoundedHistoryCache(MutableMapping):
             else:
                 self.max_capacity = self.default_capacity
 
-            for s in self._pinned_symbols:
-                if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s)):
-                    _ = self.get(s)
+            missing = [
+                s for s in self._pinned_symbols
+                if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s))
+            ]
+        for s in missing:
+            _ = self.get(s)
 
     def pin(self, symbols):
         """置顶保护关键标的 (主账户持仓、Sandbox持仓、Top候选)，确保常驻内存"""
@@ -108,9 +112,12 @@ class BoundedHistoryCache(MutableMapping):
                     f"启动动态保护扩容至 {new_cap}，严禁静默淘汰置顶历史行情。"
                 )
                 self.max_capacity = new_cap
-            for s in sym_list:
-                if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s)):
-                    _ = self.get(s)
+            missing = [
+                s for s in sym_list
+                if s not in self._hot_cache and (s in self._known_symbols or self._disk_cache_exists(s))
+            ]
+        for s in missing:
+            _ = self.get(s)
 
     def unpin(self, symbols):
         with self._lock:
@@ -124,11 +131,12 @@ class BoundedHistoryCache(MutableMapping):
         with self._lock:
             return symbol in self._hot_cache or self._disk_cache_exists(symbol)
 
-    def _load_from_disk(self, symbol: str) -> List[Dict[str, Any]]:
+    def _load_from_disk(self, symbol: str, as_of: Optional[str] = None) -> List[Dict[str, Any]]:
+        cutoff = self._as_of if as_of is None else as_of
         # 1. 优先使用 feed._peek_cached
         if self.feed and hasattr(self.feed, "_peek_cached"):
             try:
-                cached = self.feed._peek_cached(symbol, "2024-01-01", self._as_of or "2099-12-31")
+                cached = self.feed._peek_cached(symbol, "2024-01-01", cutoff or "2099-12-31")
                 if cached and cached.get("bars"):
                     return cached["bars"]
             except Exception as e:
@@ -145,8 +153,8 @@ class BoundedHistoryCache(MutableMapping):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                     bars = data.get("bars", [])
-                    if self._as_of:
-                        bars = [b for b in bars if b.get("date", "") <= self._as_of]
+                    if cutoff:
+                        bars = [b for b in bars if b.get("date", "") <= cutoff]
                     return bars
                 except Exception as e:
                     logger.warning(f"从磁盘读取 {symbol} 历史 K 线失败: {e}")
@@ -176,16 +184,24 @@ class BoundedHistoryCache(MutableMapping):
                 self._hits += 1
                 self._hot_cache.move_to_end(sym)
                 return self._hot_cache[sym]
+            as_of = self._as_of
+            known = sym in self._known_symbols
 
+        # 磁盘/Parquet I/O 在锁外执行，防止阻塞 __len__/get 等高并发轻量读取
+        bars = self._load_from_disk(sym, as_of=as_of)
+        with self._lock:
+            if sym in self._hot_cache:
+                self._hits += 1
+                self._hot_cache.move_to_end(sym)
+                return self._hot_cache[sym]
             self._misses += 1
-            bars = self._load_from_disk(sym)
             if bars:
                 self._hot_cache[sym] = bars
                 self._known_symbols.add(sym)
                 self._hot_cache.move_to_end(sym)
                 self._evict_if_needed()
                 return bars
-            elif sym in self._known_symbols:
+            elif known or sym in self._known_symbols:
                 return []
             raise KeyError(sym)
 
@@ -227,12 +243,10 @@ class BoundedHistoryCache(MutableMapping):
             return list(self._known_symbols if self._known_symbols else self._hot_cache.keys())
 
     def values(self):
-        with self._lock:
-            return [self.get(k, []) for k in self.keys()]
+        return [self.get(k, []) for k in self.keys()]
 
     def items(self):
-        with self._lock:
-            return [(k, self.get(k, [])) for k in self.keys()]
+        return [(k, self.get(k, [])) for k in self.keys()]
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:
@@ -255,9 +269,9 @@ class BoundedHistoryCache(MutableMapping):
             to_remove = [k for k in self._hot_cache if k not in self._pinned_symbols]
             for k in to_remove:
                 self._hot_cache.pop(k, None)
-            gc.collect()
-            try:
-                libc = ctypes.CDLL("libc.so.6")
-                libc.malloc_trim(0)
-            except Exception:
-                pass
+        gc.collect()
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+        except Exception:
+            pass

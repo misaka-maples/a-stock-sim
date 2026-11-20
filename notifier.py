@@ -492,6 +492,20 @@ class NotificationManager:
 
         today_str = date_str or datetime.datetime.now().strftime("%Y-%m-%d")
 
+        # 每日收盘战报日期级防抖去重锁（防止服务异常重启多次重复推送）
+        lock_file = Path(__file__).resolve().parent / "data" / "last_daily_summary_push.json"
+        if not force:
+            try:
+                if lock_file.exists():
+                    import json
+                    with open(lock_file, "r", encoding="utf-8") as _lf:
+                        lock_data = json.load(_lf)
+                    if lock_data.get("last_date") == today_str:
+                        logger.info(f"[{today_str}] 每日收盘战报今日已成功推送，跳过重复推送 (防抖保护)")
+                        return [{"success": True, "message": "今日收盘战报已推送，无需重复发送", "dedup": True}]
+            except Exception as _err:
+                logger.warning(f"读取收盘战报防抖锁异常: {_err}")
+
         # 检查是否为开盘交易日（非交易日跳过推送，除非 force=True）
         if not force:
             try:
@@ -549,14 +563,32 @@ class NotificationManager:
             if diagnostic_report and "attribution" in diagnostic_report:
                 tracking_error_pct = float(diagnostic_report["attribution"].get("execution_drag", {}).get("cum_tracking_error_pct", 0.0))
 
-            is_v2 = (strategy_status and strategy_status.get("strategy_id") in ("Product_AB_Balanced_v2", "Product_B_Aggressive_v2"))
+            is_v2 = (strategy_status and strategy_status.get("strategy_id") in (
+                "Product_AB_Balanced_v2", "Product_B_Aggressive_v2", "Product_AB_Balanced_v3", "Product_B_Aggressive_v3"
+            ))
+            st = strategy_status or {}
+            if "max_regime_total_wt_num" in st:
+                max_stock_wt_pct = float(st["max_regime_total_wt_num"]) * 100.0
+            else:
+                max_stock_wt_pct = (30.0 if is_v2 else 0.0) if regime == "RISK_OFF" else (45.0 if is_v2 else 35.0) if regime == "NEUTRAL" else (65.0 if is_v2 else 70.0) if regime == "RISK_ON" else (80.0 if is_v2 else 90.0)
+            if "sandbox_max_regime_total_wt_num" in st:
+                sb_max_stock_wt_pct = float(st["sandbox_max_regime_total_wt_num"]) * 100.0
+            else:
+                sb_max_stock_wt_pct = 50.0 if regime == "RISK_OFF" else 70.0 if regime == "NEUTRAL" else 90.0 if regime == "RISK_ON" else 100.0
+
             if is_v2:
-                title = f"【Product AB v2.0双账户】{pnl_icon} {today_str} 收盘战报 (Balanced稳健{today_pnl_pct:+.2f}% | Aggressive进攻{sb_pnl_pct:+.2f}%)"
+                title = f"【Product AB双账户】{pnl_icon} {today_str} 收盘战报 (Balanced {today_pnl_pct:+.2f}% | Aggressive {sb_pnl_pct:+.2f}%)"
                 summary_text = (
-                    f"Balanced稳健 ¥{total_equity:,.2f} ({today_pnl_pct:+.2f}%) | "
-                    f"Aggressive进攻 ¥{sb_equity:,.2f} ({sb_pnl_pct:+.2f}%) | "
-                    f"状态: {regime} (A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)"
+                    f"Balanced ¥{total_equity:,.2f} (仓位{primary_stock_wt:.1f}%/{max_stock_wt_pct:.0f}%) | "
+                    f"Aggressive ¥{sb_equity:,.2f} (仓位{sb_stock_wt:.1f}%/{sb_max_stock_wt_pct:.0f}%) | "
+                    f"状态: {regime}"
                 )
+                regime_desc_map = {
+                    "RISK_OFF": f"弱市严选防御 (Balanced上限 {max_stock_wt_pct:.0f}% [A:70%/B:30%] | Aggressive上限 {sb_max_stock_wt_pct:.0f}% [100% B])",
+                    "NEUTRAL": f"平衡震荡 (Balanced上限 {max_stock_wt_pct:.0f}% [A:60%/B:40%] | Aggressive上限 {sb_max_stock_wt_pct:.0f}% [100% B])",
+                    "RISK_ON": f"进攻爆发 (Balanced上限 {max_stock_wt_pct:.0f}% [A:20%/B:80%] | Aggressive上限 {sb_max_stock_wt_pct:.0f}% [100% B])",
+                    "STRONG_RISK_ON": f"强趋势攻防 (Balanced上限 {max_stock_wt_pct:.0f}% [A:50%/B:50%] | Aggressive上限 {sb_max_stock_wt_pct:.0f}% [100% B])"
+                }
             else:
                 title = f"【Product AB双账本】{pnl_icon} {today_str} 收盘战报 (主账户{today_pnl_pct:+.2f}% | 测试{sb_pnl_pct:+.2f}%)"
                 summary_text = (
@@ -564,33 +596,33 @@ class NotificationManager:
                     f"Sandbox ¥{sb_equity:,.2f} ({sb_pnl_pct:+.2f}%) | "
                     f"模式: {regime} (A:{w_a*100:.0f}%/B:{w_b*100:.0f}%)"
                 )
+                regime_desc_map = {
+                    "RISK_OFF": "防守避险 (A底盘100% 严控回撤，新买入上限0%，全额现金防御)",
+                    "NEUTRAL": "平衡震荡 (A底盘100% 稳健复利，回避宽幅假突破)",
+                    "RISK_ON": "进攻爆发 (A底盘20% / B成长80% 行业龙头全力主升浪)",
+                    "STRONG_RISK_ON": "强趋势攻防 (A底盘50% / B成长50% 抓大牛防跳空)"
+                }
 
-            regime_desc_map = {
-                "RISK_OFF": "防守避险 (A底盘100% 严控回撤，新买入上限0%，全额现金防御)",
-                "NEUTRAL": "平衡震荡 (A底盘100% 稳健复利，回避宽幅假突破)",
-                "RISK_ON": "进攻爆发 (A底盘20% / B成长80% 行业龙头全力主升浪)",
-                "STRONG_RISK_ON": "强趋势攻防 (A底盘50% / B成长50% 抓大牛防跳空)"
-            }
             regime_desc = regime_desc_map.get(regime, f"混合配置 A:{w_a*100:.0f}%/B:{w_b*100:.0f}%")
-            st = strategy_status or {}
-            if "max_regime_total_wt_num" in st:
-                max_stock_wt_pct = float(st["max_regime_total_wt_num"]) * 100.0
-            else:
-                max_stock_wt_pct = 0.0 if regime == "RISK_OFF" else 35.0 if regime == "NEUTRAL" else 70.0 if regime == "RISK_ON" else 90.0
             target_pos_count = 4 if regime == "STRONG_RISK_ON" else 3
 
             primary_pos_cnt = st.get("primary_positions_count", pos_count)
             primary_max_pos = st.get("primary_max_positions", target_pos_count)
             sb_pos_cnt = st.get("sandbox_positions_count", len(sb_positions))
-            sb_max_pos = st.get("sandbox_max_positions", target_pos_count)
+            sb_max_pos = st.get("sandbox_max_positions", 5 if is_v2 else target_pos_count)
 
             account1_header = "### 1️⃣ 🛡️ Balanced 稳健账户 (主账户 · 中等风险稳健增长)" if is_v2 else "### 1️⃣ 主账户 (生产历史连续)"
-            header_title = f"# 📊 Product AB v2.0 双账户每日对账战报 ({today_str})" if is_v2 else f"# 📊 Product AB 每日收盘对账战报 ({today_str})"
+            header_title = f"# 📊 Product AB 双账户每日对账战报 ({today_str})" if is_v2 else f"# 📊 Product AB 每日收盘对账战报 ({today_str})"
 
+            cfg_line = (
+                f"> **仓位上限矩阵**：Balanced **{max_stock_wt_pct:.0f}%** (实际 **{primary_stock_wt:.1f}%**) | Aggressive **{sb_max_stock_wt_pct:.0f}%** (实际 **{sb_stock_wt:.1f}%**)"
+                if is_v2 else
+                f"> **策略配置**：A底盘蓝筹 **{w_a*100:.0f}%** / B行业动量 **{w_b*100:.0f}%** | 股票上限: **{max_stock_wt_pct:.0f}%**"
+            )
             lines = [
                 header_title,
                 f"> **市场状态**：`{regime}` ({regime_desc})",
-                f"> **策略配置**：A底盘蓝筹 **{w_a*100:.0f}%** / B行业动量 **{w_b*100:.0f}%** | 股票上限: **{max_stock_wt_pct:.0f}%**",
+                cfg_line,
                 "",
                 "---",
                 "",
@@ -750,6 +782,14 @@ class NotificationManager:
         ])
 
         content = "\n".join(lines)
+        try:
+            lock_file.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            with open(lock_file, "w", encoding="utf-8") as _lf:
+                json.dump({"last_date": today_str, "pushed_at": datetime.datetime.now().isoformat()}, _lf, indent=2)
+        except Exception as _err:
+            logger.warning(f"更新收盘战报防抖锁失败: {_err}")
+
         self.async_dispatch(title=title, content=content, summary=summary_text)
         return [{"success": True, "message": "收盘战报已排队发送"}]
 

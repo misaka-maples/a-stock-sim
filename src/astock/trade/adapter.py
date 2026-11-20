@@ -25,7 +25,19 @@ class TradingRuntimeAdapter:
         self.save_path = str(self.runtime.db_path)
         self.strict_t1 = True
         self.participation_rate = 0.05
-        self.strategy_state: Dict[str, Any] = {}
+        from pathlib import Path
+        self._state_file = Path(self.runtime.db_path).parent / "trading_v3_state.json"
+        self.strategy_state: Dict[str, Any] = self._load_strategy_state()
+
+    def _load_strategy_state(self) -> Dict[str, Any]:
+        if hasattr(self, "_state_file") and self._state_file.exists():
+            try:
+                import json
+                with open(self._state_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning("Failed to load trading_v3_state.json: %s", e)
+        return {}
 
     @property
     def positions(self) -> Dict[str, Any]:
@@ -125,11 +137,19 @@ class TradingRuntimeAdapter:
         self.update_market_prices(quotes)
 
     def save(self):
-        """No-op for JSON file since SQLite commits transactions immediately."""
-        pass
+        """Persists strategy_state (such as closing_report_date and rotation markers) to disk."""
+        if hasattr(self, "_state_file"):
+            try:
+                import json
+                temp_file = self._state_file.with_suffix(".tmp")
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(self.strategy_state, f, ensure_ascii=False, indent=2)
+                temp_file.replace(self._state_file)
+            except Exception as e:
+                logger.warning("Failed to save trading_v3_state.json: %s", e)
 
-    def save_if_due(self):
-        pass
+    def save_if_due(self, interval_seconds: float = 30.0):
+        self.save()
 
     def load(self):
         pass

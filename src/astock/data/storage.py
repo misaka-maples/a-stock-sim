@@ -543,34 +543,62 @@ class LocalStorageManager:
                 return []
             try:
                 table = pq.read_table(str(path))
-                df = table.to_pandas()
-                bars = []
-                for _, row in df.iterrows():
-                    bars.append(DailyBar(
-                        symbol=sym,
-                        trade_date=str(row["trade_date"]),
-                        open=float(row["open"]),
-                        high=float(row["high"]),
-                        low=float(row["low"]),
-                        close=float(row["close"]),
-                        volume=float(row["volume"]),
-                        amount=float(row["amount"]),
-                        source=str(row["source"]),
-                        adjust_type=str(row["adjust_type"]),
-                        updated_at=str(row["updated_at"]),
-                        is_final=bool(row["is_final"]),
-                        raw_open=float(row["raw_open"]),
-                        raw_high=float(row["raw_high"]),
-                        raw_low=float(row["raw_low"]),
-                        raw_close=float(row["raw_close"]),
-                        raw_pre_close=float(row["raw_pre_close"]) if pd.notna(row["raw_pre_close"]) else None,
-                        adjustment_factor=float(row["adjustment_factor"]),
-                        turnover_rate=float(row["turnover_rate"]) if pd.notna(row["turnover_rate"]) else None,
-                        amplitude_pct=float(row["amplitude_pct"]) if pd.notna(row["amplitude_pct"]) else None,
-                        change_pct=float(row["change_pct"]) if pd.notna(row["change_pct"]) else None,
-                        is_suspended=bool(row["is_suspended"]),
-                        is_st=bool(row["is_st"]) if pd.notna(row["is_st"]) else None,
-                    ))
+                n = table.num_rows
+                if n == 0:
+                    bars = []
+                else:
+                    cols = table.to_pydict()
+                    td = cols["trade_date"]
+                    op = cols["open"]
+                    hi = cols["high"]
+                    lo = cols["low"]
+                    cl = cols["close"]
+                    vo = cols["volume"]
+                    am = cols["amount"]
+                    src = cols["source"]
+                    adj = cols["adjust_type"]
+                    upd = cols["updated_at"]
+                    fin = cols["is_final"]
+                    rop = cols["raw_open"]
+                    rhi = cols["raw_high"]
+                    rlo = cols["raw_low"]
+                    rcl = cols["raw_close"]
+                    rpc = cols["raw_pre_close"]
+                    af = cols["adjustment_factor"]
+                    tr = cols["turnover_rate"]
+                    amp = cols["amplitude_pct"]
+                    chg = cols["change_pct"]
+                    susp = cols["is_suspended"]
+                    st = cols["is_st"]
+                    isnan = math.isnan
+                    bars = [
+                        DailyBar(
+                            symbol=sym,
+                            trade_date=str(td[i]),
+                            open=float(op[i]),
+                            high=float(hi[i]),
+                            low=float(lo[i]),
+                            close=float(cl[i]),
+                            volume=float(vo[i]),
+                            amount=float(am[i]),
+                            source=str(src[i]),
+                            adjust_type=str(adj[i]),
+                            updated_at=str(upd[i]),
+                            is_final=bool(fin[i]),
+                            raw_open=float(rop[i]),
+                            raw_high=float(rhi[i]),
+                            raw_low=float(rlo[i]),
+                            raw_close=float(rcl[i]),
+                            raw_pre_close=None if rpc[i] is None or isnan(rpc[i]) else float(rpc[i]),
+                            adjustment_factor=float(af[i]),
+                            turnover_rate=None if tr[i] is None or isnan(tr[i]) else float(tr[i]),
+                            amplitude_pct=None if amp[i] is None or isnan(amp[i]) else float(amp[i]),
+                            change_pct=None if chg[i] is None or isnan(chg[i]) else float(chg[i]),
+                            is_suspended=bool(susp[i]),
+                            is_st=None if st[i] is None else bool(st[i]),
+                        )
+                        for i in range(n)
+                    ]
                 all_bars = bars
                 if use_cache:
                     self.mem_cache.put(cache_key, (version, all_bars))

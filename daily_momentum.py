@@ -66,6 +66,7 @@ class DailyMomentumStrategy:
             self.feed.compact_limit = 126
         self.history_cache = BoundedHistoryCache(feed=self.feed, max_capacity=150)
         self._latest_metrics_table = {}
+        self._latest_metrics_as_of = None
         self._known_valid_series = set()
         self.latest_candidates = []
         self.data_status = {"status": "not_loaded", "requested": len(self.watchlist), "loaded": 0}
@@ -141,6 +142,8 @@ class DailyMomentumStrategy:
             # publication and force benchmark preparation on a filter change.
             self._generation += 1
             self._last_attempt = 0
+            self._latest_metrics_table = {}
+            self._latest_metrics_as_of = None
             self.state.pop("planned_revision", None)
 
     def set_watchlist(self, symbols):
@@ -152,6 +155,8 @@ class DailyMomentumStrategy:
             self.watchlist = symbols
             self._generation += 1
             self._last_attempt = 0
+            self._latest_metrics_table = {}
+            self._latest_metrics_as_of = None
             self.state.pop("planned_revision", None)
 
     @property
@@ -314,6 +319,8 @@ class DailyMomentumStrategy:
         # Dead/unlisted codes with no history do not prevent a useful quorum.
         if self._known_valid_series:
             expected = {sym for sym in self._known_valid_series if sym in self.watchlist}
+        elif len(self.watchlist) > 100 and self._latest_metrics_as_of == self._history_date:
+            return 0.0
         else:
             expected = {sym for sym, bars in self.history_cache.items()
                         if sym in self.watchlist and len(bars) >= 125}
@@ -600,6 +607,7 @@ class DailyMomentumStrategy:
                             pinned_now.update(self.symbols_a)
 
                         self._latest_metrics_table = {}
+                        self._latest_metrics_as_of = as_of
                         for i in range(0, len(priority), batch_size):
                             batch = priority[i:i + batch_size]
                             batch_cached = self.feed.peek_universe(batch, start_date=start, end_date=as_of)
@@ -674,6 +682,31 @@ class DailyMomentumStrategy:
                 last_publish = [0.0]
                 progressive_items = dict(self._history_items) if repair else dict(cached)
 
+                def _refresh_metric_for_item(sym, item):
+                    if len(symbols) <= 100:
+                        return
+                    bars = item.get("bars") or []
+                    if len(bars) >= 125:
+                        self._known_valid_series.add(sym)
+                    if sym in getattr(self, "_delisted", set()):
+                        self._latest_metrics_table.pop(sym, None)
+                        return
+                    code = sym[-6:]
+                    if not code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+                        return
+                    name = item.get("name", sym)
+                    risk_flag = bars[-1].get("is_st") if bars else None
+                    if (risk_flag is True or (risk_flag is not False and "ST" in name.upper())
+                            or "退" in name or name.upper().startswith("PT")):
+                        self._latest_metrics_table.pop(sym, None)
+                        return
+                    sig = evaluate_momentum(bars, as_of, config) if bars else None
+                    if sig and sig.get("raw_signal_price") and sig.get("adjustment_factor"):
+                        self._latest_metrics_table[sym] = dict(
+                            symbol=sym, code=code, name=name, current=sig["raw_signal_price"], **sig)
+                    else:
+                        self._latest_metrics_table.pop(sym, None)
+
                 def publish_item(sym, item):
                     with self._history_lock:
                         if generation != self._generation:
@@ -684,13 +717,15 @@ class DailyMomentumStrategy:
                             item = dict(item, bars=previous["bars"], error=failure,
                                         metadata=dict(item.get("metadata", {}), fresh=False, error=failure))
                         progressive_items[sym] = item
+                        _refresh_metric_for_item(sym, item)
+                        if len(symbols) > 100 and self._latest_metrics_as_of != as_of:
+                            self._latest_metrics_as_of = as_of
                         progress["completed"] += 1
                         reason, _, _ = self._history_issue(item, as_of)
                         progress["unavailable" if reason else "eligible"] += 1
-                        # Publish early and then at most every two seconds or
-                        # eight completions. No slow tail holds back good data.
-                        if (time.monotonic()-last_publish[0] >= 2
-                                or progress["completed"] % 8 == 0
+                        # Publish first result early, then at most every 2s or on completion
+                        # (avoids re-publishing every 8 cached items during catch-up bursts).
+                        if (time.monotonic()-last_publish[0] >= 2.0
                                 or progress["completed"] == progress["total"]):
                             self._publish_history(progressive_items, symbols, as_of, generation,
                                                   industries, benchmark, benchmark_valid, benchmark_ttl,
@@ -725,6 +760,10 @@ class DailyMomentumStrategy:
                                 meta = dict(fetched_item.get("metadata", {}), fresh=False, error=failure)
                                 items[sym] = dict(fetched_item, bars=previous["bars"],
                                                   name=previous.get("name", sym), metadata=meta, error=failure)
+                    if len(symbols) > 100 and fetched:
+                        for sym, fetched_item in fetched.items():
+                            _refresh_metric_for_item(sym, items.get(sym, fetched_item))
+                        self._latest_metrics_as_of = as_of
                     if repair:
                         # Queue attempted failures after untouched failures.
                         for sym in requested:
@@ -788,7 +827,7 @@ class DailyMomentumStrategy:
         signals = []
         if self._history_date != as_of or not self._new_risk_data_valid():
             return signals
-        if self._latest_metrics_table:
+        if self._latest_metrics_as_of == as_of or self._latest_metrics_table:
             for sym, cand in self._latest_metrics_table.items():
                 if sym not in self.watchlist or sym not in self._entry_eligible or sym in self._delisted:
                     continue
